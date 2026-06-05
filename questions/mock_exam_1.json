@@ -1,0 +1,35 @@
+[
+  {
+    "question": "A sales manager needs to see all opportunities owned by users below them in the hierarchy. What should the admin configure?",
+    "options": [
+      "Profiles",
+      "Role Hierarchy",
+      "Permission Sets",
+      "Queues"
+    ],
+    "answer": "Role Hierarchy",
+    "explanation": "Role hierarchy allows managers to access records owned by users beneath them."
+  },
+  {
+    "question": "Which feature controls whether a user can see a specific field?",
+    "options": [
+      "Role Hierarchy",
+      "Field-Level Security",
+      "Queues",
+      "Page Layouts"
+    ],
+    "answer": "Field-Level Security",
+    "explanation": "Field-Level Security determines visibility and edit access for fields."
+  },
+  {
+    "question": "Which automation tool is recommended for creating complex business automation in Salesforce?",
+    "options": [
+      "Workflow Rules",
+      "Process Builder",
+      "Flow Builder",
+      "Assignment Rules"
+    ],
+    "answer": "Flow Builder",
+    "explanation": "Flow Builder is Salesforce’s primary automation tool for complex processes."
+  }
+]
