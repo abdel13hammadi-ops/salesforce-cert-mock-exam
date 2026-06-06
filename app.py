@@ -16,10 +16,10 @@ questions = load_questions()
 
 if "current_question" not in st.session_state:
     st.session_state.current_question = 0
-
 if "answers" not in st.session_state:
     st.session_state.answers = {}
-
+if "marked" not in st.session_state:
+    st.session_state.marked = set()
 if "submitted" not in st.session_state:
     st.session_state.submitted = False
 
@@ -29,7 +29,25 @@ if not st.session_state.submitted:
     q_index = st.session_state.current_question
     q = questions[q_index]
 
+    sidebar = st.sidebar
+    sidebar.header("Question Navigator")
+
+    for i in range(len(questions)):
+        label = f"Q{i + 1}"
+        if i in st.session_state.answers:
+            label += " ✓"
+        if i in st.session_state.marked:
+            label += " 🚩"
+
+        if sidebar.button(label, key=f"nav_{i}"):
+            st.session_state.current_question = i
+            st.rerun()
+
+    answered = len(st.session_state.answers)
+    marked = len(st.session_state.marked)
+
     st.write(f"Question {q_index + 1} of {len(questions)}")
+    st.write(f"Answered: {answered} | Marked for Review: {marked}")
     st.progress((q_index + 1) / len(questions))
 
     st.subheader(q["question"])
@@ -45,7 +63,7 @@ if not st.session_state.submitted:
     if selected:
         st.session_state.answers[q_index] = selected
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         if st.button("Previous") and q_index > 0:
@@ -58,6 +76,16 @@ if not st.session_state.submitted:
             st.rerun()
 
     with col3:
+        if q_index in st.session_state.marked:
+            if st.button("Unmark Review"):
+                st.session_state.marked.remove(q_index)
+                st.rerun()
+        else:
+            if st.button("Mark for Review"):
+                st.session_state.marked.add(q_index)
+                st.rerun()
+
+    with col4:
         if st.button("Submit Exam"):
             st.session_state.submitted = True
             st.rerun()
@@ -94,5 +122,6 @@ else:
     if st.button("Restart Exam"):
         st.session_state.current_question = 0
         st.session_state.answers = {}
+        st.session_state.marked = set()
         st.session_state.submitted = False
         st.rerun()
