@@ -27,9 +27,10 @@ defaults = {
     "answers": {},
     "marked": set(),
     "start_time": None,
-    "review_filter": "All Questions",
-    "randomize": True,
-    "question_order": []
+    "randomize_questions": True,
+    "randomize_choices": True,
+    "question_order": [],
+    "choice_orders": {}
 }
 
 for key, value in defaults.items():
@@ -39,12 +40,21 @@ for key, value in defaults.items():
 def get_questions():
     if not st.session_state.question_order:
         st.session_state.question_order = list(range(len(all_questions)))
-        if st.session_state.randomize:
+        if st.session_state.randomize_questions:
             random.shuffle(st.session_state.question_order)
 
     return [all_questions[i] for i in st.session_state.question_order]
 
 questions = get_questions()
+
+def get_options(q_index, q):
+    if q_index not in st.session_state.choice_orders:
+        options = q["options"].copy()
+        if st.session_state.randomize_choices:
+            random.shuffle(options)
+        st.session_state.choice_orders[q_index] = options
+
+    return st.session_state.choice_orders[q_index]
 
 def normalize_answer(answer):
     if answer is None:
@@ -68,7 +78,41 @@ def calculate_breakdown(field):
 
     return stats
 
-st.title("Salesforce Admin Mock Exam Simulator")
+st.markdown("""
+<style>
+.exam-header {
+    background-color: #f4f6f9;
+    padding: 18px;
+    border-radius: 10px;
+    border: 1px solid #d8dde6;
+    margin-bottom: 20px;
+}
+.exam-title {
+    font-size: 28px;
+    font-weight: 700;
+}
+.exam-subtitle {
+    color: #5f6368;
+    font-size: 15px;
+}
+.timer-box {
+    background-color: #fff3cd;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #ffeeba;
+    text-align: center;
+    font-size: 22px;
+    font-weight: 700;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="exam-header">
+    <div class="exam-title">Salesforce Admin Mock Exam Simulator</div>
+    <div class="exam-subtitle">Timed practice exam with review, scoring, explanations, and performance breakdown.</div>
+</div>
+""", unsafe_allow_html=True)
 
 if not st.session_state.started:
     st.header("Exam Instructions")
@@ -85,15 +129,21 @@ if not st.session_state.started:
     - Explanations will appear only after submission.
     """)
 
-    st.session_state.randomize = st.checkbox(
+    st.session_state.randomize_questions = st.checkbox(
         "Randomize question order",
-        value=st.session_state.randomize
+        value=st.session_state.randomize_questions
+    )
+
+    st.session_state.randomize_choices = st.checkbox(
+        "Randomize answer choices",
+        value=st.session_state.randomize_choices
     )
 
     if st.button("Start Exam"):
         st.session_state.started = True
         st.session_state.start_time = time.time()
         st.session_state.question_order = []
+        st.session_state.choice_orders = {}
         st.rerun()
 
 elif not st.session_state.submitted:
@@ -107,10 +157,13 @@ elif not st.session_state.submitted:
     mins = int(remaining // 60)
     secs = int(remaining % 60)
 
-    st.sidebar.header("Exam Timer")
-    st.sidebar.subheader(f"{mins:02d}:{secs:02d}")
+    st.sidebar.markdown("## Exam Timer")
+    st.sidebar.markdown(
+        f"<div class='timer-box'>{mins:02d}:{secs:02d}</div>",
+        unsafe_allow_html=True
+    )
 
-    st.sidebar.header("Question Navigator")
+    st.sidebar.markdown("## Question Navigator")
 
     for i in range(len(questions)):
         label = f"Q{i + 1}"
@@ -132,9 +185,9 @@ elif not st.session_state.submitted:
         answered = len(st.session_state.answers)
         unanswered = len(questions) - answered
 
-        st.write(f"Answered: {answered}")
-        st.write(f"Unanswered: {unanswered}")
-        st.write(f"Marked for Review: {len(st.session_state.marked)}")
+        st.metric("Answered", answered)
+        st.metric("Unanswered", unanswered)
+        st.metric("Marked for Review", len(st.session_state.marked))
 
         st.divider()
 
@@ -161,13 +214,12 @@ elif not st.session_state.submitted:
     else:
         q_index = st.session_state.current_question
         q = questions[q_index]
+        options = get_options(q_index, q)
 
-        st.write(f"Time Remaining: **{mins:02d}:{secs:02d}**")
-        st.write(f"Question {q_index + 1} of {len(questions)}")
-        st.write(
-            f"Answered: {len(st.session_state.answers)} | "
-            f"Marked: {len(st.session_state.marked)}"
-        )
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Question", f"{q_index + 1} / {len(questions)}")
+        col_b.metric("Answered", len(st.session_state.answers))
+        col_c.metric("Marked", len(st.session_state.marked))
 
         st.progress((q_index + 1) / len(questions))
 
@@ -185,7 +237,7 @@ elif not st.session_state.submitted:
 
             selected = st.multiselect(
                 "Choose answers:",
-                q["options"],
+                options,
                 default=st.session_state.answers.get(q_index, []),
                 key=f"question_{q_index}"
             )
@@ -201,9 +253,9 @@ elif not st.session_state.submitted:
 
             selected = st.radio(
                 "Choose one answer:",
-                q["options"],
-                index=q["options"].index(previous_answer)
-                if previous_answer in q["options"]
+                options,
+                index=options.index(previous_answer)
+                if previous_answer in options
                 else None,
                 key=f"question_{q_index}"
             )
@@ -248,8 +300,11 @@ else:
     score = round((correct / len(questions)) * 100, 2)
 
     st.header("Exam Results")
-    st.subheader(f"Score: {score}%")
-    st.subheader(f"Correct Answers: {correct} / {len(questions)}")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Score", f"{score}%")
+    col2.metric("Correct", f"{correct} / {len(questions)}")
+    col3.metric("Passing Score", f"{PASSING_SCORE}%")
 
     if score >= PASSING_SCORE:
         st.success("PASS")
