@@ -3,6 +3,7 @@ import time
 import random
 from collections import defaultdict
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 
 def load_config():
@@ -144,6 +145,7 @@ if not st.session_state.started:
 
 # Exam screen
 elif not st.session_state.submitted:
+    st_autorefresh(interval=1000, key="exam_timer_refresh")
     elapsed = time.time() - st.session_state.start_time
     remaining = (EXAM_MINUTES * 60) - elapsed
 
