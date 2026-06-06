@@ -333,10 +333,7 @@
     "options": ["Before-Save Record-Triggered Flow", "Screen Flow", "Scheduled Flow", "Autolaunched Flow from Apex"],
     "answers": ["Before-Save Record-Triggered Flow"],
     "explanation": "Before-save record-triggered flows are optimized for fast updates to the triggering record before it is saved."
-  }
-]
-
-,
+  },
 {
   "id": 31,
   "exam": "Salesforce Admin",
