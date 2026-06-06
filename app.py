@@ -240,7 +240,10 @@ else:
     c2.metric("Correct", f"{correct} / {len(questions)}")
     c3.metric("Passing Score", f"{PASSING_SCORE}%")
 
-    st.success("PASS") if score >= PASSING_SCORE else st.error("FAIL")
+ if score >= PASSING_SCORE:
+    st.success("PASS")
+else:
+    st.error("FAIL")
 
     st.divider()
     st.header("Performance Breakdown")
