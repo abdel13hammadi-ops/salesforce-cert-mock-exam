@@ -343,9 +343,8 @@ elif not st.session_state.submitted:
     )
 
 nav_cols = st.sidebar.columns(2)
-
     for i in range(len(questions)):
-     label = f"{i + 1}"
+    label = f"{i + 1}"
 
     if i in st.session_state.answers:
         label += "✓"
