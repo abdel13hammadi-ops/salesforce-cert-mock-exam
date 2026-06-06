@@ -342,7 +342,7 @@ elif not st.session_state.submitted:
         unsafe_allow_html=True
     )
 
-   nav_cols = st.sidebar.columns(3)
+   nav_cols = st.sidebar.columns(2)
 
 for i in range(len(questions)):
     label = f"{i + 1}"
@@ -353,7 +353,7 @@ for i in range(len(questions)):
     if i in st.session_state.marked:
         label += "🚩"
 
-    with nav_cols[i % 3]:
+    with nav_cols[i % 2]:
         if st.button(label, key=f"nav_{i}"):
             st.session_state.current_question = i
             st.session_state.review_mode = False
