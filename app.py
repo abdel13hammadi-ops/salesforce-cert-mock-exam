@@ -1,5 +1,6 @@
 import json
 import time
+import random
 from collections import defaultdict
 import streamlit as st
 
@@ -16,7 +17,7 @@ def load_questions():
     with open(QUESTION_FILE, "r") as file:
         return json.load(file)
 
-questions = load_questions()
+all_questions = load_questions()
 
 defaults = {
     "started": False,
@@ -26,12 +27,24 @@ defaults = {
     "answers": {},
     "marked": set(),
     "start_time": None,
-    "review_filter": "All Questions"
+    "review_filter": "All Questions",
+    "randomize": True,
+    "question_order": []
 }
 
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+def get_questions():
+    if not st.session_state.question_order:
+        st.session_state.question_order = list(range(len(all_questions)))
+        if st.session_state.randomize:
+            random.shuffle(st.session_state.question_order)
+
+    return [all_questions[i] for i in st.session_state.question_order]
+
+questions = get_questions()
 
 def normalize_answer(answer):
     if answer is None:
@@ -60,7 +73,7 @@ st.title("Salesforce Admin Mock Exam Simulator")
 if not st.session_state.started:
     st.header("Exam Instructions")
     st.write(f"Time limit: {EXAM_MINUTES} minutes")
-    st.write(f"Questions: {len(questions)}")
+    st.write(f"Questions: {len(all_questions)}")
     st.write(f"Passing score: {PASSING_SCORE}%")
 
     st.write("""
@@ -72,9 +85,15 @@ if not st.session_state.started:
     - Explanations will appear only after submission.
     """)
 
+    st.session_state.randomize = st.checkbox(
+        "Randomize question order",
+        value=st.session_state.randomize
+    )
+
     if st.button("Start Exam"):
         st.session_state.started = True
         st.session_state.start_time = time.time()
+        st.session_state.question_order = []
         st.rerun()
 
 elif not st.session_state.submitted:
