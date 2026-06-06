@@ -165,5 +165,173 @@
     "options": ["Dynamic Dashboard", "Static Dashboard", "Joined Report", "Bucket Field"],
     "answers": ["Dynamic Dashboard"],
     "explanation": "Dynamic dashboards show data according to the running user's own access permissions."
+  },
+  {
+    "id": 16,
+    "exam": "Salesforce Admin",
+    "topic": "Security and Access",
+    "difficulty": "Medium",
+    "question": "An admin needs to make an object completely unavailable to a group of users. What should the admin modify?",
+    "type": "single",
+    "options": ["Object permissions on the profile or permission set", "Page layout assignment", "Record type assignment", "Compact layout"],
+    "answers": ["Object permissions on the profile or permission set"],
+    "explanation": "Object permissions determine whether users can create, read, edit, or delete records for an object."
+  },
+  {
+    "id": 17,
+    "exam": "Salesforce Admin",
+    "topic": "Configuration and Setup",
+    "difficulty": "Medium",
+    "question": "A new employee needs Salesforce access. What must the admin create first?",
+    "type": "single",
+    "options": ["User record", "Queue", "Sharing rule", "Dashboard"],
+    "answers": ["User record"],
+    "explanation": "A user record is required for someone to log in and access Salesforce."
+  },
+  {
+    "id": 18,
+    "exam": "Salesforce Admin",
+    "topic": "Object Manager and Lightning App Builder",
+    "difficulty": "Hard",
+    "question": "Which two components can be customized on a Lightning record page?",
+    "type": "multiple",
+    "select_count": 2,
+    "options": ["Related lists", "Highlights panel", "Company fiscal year", "Password policy"],
+    "answers": ["Related lists", "Highlights panel"],
+    "explanation": "Lightning record pages can include components such as related lists and highlights panels. Fiscal year and password policy are setup-level settings."
+  },
+  {
+    "id": 19,
+    "exam": "Salesforce Admin",
+    "topic": "Data and Analytics Management",
+    "difficulty": "Hard",
+    "question": "An admin needs to update 75,000 existing Account records. Which tool is most appropriate?",
+    "type": "single",
+    "options": ["Data Loader", "Data Import Wizard", "App Launcher", "Report Builder"],
+    "answers": ["Data Loader"],
+    "explanation": "Data Loader is appropriate for larger data operations and supports insert, update, upsert, delete, and export."
+  },
+  {
+    "id": 20,
+    "exam": "Salesforce Admin",
+    "topic": "Reports and Dashboards",
+    "difficulty": "Medium",
+    "question": "A report needs to show Accounts with or without related Opportunities. Which report type should the admin consider?",
+    "type": "single",
+    "options": ["Custom Report Type", "Tabular Report Only", "Dashboard Component", "Validation Rule"],
+    "answers": ["Custom Report Type"],
+    "explanation": "Custom report types allow admins to define object relationships, including records with or without related records."
+  },
+  {
+    "id": 21,
+    "exam": "Salesforce Admin",
+    "topic": "Workflow/Process Automation",
+    "difficulty": "Medium",
+    "question": "A manager must approve discount requests before an opportunity is closed. What should the admin configure?",
+    "type": "single",
+    "options": ["Approval Process", "Assignment Rule", "Auto-Response Rule", "Duplicate Rule"],
+    "answers": ["Approval Process"],
+    "explanation": "Approval processes route records to designated approvers based on defined criteria."
+  },
+  {
+    "id": 22,
+    "exam": "Salesforce Admin",
+    "topic": "Security and Access",
+    "difficulty": "Medium",
+    "question": "The organization-wide default for Cases is Private. Support managers need access to cases owned by their teams. Which feature commonly supports this requirement?",
+    "type": "single",
+    "options": ["Role Hierarchy", "Page Layouts", "Compact Layouts", "Validation Rules"],
+    "answers": ["Role Hierarchy"],
+    "explanation": "Role hierarchy can provide managers access to records owned by users below them, depending on object settings."
+  },
+  {
+    "id": 23,
+    "exam": "Salesforce Admin",
+    "topic": "Sales and Marketing Applications",
+    "difficulty": "Medium",
+    "question": "Marketing wants to measure the effectiveness of trade shows and email promotions. Which object should be used?",
+    "type": "single",
+    "options": ["Campaign", "Case", "Contract", "Asset"],
+    "answers": ["Campaign"],
+    "explanation": "Campaigns track marketing initiatives and can relate to leads, contacts, and opportunities."
+  },
+  {
+    "id": 24,
+    "exam": "Salesforce Admin",
+    "topic": "Service and Support Applications",
+    "difficulty": "Hard",
+    "question": "Which two features help automatically route cases to the right support team?",
+    "type": "multiple",
+    "select_count": 2,
+    "options": ["Assignment Rules", "Queues", "Dashboard Subscriptions", "Compact Layouts"],
+    "answers": ["Assignment Rules", "Queues"],
+    "explanation": "Assignment rules determine ownership based on criteria, and queues hold records for groups of users to work."
+  },
+  {
+    "id": 25,
+    "exam": "Salesforce Admin",
+    "topic": "Productivity and Collaboration",
+    "difficulty": "Medium",
+    "question": "Users need quick access to frequently used records and lists from the navigation bar. What should the admin configure?",
+    "type": "single",
+    "options": ["Lightning App Navigation", "Validation Rule", "Duplicate Rule", "Sharing Rule"],
+    "answers": ["Lightning App Navigation"],
+    "explanation": "Lightning app navigation controls which items appear in the app navigation bar."
+  },
+  {
+    "id": 26,
+    "exam": "Salesforce Admin",
+    "topic": "Configuration and Setup",
+    "difficulty": "Hard",
+    "question": "Which two settings can be configured in Company Information?",
+    "type": "multiple",
+    "select_count": 2,
+    "options": ["Default locale", "Fiscal year", "Field-level security", "Approval steps"],
+    "answers": ["Default locale", "Fiscal year"],
+    "explanation": "Company Information includes org-wide settings such as locale and fiscal year. Field security and approval steps are configured elsewhere."
+  },
+  {
+    "id": 27,
+    "exam": "Salesforce Admin",
+    "topic": "Object Manager and Lightning App Builder",
+    "difficulty": "Medium",
+    "question": "An admin wants users to see the most important fields at the top of a record page in Salesforce mobile and Lightning Experience. What should be configured?",
+    "type": "single",
+    "options": ["Compact Layout", "Sharing Rule", "Queue", "Validation Rule"],
+    "answers": ["Compact Layout"],
+    "explanation": "Compact layouts control the key fields displayed in highlights panels and mobile record headers."
+  },
+  {
+    "id": 28,
+    "exam": "Salesforce Admin",
+    "topic": "Data and Analytics Management",
+    "difficulty": "Medium",
+    "question": "An admin wants to prevent duplicate Accounts from being created. Which feature should be configured?",
+    "type": "single",
+    "options": ["Duplicate Rules and Matching Rules", "Role Hierarchy", "Record Types", "Queues"],
+    "answers": ["Duplicate Rules and Matching Rules"],
+    "explanation": "Matching rules define duplicate criteria, and duplicate rules determine what happens when duplicates are found."
+  },
+  {
+    "id": 29,
+    "exam": "Salesforce Admin",
+    "topic": "Reports and Dashboards",
+    "difficulty": "Hard",
+    "question": "A user wants to group report data by ranges of opportunity amount without creating a custom field. What should the admin recommend?",
+    "type": "single",
+    "options": ["Bucket Field", "Formula Field", "Roll-Up Summary Field", "Joined Report"],
+    "answers": ["Bucket Field"],
+    "explanation": "Bucket fields group report values into categories directly in the report without creating a field on the object."
+  },
+  {
+    "id": 30,
+    "exam": "Salesforce Admin",
+    "topic": "Workflow/Process Automation",
+    "difficulty": "Hard",
+    "question": "A flow should update a field on the same record before it is saved. Which flow type is generally most efficient?",
+    "type": "single",
+    "options": ["Before-Save Record-Triggered Flow", "Screen Flow", "Scheduled Flow", "Autolaunched Flow from Apex"],
+    "answers": ["Before-Save Record-Triggered Flow"],
+    "explanation": "Before-save record-triggered flows are optimized for fast updates to the triggering record before it is saved."
   }
 ]
