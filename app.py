@@ -2,12 +2,16 @@ import json
 import time
 import random
 from collections import defaultdict
+
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 
+CONFIG_FILE = "exam_config.json"
+
+
 def load_config():
-    with open("exam_config.json", "r") as file:
+    with open(CONFIG_FILE, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
@@ -25,7 +29,7 @@ QUESTION_FILE = config["question_file"]
 
 
 def load_questions():
-    with open(QUESTION_FILE, "r") as file:
+    with open(QUESTION_FILE, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
@@ -55,6 +59,7 @@ def get_questions():
         st.session_state.question_order = list(range(len(all_questions)))
         if st.session_state.randomize_questions:
             random.shuffle(st.session_state.question_order)
+
     return [all_questions[i] for i in st.session_state.question_order]
 
 
@@ -67,6 +72,7 @@ def get_options(q_index, q):
         if st.session_state.randomize_choices:
             random.shuffle(options)
         st.session_state.choice_orders[q_index] = options
+
     return st.session_state.choice_orders[q_index]
 
 
@@ -76,19 +82,15 @@ def is_correct(user_answer, correct_answers):
 
 def calculate_breakdown(field):
     stats = defaultdict(lambda: {"correct": 0, "total": 0})
+
     for i, q in enumerate(questions):
         value = q.get(field, "Uncategorized")
         stats[value]["total"] += 1
+
         if is_correct(st.session_state.answers.get(i, []), q["answers"]):
             stats[value]["correct"] += 1
+
     return stats
-
-
-def domain_counts():
-    counts = defaultdict(int)
-    for q in all_questions:
-        counts[q.get("topic", "Uncategorized")] += 1
-    return counts
 
 
 def reset_exam():
@@ -101,79 +103,138 @@ def reset_exam():
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 1.1rem; max-width: 1180px;}
-    [data-testid="stSidebar"] {background-color: #f7f8fa;}
-    .exam-shell {
-        border: 1px solid #c9cdd3;
-        border-radius: 6px;
+    .block-container {
+        max-width: 1120px;
+        padding-top: 2rem !important;
+        padding-bottom: 2rem !important;
+    }
+
+    header[data-testid="stHeader"] {
+        height: 0px;
+    }
+
+    .exam-banner {
+        background: #16325c;
+        color: white;
+        padding: 18px 22px;
+        border-radius: 8px 8px 0 0;
+        font-size: 27px;
+        font-weight: 700;
+        line-height: 1.25;
+        margin-top: 10px;
+    }
+
+    .exam-sub-banner {
+        background: #f4f6f9;
+        border: 1px solid #d8dde6;
+        border-top: none;
+        padding: 12px 20px;
+        border-radius: 0 0 8px 8px;
+        margin-bottom: 30px;
+        color: #16325c;
+        font-size: 15px;
+    }
+
+    .exam-card {
+        border: 1px solid #d8dde6;
+        border-radius: 8px;
+        padding: 18px 20px;
         background: #ffffff;
-        box-shadow: 0 1px 2px rgba(0,0,0,.06);
+        margin-bottom: 18px;
+    }
+
+    .question-card {
+        border: 1px solid #d8dde6;
+        border-radius: 8px;
+        padding: 22px;
+        background: #ffffff;
+        margin-top: 12px;
+        margin-bottom: 18px;
+    }
+
+    .status-strip {
+        background: #f8f9fb;
+        border: 1px solid #d8dde6;
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 15px;
+    }
+
+    section[data-testid="stSidebar"] > div:first-child {
+        padding-top: 0.75rem;
+    }
+
+    .timer-sticky {
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        background: #ffffff;
+        padding-top: 4px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid #d8dde6;
         margin-bottom: 14px;
     }
-    .exam-topbar {
-        background: #243447;
-        color: #ffffff;
-        padding: 12px 18px;
-        border-radius: 6px 6px 0 0;
-        font-size: 20px;
+
+    .timer-label {
         font-weight: 700;
+        font-size: 16px;
+        margin-bottom: 7px;
+        color: #1f2937;
     }
-    .exam-subbar {
-        background: #eef2f7;
-        color: #23313f;
-        padding: 10px 18px;
-        border-top: 1px solid #c9cdd3;
-        border-bottom: 1px solid #c9cdd3;
+
+    .timer-box {
+        background: #fff4d6;
+        border: 1px solid #e0b84f;
+        border-radius: 8px;
+        padding: 12px;
+        text-align: center;
+        font-size: 27px;
+        font-weight: 800;
+        color: #1f2937;
+        letter-spacing: 1px;
+    }
+
+    .question-nav-title {
+        font-weight: 700;
+        font-size: 16px;
+        margin-top: 10px;
+        margin-bottom: 8px;
+        color: #1f2937;
+    }
+
+    .small-help {
+        color: #5f6368;
+        font-size: 13px;
+        margin-bottom: 8px;
+    }
+
+    section[data-testid="stSidebar"] div.stButton > button {
+        width: 100%;
+        padding: 0.35rem 0.5rem;
         font-size: 14px;
     }
-    .exam-body {
-        padding: 18px;
+
+    div.stButton > button {
+        border-radius: 6px;
+        font-weight: 600;
     }
-    .timer-box {
-        background:#fff4d6;
-        border:1px solid #d29b00;
-        border-radius:6px;
-        padding:12px;
-        text-align:center;
-        font-size:26px;
-        font-weight:800;
-        color:#1f2933;
-    }
-    .qcard {
-        border:1px solid #d6d9de;
-        border-radius:6px;
-        padding:20px;
-        background:white;
-        margin-top:12px;
-    }
-    .qid {
-        color:#5f6670;
-        font-size:14px;
-        font-weight:600;
-        margin-bottom:8px;
-    }
-    .domain-pill {
-        display:inline-block;
-        background:#eef2f7;
-        border:1px solid #d4dae3;
-        border-radius:18px;
-        padding:4px 10px;
-        font-size:12px;
-        color:#3c4653;
-        margin-bottom:10px;
-    }
-    .small-note {font-size:13px; color:#5f6670;}
-    .nav-legend {font-size: 13px; color:#4b5563; line-height:1.4;}
     </style>
     """,
     unsafe_allow_html=True
 )
 
+
 st.markdown(
     f"""
-    <div class="exam-shell">
-      <div class="exam-topbar">{config["exam_title"]}</div>
-      <div class="exam-subbar">{config["certification"]} &nbsp;|&nbsp; {len(all_questions)} questions &nbsp;|&nbsp; {EXAM_MINUTES} minutes &nbsp;|&nbsp; Passing score: {PASSING_SCORE}%</div>
+    <div class="exam-banner">
+        {config["exam_title"]}
+    </div>
+
+    <div class="exam-sub-banner">
+        {config["certification"]} |
+        {len(all_questions)} questions |
+        {EXAM_MINUTES} minutes |
+        Passing score: {PASSING_SCORE}%
     </div>
     """,
     unsafe_allow_html=True
@@ -183,33 +244,40 @@ st.markdown(
 if not st.session_state.started:
     st.header("Exam Instructions")
 
-    st.write("This simulator uses the current Platform Administrator-style structure, including Agentforce AI.")
-    st.write("Answers and explanations are hidden until after final submission.")
+    st.markdown(
+        """
+        <div class="exam-card">
+            <p>This simulator uses the current Platform Administrator-style structure, including Agentforce AI.</p>
+            <p>Answers and explanations are hidden until after final submission.</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Questions", len(all_questions))
     c2.metric("Time Limit", f"{EXAM_MINUTES} min")
     c3.metric("Passing Score", f"{PASSING_SCORE}%")
 
-    st.subheader("Domain Breakdown")
-    counts = domain_counts()
+    st.subheader("Exam Domain Breakdown")
 
     for section in config["sections"]:
-        name = section["name"]
-        st.write(
-            f"**{name}:** {section['weight']}% target, "
-            f"{section['target_questions']} questions planned, "
-            f"{counts.get(name, 0)} in this mock exam"
-        )
+        domain = section.get("name", section) if isinstance(section, dict) else section
+        weight = section.get("weight", None) if isinstance(section, dict) else None
+        count = section.get("questions", None) if isinstance(section, dict) else None
+
+        if weight is not None and count is not None:
+            st.write(f"- **{domain}** — {weight}% / {count} questions")
+        else:
+            st.write(f"- **{domain}**")
 
     st.info(
         """
-        Exam behavior:
         - Single-answer questions use radio buttons.
-        - Multiple-answer questions use checkboxes and show how many answers to choose.
-        - Use Mark for Review to flag questions.
-        - Use Review / Submit before final submission.
-        - The timer auto-submits when time expires.
+        - Multiple-answer questions use checkboxes.
+        - You may mark questions for review and return before submitting.
+        - Unanswered questions are allowed, but they count as incorrect.
+        - Explanations appear only after final submission.
         """
     )
 
@@ -232,6 +300,7 @@ if not st.session_state.started:
         st.session_state.marked = set()
         st.session_state.current_question = 0
         st.session_state.review_mode = False
+        st.session_state.submitted = False
         st.rerun()
 
 
@@ -248,31 +317,31 @@ elif not st.session_state.submitted:
     mins = int(remaining // 60)
     secs = int(remaining % 60)
 
-    st.sidebar.markdown("## Time Remaining")
     st.sidebar.markdown(
-        f"<div class='timer-box'>{mins:02d}:{secs:02d}</div>",
+        f"""
+        <div class="timer-sticky">
+            <div class="timer-label">Time Remaining</div>
+            <div class="timer-box">{mins:02d}:{secs:02d}</div>
+        </div>
+        <div class="question-nav-title">Question Navigator</div>
+        <div class="small-help">✓ answered &nbsp;&nbsp; 🚩 marked</div>
+        """,
         unsafe_allow_html=True
     )
 
-    st.sidebar.markdown("## Question Navigator")
-    st.sidebar.markdown(
-        "<div class='nav-legend'>✓ Answered<br>🚩 Marked for review</div>",
-        unsafe_allow_html=True
-    )
-
-    nav_cols = st.sidebar.columns(4)
     for i in range(len(questions)):
-        label = f"{i + 1}"
-        if i in st.session_state.answers:
-            label += "✓"
-        if i in st.session_state.marked:
-            label += "🚩"
+        label = f"Question {i + 1}"
 
-        with nav_cols[i % 4]:
-            if st.button(label, key=f"nav_{i}", use_container_width=True):
-                st.session_state.current_question = i
-                st.session_state.review_mode = False
-                st.rerun()
+        if i in st.session_state.answers:
+            label += " ✓"
+
+        if i in st.session_state.marked:
+            label += " 🚩"
+
+        if st.sidebar.button(label, key=f"nav_{i}"):
+            st.session_state.current_question = i
+            st.session_state.review_mode = False
+            st.rerun()
 
     if st.session_state.review_mode:
         st.header("Review Before Final Submission")
@@ -287,24 +356,30 @@ elif not st.session_state.submitted:
         c3.metric("Marked", marked)
 
         if unanswered > 0:
-            st.warning("You still have unanswered questions. You can submit, but unanswered questions will be scored incorrect.")
+            st.warning(
+                f"You still have {unanswered} unanswered question(s). "
+                "You can submit, but unanswered questions count as incorrect."
+            )
 
         st.divider()
 
         for i in range(len(questions)):
             status = "Answered" if i in st.session_state.answers else "Unanswered"
+
             if i in st.session_state.marked:
                 status += " | 🚩 Marked"
+
             st.write(f"Question {i + 1}: {status}")
 
         col1, col2 = st.columns(2)
+
         with col1:
-            if st.button("Return to Exam", use_container_width=True):
+            if st.button("Return to Exam"):
                 st.session_state.review_mode = False
                 st.rerun()
 
         with col2:
-            if st.button("Final Submit", type="primary", use_container_width=True):
+            if st.button("Final Submit", type="primary"):
                 st.session_state.submitted = True
                 st.rerun()
 
@@ -313,19 +388,31 @@ elif not st.session_state.submitted:
         q = questions[q_index]
         options = get_options(q_index, q)
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Question", f"{q_index + 1} of {len(questions)}")
-        c2.metric("Answered", len(st.session_state.answers))
-        c3.metric("Marked", len(st.session_state.marked))
-        c4.metric("Unanswered", len(questions) - len(st.session_state.answers))
+        answered = len(st.session_state.answers)
+        marked = len(st.session_state.marked)
+
+        st.markdown(
+            f"""
+            <div class="status-strip">
+                <strong>Question:</strong> {q_index + 1} of {len(questions)}
+                &nbsp;&nbsp; | &nbsp;&nbsp;
+                <strong>Answered:</strong> {answered}
+                &nbsp;&nbsp; | &nbsp;&nbsp;
+                <strong>Marked:</strong> {marked}
+                &nbsp;&nbsp; | &nbsp;&nbsp;
+                <strong>Time:</strong> {mins:02d}:{secs:02d}
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
         st.progress((q_index + 1) / len(questions))
 
-        st.markdown("<div class='qcard'>", unsafe_allow_html=True)
-        st.markdown(f"<div class='qid'>Question {q_index + 1}</div>", unsafe_allow_html=True)
-        st.markdown(
-            f"<span class='domain-pill'>{q.get('topic', 'Uncategorized')} • {q.get('difficulty', 'N/A')}</span>",
-            unsafe_allow_html=True
+        st.markdown('<div class="question-card">', unsafe_allow_html=True)
+
+        st.caption(
+            f"Domain: {q.get('topic', 'Uncategorized')} | "
+            f"Difficulty: {q.get('difficulty', 'N/A')}"
         )
 
         st.subheader(q["question"])
@@ -333,12 +420,14 @@ elif not st.session_state.submitted:
         question_type = q.get("type", "single")
 
         if question_type == "multiple":
-            select_count = q.get("select_count", len(q["answers"]))
+            select_count = q.get("select_count", "all correct")
             st.warning(f"Choose {select_count} answers.")
+
             selected_answers = []
 
             for option in options:
                 checked = option in st.session_state.answers.get(q_index, [])
+
                 if st.checkbox(option, value=checked, key=f"q_{q_index}_{option}"):
                     selected_answers.append(option)
 
@@ -346,11 +435,6 @@ elif not st.session_state.submitted:
                 st.session_state.answers[q_index] = selected_answers
             elif q_index in st.session_state.answers:
                 del st.session_state.answers[q_index]
-
-            if len(selected_answers) > select_count:
-                st.error(f"You selected {len(selected_answers)} answers. This question asks for {select_count}.")
-            elif 0 < len(selected_answers) < select_count:
-                st.warning(f"You selected {len(selected_answers)} answer(s). This question asks for {select_count}.")
 
         else:
             previous_answer = st.session_state.answers.get(q_index, [])
@@ -371,27 +455,27 @@ elif not st.session_state.submitted:
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            if st.button("Previous", use_container_width=True) and q_index > 0:
+            if st.button("Previous") and q_index > 0:
                 st.session_state.current_question -= 1
                 st.rerun()
 
         with col2:
-            if st.button("Next", use_container_width=True) and q_index < len(questions) - 1:
+            if st.button("Next") and q_index < len(questions) - 1:
                 st.session_state.current_question += 1
                 st.rerun()
 
         with col3:
             if q_index in st.session_state.marked:
-                if st.button("Unmark", use_container_width=True):
+                if st.button("Unmark"):
                     st.session_state.marked.remove(q_index)
                     st.rerun()
             else:
-                if st.button("Mark for Review", use_container_width=True):
+                if st.button("Mark for Review"):
                     st.session_state.marked.add(q_index)
                     st.rerun()
 
         with col4:
-            if st.button("Review / Submit", type="primary", use_container_width=True):
+            if st.button("Review / Submit", type="primary"):
                 st.session_state.review_mode = True
                 st.rerun()
 
@@ -400,7 +484,9 @@ else:
     correct = 0
 
     for i, q in enumerate(questions):
-        if is_correct(st.session_state.answers.get(i, []), q["answers"]):
+        user_answer = st.session_state.answers.get(i, [])
+
+        if is_correct(user_answer, q["answers"]):
             correct += 1
 
     score = round((correct / len(questions)) * 100, 2)
@@ -418,28 +504,25 @@ else:
         st.error("FAIL")
 
     st.divider()
+
     st.header("Performance Breakdown")
 
-    st.subheader("By Exam Domain")
-    for section in config["sections"]:
-        topic = section["name"]
-        stats = calculate_breakdown("topic").get(topic, {"correct": 0, "total": 0})
-        if stats["total"] == 0:
-            percent = 0
-        else:
-            percent = round((stats["correct"] / stats["total"]) * 100, 2)
-
+    st.subheader("By Domain")
+    for topic, data in calculate_breakdown("topic").items():
+        percent = round((data["correct"] / data["total"]) * 100, 2)
         st.write(
-            f"**{topic}:** {stats['correct']} / {stats['total']} correct "
-            f"({percent}%) — target weight {section['weight']}%"
+            f"**{topic}:** {data['correct']} / {data['total']} correct ({percent}%)"
         )
 
     st.subheader("By Difficulty")
     for difficulty, data in calculate_breakdown("difficulty").items():
         percent = round((data["correct"] / data["total"]) * 100, 2)
-        st.write(f"**{difficulty}:** {data['correct']} / {data['total']} correct ({percent}%)")
+        st.write(
+            f"**{difficulty}:** {data['correct']} / {data['total']} correct ({percent}%)"
+        )
 
     st.divider()
+
     st.header("Answer Review")
 
     review_filter = st.radio(
@@ -468,11 +551,15 @@ else:
             f"Domain: {q.get('topic', 'Uncategorized')} | "
             f"Difficulty: {q.get('difficulty', 'N/A')}"
         )
+
         st.write(q["question"])
-        st.write("Your answer: " + (", ".join(user_answer) if user_answer else "No answer selected"))
+        st.write(
+            "Your answer: "
+            + (", ".join(user_answer) if user_answer else "No answer selected")
+        )
         st.write("Correct answer: " + ", ".join(correct_answers))
         st.info(q["explanation"])
         st.divider()
 
-    if st.button("Restart Exam", type="primary"):
+    if st.button("Restart Exam"):
         reset_exam()
