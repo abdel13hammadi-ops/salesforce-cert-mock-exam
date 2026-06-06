@@ -34,8 +34,10 @@ for key, value in defaults.items():
 def normalize_answer(answer):
     if answer is None:
         return []
+
     if isinstance(answer, list):
         return answer
+
     return [answer]
 
 def is_correct(user_answer, correct_answers):
@@ -43,19 +45,37 @@ def is_correct(user_answer, correct_answers):
 
 st.title("Salesforce Certification Mock Exam")
 
+# =========================
+# START SCREEN
+# =========================
+
 if not st.session_state.started:
+
     st.header("Exam Instructions")
+
     st.write(f"Time limit: {EXAM_MINUTES} minutes")
     st.write(f"Questions: {len(questions)}")
     st.write(f"Passing score: {PASSING_SCORE}%")
-    st.write("You may mark questions for review and return to them before submitting.")
+
+    st.write("""
+    Instructions:
+    - Read each question carefully.
+    - Some questions may have multiple correct answers.
+    - You can mark questions for review.
+    - Review all answers before final submission.
+    """)
 
     if st.button("Start Exam"):
         st.session_state.started = True
         st.session_state.start_time = time.time()
         st.rerun()
 
+# =========================
+# EXAM MODE
+# =========================
+
 elif not st.session_state.submitted:
+
     elapsed = time.time() - st.session_state.start_time
     remaining = (EXAM_MINUTES * 60) - elapsed
 
@@ -66,24 +86,33 @@ elif not st.session_state.submitted:
     mins = int(remaining // 60)
     secs = int(remaining % 60)
 
+    # SIDEBAR
+
     st.sidebar.header("Exam Timer")
     st.sidebar.subheader(f"{mins:02d}:{secs:02d}")
 
     st.sidebar.header("Question Navigator")
 
     for i in range(len(questions)):
+
         label = f"Q{i + 1}"
+
         if i in st.session_state.answers:
             label += " ✓"
+
         if i in st.session_state.marked:
             label += " 🚩"
 
         if st.sidebar.button(label, key=f"nav_{i}"):
+
             st.session_state.current_question = i
             st.session_state.review_mode = False
             st.rerun()
 
+    # REVIEW SCREEN
+
     if st.session_state.review_mode:
+
         st.header("Review Before Submit")
 
         answered = len(st.session_state.answers)
@@ -93,10 +122,16 @@ elif not st.session_state.submitted:
         st.write(f"Unanswered: {unanswered}")
         st.write(f"Marked for Review: {len(st.session_state.marked)}")
 
+        st.divider()
+
         for i in range(len(questions)):
+
             status = "Answered" if i in st.session_state.answers else "Unanswered"
-            flag = " | Marked for Review" if i in st.session_state.marked else ""
-            st.write(f"Question {i + 1}: {status}{flag}")
+
+            if i in st.session_state.marked:
+                status += " | 🚩 Marked for Review"
+
+            st.write(f"Question {i + 1}: {status}")
 
         col1, col2 = st.columns(2)
 
@@ -110,20 +145,31 @@ elif not st.session_state.submitted:
                 st.session_state.submitted = True
                 st.rerun()
 
+    # QUESTION SCREEN
+
     else:
+
         q_index = st.session_state.current_question
         q = questions[q_index]
 
         st.write(f"Time Remaining: **{mins:02d}:{secs:02d}**")
         st.write(f"Question {q_index + 1} of {len(questions)}")
-        st.write(f"Answered: {len(st.session_state.answers)} | Marked: {len(st.session_state.marked)}")
+
+        st.write(
+            f"Answered: {len(st.session_state.answers)} | "
+            f"Marked: {len(st.session_state.marked)}"
+        )
+
         st.progress((q_index + 1) / len(questions))
 
         st.subheader(q["question"])
 
         question_type = q.get("type", "single")
 
+        # MULTIPLE ANSWER QUESTION
+
         if question_type == "multiple":
+
             st.write(f"Select {q.get('select_count', 'all that apply')} answers.")
 
             selected = st.multiselect(
@@ -135,54 +181,76 @@ elif not st.session_state.submitted:
 
             if selected:
                 st.session_state.answers[q_index] = selected
+
             elif q_index in st.session_state.answers:
                 del st.session_state.answers[q_index]
 
+        # SINGLE ANSWER QUESTION
+
         else:
+
             previous_answer = st.session_state.answers.get(q_index, [])
+
             previous_answer = previous_answer[0] if previous_answer else None
 
             selected = st.radio(
                 "Choose one answer:",
                 q["options"],
-                index=q["options"].index(previous_answer) if previous_answer in q["options"] else None,
+                index=q["options"].index(previous_answer)
+                if previous_answer in q["options"]
+                else None,
                 key=f"question_{q_index}"
             )
 
             if selected:
                 st.session_state.answers[q_index] = [selected]
 
+        # BUTTONS
+
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
+
             if st.button("Previous") and q_index > 0:
                 st.session_state.current_question -= 1
                 st.rerun()
 
         with col2:
+
             if st.button("Next") and q_index < len(questions) - 1:
                 st.session_state.current_question += 1
                 st.rerun()
 
         with col3:
+
             if q_index in st.session_state.marked:
+
                 if st.button("Unmark Review"):
                     st.session_state.marked.remove(q_index)
                     st.rerun()
+
             else:
+
                 if st.button("Mark for Review"):
                     st.session_state.marked.add(q_index)
                     st.rerun()
 
         with col4:
+
             if st.button("Review / Submit"):
                 st.session_state.review_mode = True
                 st.rerun()
 
+# =========================
+# RESULTS SCREEN
+# =========================
+
 else:
+
     correct = 0
 
     for i, q in enumerate(questions):
+
         user_answer = st.session_state.answers.get(i, [])
         correct_answers = q["answers"]
 
@@ -192,6 +260,7 @@ else:
     score = round((correct / len(questions)) * 100, 2)
 
     st.header("Exam Results")
+
     st.subheader(f"Score: {score}%")
     st.subheader(f"Correct Answers: {correct} / {len(questions)}")
 
@@ -200,20 +269,46 @@ else:
     else:
         st.error("FAIL")
 
+    st.divider()
+
     st.header("Answer Review")
 
     for i, q in enumerate(questions):
+
         user_answer = st.session_state.answers.get(i, [])
         correct_answers = q["answers"]
 
-        st.subheader(f"Question {i + 1}")
+        result_correct = is_correct(user_answer, correct_answers)
+
+        if result_correct:
+            st.success(f"Question {i + 1} — Correct")
+        else:
+            st.error(f"Question {i + 1} — Incorrect")
+
         st.write(q["question"])
-        st.write("Your answer: " + (", ".join(user_answer) if user_answer else "No answer selected"))
+
+        if result_correct:
+            st.write(
+                "✅ Your answer: " +
+                (", ".join(user_answer) if user_answer else "No answer selected")
+            )
+        else:
+            st.write(
+                "❌ Your answer: " +
+                (", ".join(user_answer) if user_answer else "No answer selected")
+            )
+
         st.write("Correct answer: " + ", ".join(correct_answers))
+
         st.info(q["explanation"])
 
+        st.divider()
+
     if st.button("Restart Exam"):
+
         for key in list(defaults.keys()):
+
             if key in st.session_state:
                 del st.session_state[key]
+
         st.rerun()
