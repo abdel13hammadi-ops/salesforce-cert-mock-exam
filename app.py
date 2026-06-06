@@ -9,9 +9,10 @@ st.set_page_config(
 
 PASSING_SCORE = 65
 EXAM_MINUTES = 105
+QUESTION_FILE = "questions/mock_exam_1.json"
 
 def load_questions():
-    with open("questions/mock_exam_1.json", "r") as file:
+    with open(QUESTION_FILE, "r") as file:
         return json.load(file)
 
 questions = load_questions()
@@ -29,6 +30,16 @@ defaults = {
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+def normalize_answer(answer):
+    if answer is None:
+        return []
+    if isinstance(answer, list):
+        return answer
+    return [answer]
+
+def is_correct(user_answer, correct_answers):
+    return set(normalize_answer(user_answer)) == set(correct_answers)
 
 st.title("Salesforce Certification Mock Exam")
 
@@ -59,6 +70,7 @@ elif not st.session_state.submitted:
     st.sidebar.subheader(f"{mins:02d}:{secs:02d}")
 
     st.sidebar.header("Question Navigator")
+
     for i in range(len(questions)):
         label = f"Q{i + 1}"
         if i in st.session_state.answers:
@@ -109,16 +121,36 @@ elif not st.session_state.submitted:
 
         st.subheader(q["question"])
 
-        selected = st.radio(
-            "Choose one answer:",
-            q["options"],
-            index=q["options"].index(st.session_state.answers[q_index])
-            if q_index in st.session_state.answers else None,
-            key=f"question_{q_index}"
-        )
+        question_type = q.get("type", "single")
 
-        if selected:
-            st.session_state.answers[q_index] = selected
+        if question_type == "multiple":
+            st.write(f"Select {q.get('select_count', 'all that apply')} answers.")
+
+            selected = st.multiselect(
+                "Choose answers:",
+                q["options"],
+                default=st.session_state.answers.get(q_index, []),
+                key=f"question_{q_index}"
+            )
+
+            if selected:
+                st.session_state.answers[q_index] = selected
+            elif q_index in st.session_state.answers:
+                del st.session_state.answers[q_index]
+
+        else:
+            previous_answer = st.session_state.answers.get(q_index, [])
+            previous_answer = previous_answer[0] if previous_answer else None
+
+            selected = st.radio(
+                "Choose one answer:",
+                q["options"],
+                index=q["options"].index(previous_answer) if previous_answer in q["options"] else None,
+                key=f"question_{q_index}"
+            )
+
+            if selected:
+                st.session_state.answers[q_index] = [selected]
 
         col1, col2, col3, col4 = st.columns(4)
 
@@ -151,7 +183,10 @@ else:
     correct = 0
 
     for i, q in enumerate(questions):
-        if st.session_state.answers.get(i) == q["answer"]:
+        user_answer = st.session_state.answers.get(i, [])
+        correct_answers = q["answers"]
+
+        if is_correct(user_answer, correct_answers):
             correct += 1
 
     score = round((correct / len(questions)) * 100, 2)
@@ -168,15 +203,17 @@ else:
     st.header("Answer Review")
 
     for i, q in enumerate(questions):
-        user_answer = st.session_state.answers.get(i, "No answer selected")
+        user_answer = st.session_state.answers.get(i, [])
+        correct_answers = q["answers"]
 
         st.subheader(f"Question {i + 1}")
         st.write(q["question"])
-        st.write(f"Your answer: {user_answer}")
-        st.write(f"Correct answer: {q['answer']}")
+        st.write("Your answer: " + (", ".join(user_answer) if user_answer else "No answer selected"))
+        st.write("Correct answer: " + ", ".join(correct_answers))
         st.info(q["explanation"])
 
     if st.button("Restart Exam"):
-        for key in defaults:
-            del st.session_state[key]
+        for key in list(defaults.keys()):
+            if key in st.session_state:
+                del st.session_state[key]
         st.rerun()
