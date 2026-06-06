@@ -342,23 +342,23 @@ elif not st.session_state.submitted:
         unsafe_allow_html=True
     )
 
-   nav_cols = st.sidebar.columns(2)
+      nav_cols = st.sidebar.columns(2)
 
-for i in range(len(questions)):
-    label = f"{i + 1}"
+    for i in range(len(questions)):
+        label = f"{i + 1}"
 
-    if i in st.session_state.answers:
-        label += "✓"
+        if i in st.session_state.answers:
+            label += "✓"
 
-    if i in st.session_state.marked:
-        label += "🚩"
+        if i in st.session_state.marked:
+            label += "🚩"
 
-    with nav_cols[i % 2]:
-        if st.button(label, key=f"nav_{i}"):
-            st.session_state.current_question = i
-            st.session_state.review_mode = False
-            st.rerun()
-
+        with nav_cols[i % 2]:
+            if st.button(label, key=f"nav_{i}"):
+                st.session_state.current_question = i
+                st.session_state.review_mode = False
+                st.rerun()
+                
     if st.session_state.review_mode:
         st.header("Review Before Final Submission")
 
