@@ -1,672 +1,1108 @@
 [
   {
     "id": 1,
-    "exam": "Salesforce Admin",
-    "topic": "Security and Access",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Data and Analytics Management",
     "difficulty": "Medium",
-    "question": "A sales manager needs to see all opportunities owned by users below them in the role hierarchy. What should the admin configure?",
+    "question": "An admin needs to update 75,000 existing Account records with corrected industry values. Which tool is most appropriate?",
     "type": "single",
-    "options": ["Profiles", "Role Hierarchy", "Permission Sets", "Queues"],
-    "answers": ["Role Hierarchy"],
-    "explanation": "Role hierarchy allows managers to access records owned by users below them when record access settings allow it."
+    "options": [
+      "Data Loader",
+      "Data Import Wizard",
+      "Report Builder",
+      "Schema Builder"
+    ],
+    "answers": [
+      "Data Loader"
+    ],
+    "explanation": "Data Loader is designed for larger data operations and supports update, insert, upsert, delete, and export."
   },
   {
     "id": 2,
-    "exam": "Salesforce Admin",
-    "topic": "Security and Access",
-    "difficulty": "Hard",
-    "question": "Which two features can grant additional access to a user without changing the user's profile?",
-    "type": "multiple",
-    "select_count": 2,
-    "options": ["Permission Sets", "Sharing Rules", "Page Layouts", "Validation Rules"],
-    "answers": ["Permission Sets", "Sharing Rules"],
-    "explanation": "Permission sets can grant additional object or field permissions. Sharing rules can extend record-level access."
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Data and Analytics Management",
+    "difficulty": "Medium",
+    "question": "A team wants to import 30,000 Lead records and use built-in duplicate handling from the browser. Which tool should the admin use?",
+    "type": "single",
+    "options": [
+      "Data Import Wizard",
+      "Data Loader",
+      "Data Export Service",
+      "Change Sets"
+    ],
+    "answers": [
+      "Data Import Wizard"
+    ],
+    "explanation": "Data Import Wizard is browser-based, supports common standard objects like Leads, and includes duplicate-handling options."
   },
   {
     "id": 3,
-    "exam": "Salesforce Admin",
-    "topic": "Workflow/Process Automation",
-    "difficulty": "Medium",
-    "question": "Which automation tool should an admin use to create complex business automation with clicks, not code?",
-    "type": "single",
-    "options": ["Flow Builder", "Data Loader", "Schema Builder", "Import Wizard"],
-    "answers": ["Flow Builder"],
-    "explanation": "Flow Builder is Salesforce’s primary declarative automation tool for complex business processes."
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Data and Analytics Management",
+    "difficulty": "Hard",
+    "question": "Which two features help maintain clean data in Salesforce?",
+    "type": "multiple",
+    "options": [
+      "Validation Rules",
+      "Duplicate Rules",
+      "Compact Layouts",
+      "Chatter Groups"
+    ],
+    "answers": [
+      "Validation Rules",
+      "Duplicate Rules"
+    ],
+    "explanation": "Validation rules prevent invalid values from being saved. Duplicate rules help identify or block duplicate records.",
+    "select_count": 2
   },
   {
     "id": 4,
-    "exam": "Salesforce Admin",
-    "topic": "Object Manager and Lightning App Builder",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Data and Analytics Management",
     "difficulty": "Medium",
-    "question": "Users need to track a custom value on Account records. What should the admin create?",
+    "question": "A manager wants to group opportunity amounts into Small, Medium, and Large directly in a report without creating a custom field. What should the admin use?",
     "type": "single",
-    "options": ["Custom Object", "Custom Field", "Custom Profile", "Custom App"],
-    "answers": ["Custom Field"],
-    "explanation": "A custom field stores additional information on an existing object such as Account."
+    "options": [
+      "Bucket Field",
+      "Formula Field",
+      "Roll-Up Summary Field",
+      "Record Type"
+    ],
+    "answers": [
+      "Bucket Field"
+    ],
+    "explanation": "Bucket fields group report values into categories directly within a report."
   },
   {
     "id": 5,
-    "exam": "Salesforce Admin",
+    "exam": "Salesforce Platform Administrator",
     "topic": "Data and Analytics Management",
-    "difficulty": "Medium",
-    "question": "An admin needs to import 40,000 lead records and prevent duplicate records. Which tool is most appropriate?",
+    "difficulty": "Hard",
+    "question": "A report must show Accounts whether or not they have related Opportunities. What should the admin create?",
     "type": "single",
-    "options": ["Data Import Wizard", "AppExchange", "Schema Builder", "Approval Process"],
-    "answers": ["Data Import Wizard"],
-    "explanation": "Data Import Wizard supports importing common standard objects like Leads and includes duplicate handling options."
+    "options": [
+      "Custom Report Type",
+      "Tabular Report",
+      "Dashboard Filter",
+      "Joined Report"
+    ],
+    "answers": [
+      "Custom Report Type"
+    ],
+    "explanation": "Custom report types let admins define object relationships, including records with or without related child records."
   },
   {
     "id": 6,
-    "exam": "Salesforce Admin",
-    "topic": "Reports and Dashboards",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Data and Analytics Management",
     "difficulty": "Medium",
-    "question": "A sales director wants to see total opportunity amount by sales rep and stage. What should the admin create?",
+    "question": "A VP wants a chart showing pipeline total by stage and owner. What should the admin create first?",
     "type": "single",
-    "options": ["Report", "Validation Rule", "Queue", "Permission Set"],
-    "answers": ["Report"],
-    "explanation": "Reports summarize and group Salesforce data, such as opportunity amounts by owner and stage."
+    "options": [
+      "A report grouped by stage and owner",
+      "A validation rule on Opportunity",
+      "A queue for sales reps",
+      "A permission set group"
+    ],
+    "answers": [
+      "A report grouped by stage and owner"
+    ],
+    "explanation": "Dashboards visualize report data, so the underlying report must summarize the data correctly."
   },
   {
     "id": 7,
-    "exam": "Salesforce Admin",
-    "topic": "Security and Access",
-    "difficulty": "Hard",
-    "question": "A user can open an Account record but cannot see the Annual Revenue field. What should the admin check first?",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Data and Analytics Management",
+    "difficulty": "Medium",
+    "question": "An admin wants weekly backup exports of Salesforce data. Which feature should be used?",
     "type": "single",
-    "options": ["Field-Level Security", "Role Hierarchy", "Sharing Rule", "Record Type"],
-    "answers": ["Field-Level Security"],
-    "explanation": "Field-Level Security controls whether users can view or edit individual fields."
+    "options": [
+      "Data Export Service",
+      "Data Import Wizard",
+      "Schema Builder",
+      "Report Subscription"
+    ],
+    "answers": [
+      "Data Export Service"
+    ],
+    "explanation": "Data Export Service can export Salesforce data on a scheduled basis for backup purposes."
   },
   {
     "id": 8,
-    "exam": "Salesforce Admin",
-    "topic": "Configuration and Setup",
-    "difficulty": "Easy",
-    "question": "Where should an admin go to create users, manage company settings, and configure Salesforce features?",
-    "type": "single",
-    "options": ["Setup", "App Launcher", "Chatter", "Recycle Bin"],
-    "answers": ["Setup"],
-    "explanation": "Setup is where admins configure Salesforce settings, users, objects, automation, and security."
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Data and Analytics Management",
+    "difficulty": "Hard",
+    "question": "Which two tools can export Salesforce data?",
+    "type": "multiple",
+    "options": [
+      "Data Loader",
+      "Data Export Service",
+      "Approval Process",
+      "Page Layout Editor"
+    ],
+    "answers": [
+      "Data Loader",
+      "Data Export Service"
+    ],
+    "explanation": "Data Loader can export object data, and Data Export Service can generate full data export files.",
+    "select_count": 2
   },
   {
     "id": 9,
-    "exam": "Salesforce Admin",
-    "topic": "Sales and Marketing Applications",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Data and Analytics Management",
     "difficulty": "Medium",
-    "question": "A sales team wants to track potential revenue and sales stages. Which standard object should they use?",
+    "question": "A dashboard should let users narrow results by region without editing the source reports. What should the admin add?",
     "type": "single",
-    "options": ["Opportunity", "Case", "Campaign", "Contract"],
-    "answers": ["Opportunity"],
-    "explanation": "Opportunities track potential sales, revenue, stages, close dates, and sales pipeline details."
+    "options": [
+      "Dashboard Filter",
+      "Bucket Field",
+      "Joined Report Block",
+      "Compact Layout"
+    ],
+    "answers": [
+      "Dashboard Filter"
+    ],
+    "explanation": "Dashboard filters allow viewers to filter dashboard components by predefined values."
   },
   {
     "id": 10,
-    "exam": "Salesforce Admin",
-    "topic": "Service and Support Applications",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Data and Analytics Management",
     "difficulty": "Medium",
-    "question": "A support team needs to track customer issues and resolutions. Which standard object should be used?",
+    "question": "Users need to receive a report automatically every Monday morning. What should the admin configure?",
     "type": "single",
-    "options": ["Case", "Opportunity", "Campaign", "Lead"],
-    "answers": ["Case"],
-    "explanation": "Cases are used to track customer support issues, service requests, and resolutions."
+    "options": [
+      "Report Subscription",
+      "Data Export",
+      "Assignment Rule",
+      "Duplicate Rule"
+    ],
+    "answers": [
+      "Report Subscription"
+    ],
+    "explanation": "Report subscriptions send report results to users on a schedule."
   },
   {
     "id": 11,
-    "exam": "Salesforce Admin",
-    "topic": "Workflow/Process Automation",
-    "difficulty": "Hard",
-    "question": "Which two automation features can an admin use to enforce business requirements before a record is saved?",
-    "type": "multiple",
-    "select_count": 2,
-    "options": ["Validation Rules", "Before-Save Flow", "Dashboard", "Queue"],
-    "answers": ["Validation Rules", "Before-Save Flow"],
-    "explanation": "Validation rules prevent invalid data from being saved. Before-save flows can update or evaluate data before the record is committed."
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Configuration and Setup",
+    "difficulty": "Easy",
+    "question": "Where does an admin manage company settings, users, security settings, and platform configuration?",
+    "type": "single",
+    "options": [
+      "Setup",
+      "App Launcher",
+      "Chatter",
+      "Recycle Bin"
+    ],
+    "answers": [
+      "Setup"
+    ],
+    "explanation": "Setup is the central area for configuring Salesforce."
   },
   {
     "id": 12,
-    "exam": "Salesforce Admin",
-    "topic": "Object Manager and Lightning App Builder",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Configuration and Setup",
     "difficulty": "Medium",
-    "question": "Different teams need different picklist values and page layouts for the same object. What should the admin use?",
+    "question": "A new employee needs Salesforce access. What must the admin create?",
     "type": "single",
-    "options": ["Record Types", "Queues", "Public Groups", "Dashboard Filters"],
-    "answers": ["Record Types"],
-    "explanation": "Record types allow different business processes, picklist values, and page layouts for the same object."
+    "options": [
+      "User record",
+      "Queue",
+      "Sharing rule",
+      "Campaign"
+    ],
+    "answers": [
+      "User record"
+    ],
+    "explanation": "A user record is required for someone to log in and use Salesforce."
   },
   {
     "id": 13,
-    "exam": "Salesforce Admin",
-    "topic": "Data and Analytics Management",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Configuration and Setup",
     "difficulty": "Medium",
-    "question": "An admin wants to export all Salesforce data weekly for backup. Which feature should be used?",
-    "type": "single",
-    "options": ["Data Export Service", "Report Builder", "Data Import Wizard", "Schema Builder"],
-    "answers": ["Data Export Service"],
-    "explanation": "Data Export Service can export Salesforce data for backup on a scheduled basis."
+    "question": "Which two settings are commonly configured from Company Information?",
+    "type": "multiple",
+    "options": [
+      "Default locale",
+      "Fiscal year",
+      "Field-level security",
+      "Approval steps"
+    ],
+    "answers": [
+      "Default locale",
+      "Fiscal year"
+    ],
+    "explanation": "Company Information includes organization-wide settings such as locale and fiscal year.",
+    "select_count": 2
   },
   {
     "id": 14,
-    "exam": "Salesforce Admin",
-    "topic": "Productivity and Collaboration",
-    "difficulty": "Easy",
-    "question": "Which Salesforce feature allows users to collaborate on records using posts, comments, and mentions?",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Configuration and Setup",
+    "difficulty": "Medium",
+    "question": "Which feature controls login hours and login IP ranges for users?",
     "type": "single",
-    "options": ["Chatter", "Data Loader", "Approval Process", "Role Hierarchy"],
-    "answers": ["Chatter"],
-    "explanation": "Chatter enables collaboration through posts, comments, mentions, and record feeds."
+    "options": [
+      "Profile",
+      "Role",
+      "Queue",
+      "Record Type"
+    ],
+    "answers": [
+      "Profile"
+    ],
+    "explanation": "Profiles can control login hours and IP restrictions."
   },
   {
     "id": 15,
-    "exam": "Salesforce Admin",
-    "topic": "Reports and Dashboards",
-    "difficulty": "Hard",
-    "question": "A manager wants dashboard data to display based on the access of the person viewing the dashboard. What should the admin use?",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Configuration and Setup",
+    "difficulty": "Medium",
+    "question": "An admin wants users to access only the apps and objects needed for their job. Which combination is most relevant?",
     "type": "single",
-    "options": ["Dynamic Dashboard", "Static Dashboard", "Joined Report", "Bucket Field"],
-    "answers": ["Dynamic Dashboard"],
-    "explanation": "Dynamic dashboards show data according to the running user's own access permissions."
+    "options": [
+      "Profiles and permission sets",
+      "Dashboards and reports",
+      "Campaigns and leads",
+      "Chatter and groups"
+    ],
+    "answers": [
+      "Profiles and permission sets"
+    ],
+    "explanation": "Profiles and permission sets control app, object, field, and system permissions."
   },
   {
     "id": 16,
-    "exam": "Salesforce Admin",
-    "topic": "Security and Access",
-    "difficulty": "Medium",
-    "question": "An admin needs to make an object completely unavailable to a group of users. What should the admin modify?",
-    "type": "single",
-    "options": ["Object permissions on the profile or permission set", "Page layout assignment", "Record type assignment", "Compact layout"],
-    "answers": ["Object permissions on the profile or permission set"],
-    "explanation": "Object permissions determine whether users can create, read, edit, or delete records for an object."
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Configuration and Setup",
+    "difficulty": "Hard",
+    "question": "Which two actions can be performed from Setup?",
+    "type": "multiple",
+    "options": [
+      "Create users",
+      "Configure object permissions",
+      "Post to a record feed",
+      "Convert a lead"
+    ],
+    "answers": [
+      "Create users",
+      "Configure object permissions"
+    ],
+    "explanation": "Setup is used for administration tasks such as user management and permission configuration.",
+    "select_count": 2
   },
   {
     "id": 17,
-    "exam": "Salesforce Admin",
+    "exam": "Salesforce Platform Administrator",
     "topic": "Configuration and Setup",
-    "difficulty": "Medium",
-    "question": "A new employee needs Salesforce access. What must the admin create first?",
+    "difficulty": "Easy",
+    "question": "Where can an admin view license counts and storage usage?",
     "type": "single",
-    "options": ["User record", "Queue", "Sharing rule", "Dashboard"],
-    "answers": ["User record"],
-    "explanation": "A user record is required for someone to log in and access Salesforce."
+    "options": [
+      "Company Information",
+      "Campaign Settings",
+      "Forecasts",
+      "Path Settings"
+    ],
+    "answers": [
+      "Company Information"
+    ],
+    "explanation": "Company Information shows licenses, storage, org ID, locale, and other org-level details."
   },
   {
     "id": 18,
-    "exam": "Salesforce Admin",
-    "topic": "Object Manager and Lightning App Builder",
-    "difficulty": "Hard",
-    "question": "Which two components can be customized on a Lightning record page?",
-    "type": "multiple",
-    "select_count": 2,
-    "options": ["Related lists", "Highlights panel", "Company fiscal year", "Password policy"],
-    "answers": ["Related lists", "Highlights panel"],
-    "explanation": "Lightning record pages can include components such as related lists and highlights panels. Fiscal year and password policy are setup-level settings."
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Configuration and Setup",
+    "difficulty": "Medium",
+    "question": "A user forgot their password. What can the admin do from the user record?",
+    "type": "single",
+    "options": [
+      "Reset the user's password",
+      "Change the user's opportunity stage",
+      "Merge the user's accounts",
+      "Subscribe the user to a dashboard"
+    ],
+    "answers": [
+      "Reset the user's password"
+    ],
+    "explanation": "Admins can reset passwords for users from Setup."
   },
   {
     "id": 19,
-    "exam": "Salesforce Admin",
-    "topic": "Data and Analytics Management",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Configuration and Setup",
     "difficulty": "Hard",
-    "question": "An admin needs to update 75,000 existing Account records. Which tool is most appropriate?",
+    "question": "A user should receive temporary additional permissions for a project without changing their base access. What should the admin assign?",
     "type": "single",
-    "options": ["Data Loader", "Data Import Wizard", "App Launcher", "Report Builder"],
-    "answers": ["Data Loader"],
-    "explanation": "Data Loader is appropriate for larger data operations and supports insert, update, upsert, delete, and export."
+    "options": [
+      "Permission Set",
+      "New Role",
+      "New Queue",
+      "New Record Type"
+    ],
+    "answers": [
+      "Permission Set"
+    ],
+    "explanation": "Permission sets extend access without changing a user's profile."
   },
   {
     "id": 20,
-    "exam": "Salesforce Admin",
-    "topic": "Reports and Dashboards",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Object Manager & Lightning App Builder",
     "difficulty": "Medium",
-    "question": "A report needs to show Accounts with or without related Opportunities. Which report type should the admin consider?",
+    "question": "Users need to track a new value on Account records. What should the admin create?",
     "type": "single",
-    "options": ["Custom Report Type", "Tabular Report Only", "Dashboard Component", "Validation Rule"],
-    "answers": ["Custom Report Type"],
-    "explanation": "Custom report types allow admins to define object relationships, including records with or without related records."
+    "options": [
+      "Custom Field",
+      "Custom Object",
+      "Custom App",
+      "Custom Profile"
+    ],
+    "answers": [
+      "Custom Field"
+    ],
+    "explanation": "A custom field stores extra information on an existing object."
   },
   {
     "id": 21,
-    "exam": "Salesforce Admin",
-    "topic": "Workflow/Process Automation",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Object Manager & Lightning App Builder",
     "difficulty": "Medium",
-    "question": "A manager must approve discount requests before an opportunity is closed. What should the admin configure?",
+    "question": "Different teams need different picklist values and page layouts for the same object. What should the admin use?",
     "type": "single",
-    "options": ["Approval Process", "Assignment Rule", "Auto-Response Rule", "Duplicate Rule"],
-    "answers": ["Approval Process"],
-    "explanation": "Approval processes route records to designated approvers based on defined criteria."
+    "options": [
+      "Record Types",
+      "Queues",
+      "Public Groups",
+      "Dashboard Filters"
+    ],
+    "answers": [
+      "Record Types"
+    ],
+    "explanation": "Record types support different business processes, picklist values, and page layouts."
   },
   {
     "id": 22,
-    "exam": "Salesforce Admin",
-    "topic": "Security and Access",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Object Manager & Lightning App Builder",
     "difficulty": "Medium",
-    "question": "The organization-wide default for Cases is Private. Support managers need access to cases owned by their teams. Which feature commonly supports this requirement?",
+    "question": "Which feature controls the fields, buttons, and related lists users see on a record page?",
     "type": "single",
-    "options": ["Role Hierarchy", "Page Layouts", "Compact Layouts", "Validation Rules"],
-    "answers": ["Role Hierarchy"],
-    "explanation": "Role hierarchy can provide managers access to records owned by users below them, depending on object settings."
+    "options": [
+      "Page Layout",
+      "Role Hierarchy",
+      "Queue",
+      "Forecast Category"
+    ],
+    "answers": [
+      "Page Layout"
+    ],
+    "explanation": "Page layouts control visible fields, buttons, sections, and related lists."
   },
   {
     "id": 23,
-    "exam": "Salesforce Admin",
-    "topic": "Sales and Marketing Applications",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Object Manager & Lightning App Builder",
     "difficulty": "Medium",
-    "question": "Marketing wants to measure the effectiveness of trade shows and email promotions. Which object should be used?",
+    "question": "Which tool allows admins to customize Lightning pages with components?",
     "type": "single",
-    "options": ["Campaign", "Case", "Contract", "Asset"],
-    "answers": ["Campaign"],
-    "explanation": "Campaigns track marketing initiatives and can relate to leads, contacts, and opportunities."
+    "options": [
+      "Lightning App Builder",
+      "Data Loader",
+      "Approval Process",
+      "Report Builder"
+    ],
+    "answers": [
+      "Lightning App Builder"
+    ],
+    "explanation": "Lightning App Builder lets admins customize Lightning pages using components."
   },
   {
     "id": 24,
-    "exam": "Salesforce Admin",
-    "topic": "Service and Support Applications",
-    "difficulty": "Hard",
-    "question": "Which two features help automatically route cases to the right support team?",
-    "type": "multiple",
-    "select_count": 2,
-    "options": ["Assignment Rules", "Queues", "Dashboard Subscriptions", "Compact Layouts"],
-    "answers": ["Assignment Rules", "Queues"],
-    "explanation": "Assignment rules determine ownership based on criteria, and queues hold records for groups of users to work."
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Object Manager & Lightning App Builder",
+    "difficulty": "Medium",
+    "question": "What should an admin configure so important fields appear in the highlights panel and mobile record header?",
+    "type": "single",
+    "options": [
+      "Compact Layout",
+      "Sharing Rule",
+      "Validation Rule",
+      "Dashboard Filter"
+    ],
+    "answers": [
+      "Compact Layout"
+    ],
+    "explanation": "Compact layouts define key fields shown in highlights panels and mobile headers."
   },
   {
     "id": 25,
-    "exam": "Salesforce Admin",
-    "topic": "Productivity and Collaboration",
-    "difficulty": "Medium",
-    "question": "Users need quick access to frequently used records and lists from the navigation bar. What should the admin configure?",
-    "type": "single",
-    "options": ["Lightning App Navigation", "Validation Rule", "Duplicate Rule", "Sharing Rule"],
-    "answers": ["Lightning App Navigation"],
-    "explanation": "Lightning app navigation controls which items appear in the app navigation bar."
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Object Manager & Lightning App Builder",
+    "difficulty": "Hard",
+    "question": "Which two components can be added or configured on a Lightning record page?",
+    "type": "multiple",
+    "options": [
+      "Related Lists",
+      "Highlights Panel",
+      "Company Fiscal Year",
+      "Password Policy"
+    ],
+    "answers": [
+      "Related Lists",
+      "Highlights Panel"
+    ],
+    "explanation": "Lightning record pages can include components like related lists and highlights panels.",
+    "select_count": 2
   },
   {
     "id": 26,
-    "exam": "Salesforce Admin",
-    "topic": "Configuration and Setup",
-    "difficulty": "Hard",
-    "question": "Which two settings can be configured in Company Information?",
-    "type": "multiple",
-    "select_count": 2,
-    "options": ["Default locale", "Fiscal year", "Field-level security", "Approval steps"],
-    "answers": ["Default locale", "Fiscal year"],
-    "explanation": "Company Information includes org-wide settings such as locale and fiscal year. Field security and approval steps are configured elsewhere."
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Object Manager & Lightning App Builder",
+    "difficulty": "Medium",
+    "question": "A custom object record should be deleted when its parent record is deleted. Which relationship is most appropriate?",
+    "type": "single",
+    "options": [
+      "Master-Detail Relationship",
+      "Lookup Relationship",
+      "External Lookup Only",
+      "Hierarchy Relationship"
+    ],
+    "answers": [
+      "Master-Detail Relationship"
+    ],
+    "explanation": "In a master-detail relationship, detail records are typically deleted when the master record is deleted."
   },
   {
     "id": 27,
-    "exam": "Salesforce Admin",
-    "topic": "Object Manager and Lightning App Builder",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Object Manager & Lightning App Builder",
     "difficulty": "Medium",
-    "question": "An admin wants users to see the most important fields at the top of a record page in Salesforce mobile and Lightning Experience. What should be configured?",
+    "question": "A user needs to relate a custom object record to an Account, but the custom record should remain if the Account is deleted. Which relationship is most appropriate?",
     "type": "single",
-    "options": ["Compact Layout", "Sharing Rule", "Queue", "Validation Rule"],
-    "answers": ["Compact Layout"],
-    "explanation": "Compact layouts control the key fields displayed in highlights panels and mobile record headers."
+    "options": [
+      "Lookup Relationship",
+      "Master-Detail Relationship",
+      "Roll-Up Summary",
+      "Record Type"
+    ],
+    "answers": [
+      "Lookup Relationship"
+    ],
+    "explanation": "Lookup relationships provide a looser relationship than master-detail and do not require child deletion with the parent in the same way."
   },
   {
     "id": 28,
-    "exam": "Salesforce Admin",
-    "topic": "Data and Analytics Management",
-    "difficulty": "Medium",
-    "question": "An admin wants to prevent duplicate Accounts from being created. Which feature should be configured?",
-    "type": "single",
-    "options": ["Duplicate Rules and Matching Rules", "Role Hierarchy", "Record Types", "Queues"],
-    "answers": ["Duplicate Rules and Matching Rules"],
-    "explanation": "Matching rules define duplicate criteria, and duplicate rules determine what happens when duplicates are found."
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Object Manager & Lightning App Builder",
+    "difficulty": "Hard",
+    "question": "Which two items can record types influence?",
+    "type": "multiple",
+    "options": [
+      "Business process",
+      "Picklist values",
+      "Org storage limit",
+      "Login IP range"
+    ],
+    "answers": [
+      "Business process",
+      "Picklist values"
+    ],
+    "explanation": "Record types can define business processes and available picklist values.",
+    "select_count": 2
   },
   {
     "id": 29,
-    "exam": "Salesforce Admin",
-    "topic": "Reports and Dashboards",
-    "difficulty": "Hard",
-    "question": "A user wants to group report data by ranges of opportunity amount without creating a custom field. What should the admin recommend?",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Automation",
+    "difficulty": "Medium",
+    "question": "Which automation tool should an admin use to build complex business automation with clicks, not code?",
     "type": "single",
-    "options": ["Bucket Field", "Formula Field", "Roll-Up Summary Field", "Joined Report"],
-    "answers": ["Bucket Field"],
-    "explanation": "Bucket fields group report values into categories directly in the report without creating a field on the object."
+    "options": [
+      "Flow Builder",
+      "Data Loader",
+      "Schema Builder",
+      "Import Wizard"
+    ],
+    "answers": [
+      "Flow Builder"
+    ],
+    "explanation": "Flow Builder is Salesforce's primary declarative automation tool."
   },
   {
     "id": 30,
-    "exam": "Salesforce Admin",
-    "topic": "Workflow/Process Automation",
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Automation",
     "difficulty": "Hard",
-    "question": "A flow should update a field on the same record before it is saved. Which flow type is generally most efficient?",
+    "question": "A flow should update a field on the triggering record before it is saved. Which flow type is generally most efficient?",
     "type": "single",
-    "options": ["Before-Save Record-Triggered Flow", "Screen Flow", "Scheduled Flow", "Autolaunched Flow from Apex"],
-    "answers": ["Before-Save Record-Triggered Flow"],
-    "explanation": "Before-save record-triggered flows are optimized for fast updates to the triggering record before it is saved."
+    "options": [
+      "Before-Save Record-Triggered Flow",
+      "Screen Flow",
+      "Scheduled Flow",
+      "Platform Event Flow"
+    ],
+    "answers": [
+      "Before-Save Record-Triggered Flow"
+    ],
+    "explanation": "Before-save record-triggered flows are optimized for fast updates to the triggering record."
   },
-{
-  "id": 31,
-  "exam": "Salesforce Admin",
-  "topic": "Security and Access",
-  "difficulty": "Easy",
-  "question": "Which feature controls login hours and IP ranges for users?",
-  "type": "single",
-  "options": ["Profiles", "Queues", "Reports", "Compact Layouts"],
-  "answers": ["Profiles"],
-  "explanation": "Profiles can control login hours and IP restrictions."
-},
-{
-  "id": 32,
-  "exam": "Salesforce Admin",
-  "topic": "Configuration and Setup",
-  "difficulty": "Medium",
-  "question": "What is required before users can log in to Salesforce?",
-  "type": "single",
-  "options": ["A username", "A dashboard", "A queue", "A campaign"],
-  "answers": ["A username"],
-  "explanation": "Each Salesforce user must have a unique username."
-},
-{
-  "id": 33,
-  "exam": "Salesforce Admin",
-  "topic": "Object Manager and Lightning App Builder",
-  "difficulty": "Medium",
-  "question": "Which tool allows admins to visually customize Lightning pages?",
-  "type": "single",
-  "options": ["Lightning App Builder", "Schema Builder", "Data Loader", "Approval Process"],
-  "answers": ["Lightning App Builder"],
-  "explanation": "Lightning App Builder customizes Lightning pages using drag-and-drop components."
-},
-{
-  "id": 34,
-  "exam": "Salesforce Admin",
-  "topic": "Reports and Dashboards",
-  "difficulty": "Medium",
-  "question": "What dashboard component is best for showing progress toward a goal?",
-  "type": "single",
-  "options": ["Gauge", "Table", "Metric", "Chart"],
-  "answers": ["Gauge"],
-  "explanation": "Gauge charts compare a single value against a target."
-},
-{
-  "id": 35,
-  "exam": "Salesforce Admin",
-  "topic": "Workflow/Process Automation",
-  "difficulty": "Medium",
-  "question": "Which automation tool can send email alerts automatically?",
-  "type": "single",
-  "options": ["Flow Builder", "Recycle Bin", "Schema Builder", "List View"],
-  "answers": ["Flow Builder"],
-  "explanation": "Flow Builder can automate email alerts and many other actions."
-},
-{
-  "id": 36,
-  "exam": "Salesforce Admin",
-  "topic": "Sales and Marketing Applications",
-  "difficulty": "Medium",
-  "question": "Which object represents a potential customer before qualification?",
-  "type": "single",
-  "options": ["Lead", "Case", "Opportunity", "Asset"],
-  "answers": ["Lead"],
-  "explanation": "Leads represent prospective customers before qualification."
-},
-{
-  "id": 37,
-  "exam": "Salesforce Admin",
-  "topic": "Service and Support Applications",
-  "difficulty": "Medium",
-  "question": "What feature allows customers to submit and track support cases online?",
-  "type": "single",
-  "options": ["Experience Cloud", "Schema Builder", "Approval Process", "Path"],
-  "answers": ["Experience Cloud"],
-  "explanation": "Experience Cloud can provide customer self-service portals."
-},
-{
-  "id": 38,
-  "exam": "Salesforce Admin",
-  "topic": "Data and Analytics Management",
-  "difficulty": "Hard",
-  "question": "Which two tools can export Salesforce data?",
-  "type": "multiple",
-  "select_count": 2,
-  "options": ["Data Export Service", "Data Loader", "Compact Layout", "Sharing Rule"],
-  "answers": ["Data Export Service", "Data Loader"],
-  "explanation": "Both Data Export Service and Data Loader can export Salesforce data."
-},
-{
-  "id": 39,
-  "exam": "Salesforce Admin",
-  "topic": "Productivity and Collaboration",
-  "difficulty": "Easy",
-  "question": "What feature allows users to follow records and receive updates?",
-  "type": "single",
-  "options": ["Chatter", "Queues", "Validation Rules", "Record Types"],
-  "answers": ["Chatter"],
-  "explanation": "Chatter lets users follow records and collaborate."
-},
-{
-  "id": 40,
-  "exam": "Salesforce Admin",
-  "topic": "Security and Access",
-  "difficulty": "Medium",
-  "question": "What is the most restrictive organization-wide default setting?",
-  "type": "single",
-  "options": ["Private", "Public Read Only", "Public Read/Write", "Controlled by Parent"],
-  "answers": ["Private"],
-  "explanation": "Private is the most restrictive standard sharing setting."
-},
-{
-  "id": 41,
-  "exam": "Salesforce Admin",
-  "topic": "Workflow/Process Automation",
-  "difficulty": "Hard",
-  "question": "Which two actions can a Flow perform?",
-  "type": "multiple",
-  "select_count": 2,
-  "options": ["Create records", "Send emails", "Modify profiles", "Change editions"],
-  "answers": ["Create records", "Send emails"],
-  "explanation": "Flows can automate record operations and email notifications."
-},
-{
-  "id": 42,
-  "exam": "Salesforce Admin",
-  "topic": "Reports and Dashboards",
-  "difficulty": "Easy",
-  "question": "What is the primary purpose of a dashboard?",
-  "type": "single",
-  "options": ["Visualize report data", "Create users", "Import records", "Manage security"],
-  "answers": ["Visualize report data"],
-  "explanation": "Dashboards visually display report data."
-},
-{
-  "id": 43,
-  "exam": "Salesforce Admin",
-  "topic": "Configuration and Setup",
-  "difficulty": "Medium",
-  "question": "Which feature helps users reset forgotten passwords?",
-  "type": "single",
-  "options": ["Password Policies", "Queues", "Campaigns", "Forecasts"],
-  "answers": ["Password Policies"],
-  "explanation": "Password policies manage security settings related to passwords."
-},
-{
-  "id": 44,
-  "exam": "Salesforce Admin",
-  "topic": "Object Manager and Lightning App Builder",
-  "difficulty": "Easy",
-  "question": "Which object relationship allows one parent record to have many child records?",
-  "type": "single",
-  "options": ["Lookup Relationship", "Tab", "Dashboard", "Profile"],
-  "answers": ["Lookup Relationship"],
-  "explanation": "Lookup relationships associate related records."
-},
-{
-  "id": 45,
-  "exam": "Salesforce Admin",
-  "topic": "Sales and Marketing Applications",
-  "difficulty": "Medium",
-  "question": "What feature helps sales reps manage deals through sales stages?",
-  "type": "single",
-  "options": ["Path", "Queue", "Role Hierarchy", "Schema Builder"],
-  "answers": ["Path"],
-  "explanation": "Path guides users through stages and key fields."
-},
-{
-  "id": 46,
-  "exam": "Salesforce Admin",
-  "topic": "Service and Support Applications",
-  "difficulty": "Medium",
-  "question": "Which feature automatically routes incoming cases?",
-  "type": "single",
-  "options": ["Assignment Rules", "Compact Layouts", "Record Types", "Path"],
-  "answers": ["Assignment Rules"],
-  "explanation": "Assignment rules automatically assign cases."
-},
-{
-  "id": 47,
-  "exam": "Salesforce Admin",
-  "topic": "Security and Access",
-  "difficulty": "Hard",
-  "question": "Which two features help control record visibility?",
-  "type": "multiple",
-  "select_count": 2,
-  "options": ["Sharing Rules", "Role Hierarchy", "Compact Layouts", "Path"],
-  "answers": ["Sharing Rules", "Role Hierarchy"],
-  "explanation": "Sharing rules and role hierarchy affect record-level access."
-},
-{
-  "id": 48,
-  "exam": "Salesforce Admin",
-  "topic": "Reports and Dashboards",
-  "difficulty": "Medium",
-  "question": "Which report format groups records by rows?",
-  "type": "single",
-  "options": ["Summary Report", "Tabular Report", "Joined Report", "Matrix Report"],
-  "answers": ["Summary Report"],
-  "explanation": "Summary reports group rows and display subtotals."
-},
-{
-  "id": 49,
-  "exam": "Salesforce Admin",
-  "topic": "Workflow/Process Automation",
-  "difficulty": "Easy",
-  "question": "What feature prevents users from saving invalid data?",
-  "type": "single",
-  "options": ["Validation Rule", "Dashboard", "Queue", "Forecast"],
-  "answers": ["Validation Rule"],
-  "explanation": "Validation rules enforce data quality."
-},
-{
-  "id": 50,
-  "exam": "Salesforce Admin",
-  "topic": "Data and Analytics Management",
-  "difficulty": "Medium",
-  "question": "Which feature imports records directly through the browser?",
-  "type": "single",
-  "options": ["Data Import Wizard", "Data Loader", "Schema Builder", "Approval Process"],
-  "answers": ["Data Import Wizard"],
-  "explanation": "Data Import Wizard is browser-based and easy for standard imports."
-},
-{
-  "id": 51,
-  "exam": "Salesforce Admin",
-  "topic": "Productivity and Collaboration",
-  "difficulty": "Medium",
-  "question": "Which feature lets users collaborate in groups?",
-  "type": "single",
-  "options": ["Chatter Groups", "Role Hierarchy", "Forecasts", "Queues"],
-  "answers": ["Chatter Groups"],
-  "explanation": "Chatter Groups support collaboration among users."
-},
-{
-  "id": 52,
-  "exam": "Salesforce Admin",
-  "topic": "Configuration and Setup",
-  "difficulty": "Easy",
-  "question": "Where can admins see company storage usage?",
-  "type": "single",
-  "options": ["Company Information", "Forecasts", "Campaigns", "Queues"],
-  "answers": ["Company Information"],
-  "explanation": "Company Information displays storage usage."
-},
-{
-  "id": 53,
-  "exam": "Salesforce Admin",
-  "topic": "Object Manager and Lightning App Builder",
-  "difficulty": "Medium",
-  "question": "Which feature customizes available picklist values by business process?",
-  "type": "single",
-  "options": ["Record Types", "Queues", "Public Groups", "Path"],
-  "answers": ["Record Types"],
-  "explanation": "Record types support different picklist values and processes."
-},
-{
-  "id": 54,
-  "exam": "Salesforce Admin",
-  "topic": "Sales and Marketing Applications",
-  "difficulty": "Easy",
-  "question": "What object tracks products sold to customers?",
-  "type": "single",
-  "options": ["Opportunity Product", "Case", "Campaign", "Lead"],
-  "answers": ["Opportunity Product"],
-  "explanation": "Opportunity Products associate products with opportunities."
-},
-{
-  "id": 55,
-  "exam": "Salesforce Admin",
-  "topic": "Service and Support Applications",
-  "difficulty": "Hard",
-  "question": "Which two features improve support agent productivity?",
-  "type": "multiple",
-  "select_count": 2,
-  "options": ["Macros", "Knowledge", "Campaign Influence", "Forecast Categories"],
-  "answers": ["Macros", "Knowledge"],
-  "explanation": "Macros automate repetitive tasks and Knowledge provides reusable articles."
-},
-{
-  "id": 56,
-  "exam": "Salesforce Admin",
-  "topic": "Reports and Dashboards",
-  "difficulty": "Hard",
-  "question": "Which report type allows multiple report blocks?",
-  "type": "single",
-  "options": ["Joined Report", "Summary Report", "Tabular Report", "Matrix Report"],
-  "answers": ["Joined Report"],
-  "explanation": "Joined reports combine multiple report blocks."
-},
-{
-  "id": 57,
-  "exam": "Salesforce Admin",
-  "topic": "Security and Access",
-  "difficulty": "Medium",
-  "question": "Which feature extends object permissions without modifying profiles?",
-  "type": "single",
-  "options": ["Permission Set", "Queue", "Validation Rule", "Dashboard"],
-  "answers": ["Permission Set"],
-  "explanation": "Permission sets extend user permissions."
-},
-{
-  "id": 58,
-  "exam": "Salesforce Admin",
-  "topic": "Workflow/Process Automation",
-  "difficulty": "Medium",
-  "question": "What automation tool can guide users through screens and collect input?",
-  "type": "single",
-  "options": ["Screen Flow", "Approval Process", "Assignment Rule", "Duplicate Rule"],
-  "answers": ["Screen Flow"],
-  "explanation": "Screen Flows provide user interaction and guided processes."
-},
-{
-  "id": 59,
-  "exam": "Salesforce Admin",
-  "topic": "Data and Analytics Management",
-  "difficulty": "Hard",
-  "question": "Which two features help maintain clean data?",
-  "type": "multiple",
-  "select_count": 2,
-  "options": ["Validation Rules", "Duplicate Rules", "Queues", "Compact Layouts"],
-  "answers": ["Validation Rules", "Duplicate Rules"],
-  "explanation": "Validation rules and duplicate rules improve data quality."
-},
-{
-  "id": 60,
-  "exam": "Salesforce Admin",
-  "topic": "Configuration and Setup",
-  "difficulty": "Medium",
-  "question": "Which feature controls the fields and related lists users see on records?",
-  "type": "single",
-  "options": ["Page Layout", "Forecast", "Role Hierarchy", "Queue"],
-  "answers": ["Page Layout"],
-  "explanation": "Page layouts control visible fields, buttons, and related lists."
-}
+  {
+    "id": 31,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Automation",
+    "difficulty": "Medium",
+    "question": "A manager must approve discount requests before an opportunity can move forward. What should the admin configure?",
+    "type": "single",
+    "options": [
+      "Approval Process",
+      "Assignment Rule",
+      "Auto-Response Rule",
+      "Duplicate Rule"
+    ],
+    "answers": [
+      "Approval Process"
+    ],
+    "explanation": "Approval processes route records to designated approvers based on criteria."
+  },
+  {
+    "id": 32,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Automation",
+    "difficulty": "Hard",
+    "question": "Which two automation features can help enforce business requirements before or during record save?",
+    "type": "multiple",
+    "options": [
+      "Validation Rules",
+      "Record-Triggered Flows",
+      "Dashboards",
+      "Queues"
+    ],
+    "answers": [
+      "Validation Rules",
+      "Record-Triggered Flows"
+    ],
+    "explanation": "Validation rules enforce data requirements, and record-triggered flows can run during record save operations.",
+    "select_count": 2
+  },
+  {
+    "id": 33,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Automation",
+    "difficulty": "Medium",
+    "question": "Which flow type guides users through screens and collects input?",
+    "type": "single",
+    "options": [
+      "Screen Flow",
+      "Before-Save Flow",
+      "Scheduled Flow",
+      "Duplicate Rule"
+    ],
+    "answers": [
+      "Screen Flow"
+    ],
+    "explanation": "Screen flows provide a guided user interface and can collect user input."
+  },
+  {
+    "id": 34,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Automation",
+    "difficulty": "Medium",
+    "question": "A process should run every night to update records that meet criteria. Which flow type should be considered?",
+    "type": "single",
+    "options": [
+      "Scheduled-Triggered Flow",
+      "Screen Flow",
+      "Approval Process",
+      "Assignment Rule"
+    ],
+    "answers": [
+      "Scheduled-Triggered Flow"
+    ],
+    "explanation": "Scheduled-triggered flows run at a scheduled time and can process records meeting criteria."
+  },
+  {
+    "id": 35,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Automation",
+    "difficulty": "Hard",
+    "question": "Which two actions can Flow Builder perform?",
+    "type": "multiple",
+    "options": [
+      "Create records",
+      "Send email",
+      "Change Salesforce edition",
+      "Bypass all security automatically"
+    ],
+    "answers": [
+      "Create records",
+      "Send email"
+    ],
+    "explanation": "Flows can create records and send email notifications, depending on configuration and permissions.",
+    "select_count": 2
+  },
+  {
+    "id": 36,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Automation",
+    "difficulty": "Medium",
+    "question": "A support team wants to automatically send an email when a high-priority case is created. Which tool can accomplish this?",
+    "type": "single",
+    "options": [
+      "Flow Builder",
+      "Schema Builder",
+      "Data Export Service",
+      "Report Type"
+    ],
+    "answers": [
+      "Flow Builder"
+    ],
+    "explanation": "Flow Builder can trigger automation when records are created and send email alerts."
+  },
+  {
+    "id": 37,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Automation",
+    "difficulty": "Hard",
+    "question": "Users report that a record-triggered flow is failing after a required field was added. What should the admin review first?",
+    "type": "single",
+    "options": [
+      "Flow error details and required field assignments",
+      "Company fiscal year",
+      "Dashboard running user",
+      "Chatter group membership"
+    ],
+    "answers": [
+      "Flow error details and required field assignments"
+    ],
+    "explanation": "Troubleshooting flow errors starts with the error message, debug details, and whether required values are being set."
+  },
+  {
+    "id": 38,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Sales and Marketing Applications",
+    "difficulty": "Medium",
+    "question": "A sales team wants to track potential revenue, close dates, and sales stages. Which object should they use?",
+    "type": "single",
+    "options": [
+      "Opportunity",
+      "Case",
+      "Campaign",
+      "Asset"
+    ],
+    "answers": [
+      "Opportunity"
+    ],
+    "explanation": "Opportunities track potential sales revenue, stage, close date, and pipeline."
+  },
+  {
+    "id": 39,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Sales and Marketing Applications",
+    "difficulty": "Medium",
+    "question": "Which object represents a potential customer before qualification?",
+    "type": "single",
+    "options": [
+      "Lead",
+      "Case",
+      "Contract",
+      "Asset"
+    ],
+    "answers": [
+      "Lead"
+    ],
+    "explanation": "Leads represent unqualified prospects."
+  },
+  {
+    "id": 40,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Sales and Marketing Applications",
+    "difficulty": "Medium",
+    "question": "Marketing wants to track trade shows and email promotions and relate them to leads and contacts. Which object should be used?",
+    "type": "single",
+    "options": [
+      "Campaign",
+      "Case",
+      "Contract",
+      "Product"
+    ],
+    "answers": [
+      "Campaign"
+    ],
+    "explanation": "Campaigns track marketing initiatives and can relate to leads, contacts, and opportunities."
+  },
+  {
+    "id": 41,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Sales and Marketing Applications",
+    "difficulty": "Medium",
+    "question": "What feature helps sales reps follow key fields and guidance through opportunity stages?",
+    "type": "single",
+    "options": [
+      "Path",
+      "Queue",
+      "Role Hierarchy",
+      "Duplicate Rule"
+    ],
+    "answers": [
+      "Path"
+    ],
+    "explanation": "Path provides stage-based guidance and highlights key fields."
+  },
+  {
+    "id": 42,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Sales and Marketing Applications",
+    "difficulty": "Hard",
+    "question": "Which two records can be created when converting a qualified lead?",
+    "type": "multiple",
+    "options": [
+      "Account",
+      "Contact",
+      "Case",
+      "Dashboard"
+    ],
+    "answers": [
+      "Account",
+      "Contact"
+    ],
+    "explanation": "Lead conversion can create an account, contact, and optionally an opportunity.",
+    "select_count": 2
+  },
+  {
+    "id": 43,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Sales and Marketing Applications",
+    "difficulty": "Medium",
+    "question": "What object is used to associate products and quantities with a deal?",
+    "type": "single",
+    "options": [
+      "Opportunity Product",
+      "Case Team",
+      "Campaign Member",
+      "Lead Status"
+    ],
+    "answers": [
+      "Opportunity Product"
+    ],
+    "explanation": "Opportunity Products store product line items associated with opportunities."
+  },
+  {
+    "id": 44,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Service and Support Applications",
+    "difficulty": "Medium",
+    "question": "A support team needs to track customer issues and resolutions. Which object should be used?",
+    "type": "single",
+    "options": [
+      "Case",
+      "Opportunity",
+      "Campaign",
+      "Lead"
+    ],
+    "answers": [
+      "Case"
+    ],
+    "explanation": "Cases track customer support issues, requests, and resolutions."
+  },
+  {
+    "id": 45,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Service and Support Applications",
+    "difficulty": "Medium",
+    "question": "Which feature automatically routes incoming cases based on criteria?",
+    "type": "single",
+    "options": [
+      "Assignment Rules",
+      "Compact Layouts",
+      "Record Types",
+      "Path"
+    ],
+    "answers": [
+      "Assignment Rules"
+    ],
+    "explanation": "Case assignment rules assign cases to users or queues based on criteria."
+  },
+  {
+    "id": 46,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Service and Support Applications",
+    "difficulty": "Hard",
+    "question": "Which two features help route or organize case work for support teams?",
+    "type": "multiple",
+    "options": [
+      "Queues",
+      "Assignment Rules",
+      "Dashboard Subscriptions",
+      "Campaign Influence"
+    ],
+    "answers": [
+      "Queues",
+      "Assignment Rules"
+    ],
+    "explanation": "Queues hold records for groups, and assignment rules route cases based on criteria.",
+    "select_count": 2
+  },
+  {
+    "id": 47,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Service and Support Applications",
+    "difficulty": "Medium",
+    "question": "Which feature helps agents find approved answers and reusable troubleshooting information?",
+    "type": "single",
+    "options": [
+      "Knowledge",
+      "Forecasting",
+      "Campaigns",
+      "Data Export"
+    ],
+    "answers": [
+      "Knowledge"
+    ],
+    "explanation": "Salesforce Knowledge stores articles for support and self-service use."
+  },
+  {
+    "id": 48,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Service and Support Applications",
+    "difficulty": "Hard",
+    "question": "A service center wants work automatically routed to available agents based on capacity and skills. Which feature is most relevant?",
+    "type": "single",
+    "options": [
+      "Omni-Channel",
+      "Chatter Feed Tracking",
+      "Opportunity Path",
+      "Campaign Hierarchy"
+    ],
+    "answers": [
+      "Omni-Channel"
+    ],
+    "explanation": "Omni-Channel routes work items to the right agents based on configuration such as availability, capacity, and routing rules."
+  },
+  {
+    "id": 49,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Service and Support Applications",
+    "difficulty": "Medium",
+    "question": "What feature can let customers create and view support cases through a portal?",
+    "type": "single",
+    "options": [
+      "Experience Cloud",
+      "Data Loader",
+      "Schema Builder",
+      "Approval Process"
+    ],
+    "answers": [
+      "Experience Cloud"
+    ],
+    "explanation": "Experience Cloud can provide customer-facing portals for self-service and case management."
+  },
+  {
+    "id": 50,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Productivity and Collaboration",
+    "difficulty": "Easy",
+    "question": "Which feature allows users to collaborate on records using posts, comments, and mentions?",
+    "type": "single",
+    "options": [
+      "Chatter",
+      "Data Loader",
+      "Approval Process",
+      "Role Hierarchy"
+    ],
+    "answers": [
+      "Chatter"
+    ],
+    "explanation": "Chatter enables collaboration through posts, comments, mentions, and record feeds."
+  },
+  {
+    "id": 51,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Productivity and Collaboration",
+    "difficulty": "Medium",
+    "question": "Which feature lets users collaborate in a dedicated workspace around a topic or team?",
+    "type": "single",
+    "options": [
+      "Chatter Group",
+      "Queue",
+      "Forecast Category",
+      "Record Type"
+    ],
+    "answers": [
+      "Chatter Group"
+    ],
+    "explanation": "Chatter Groups support collaboration for teams, projects, or topics."
+  },
+  {
+    "id": 52,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Productivity and Collaboration",
+    "difficulty": "Medium",
+    "question": "Users want to track follow-up work and meetings related to accounts and opportunities. Which features are most relevant?",
+    "type": "multiple",
+    "options": [
+      "Tasks",
+      "Events",
+      "Duplicate Rules",
+      "Data Export"
+    ],
+    "answers": [
+      "Tasks",
+      "Events"
+    ],
+    "explanation": "Tasks track to-do items, and events track calendar activities.",
+    "select_count": 2
+  },
+  {
+    "id": 53,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Productivity and Collaboration",
+    "difficulty": "Medium",
+    "question": "Sales reps want to work with Salesforce records from Gmail or Outlook. What should the admin consider?",
+    "type": "single",
+    "options": [
+      "Salesforce email integration",
+      "Dashboard filters",
+      "Case assignment rules",
+      "Master-detail relationships"
+    ],
+    "answers": [
+      "Salesforce email integration"
+    ],
+    "explanation": "Salesforce email integrations help users connect email clients with Salesforce activity and records."
+  },
+  {
+    "id": 54,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Productivity and Collaboration",
+    "difficulty": "Easy",
+    "question": "What allows users to follow records and receive updates in their feed?",
+    "type": "single",
+    "options": [
+      "Chatter Follow",
+      "Data Import Wizard",
+      "Role Hierarchy",
+      "Approval Steps"
+    ],
+    "answers": [
+      "Chatter Follow"
+    ],
+    "explanation": "Following records in Chatter lets users receive feed updates."
+  },
+  {
+    "id": 55,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Productivity and Collaboration",
+    "difficulty": "Medium",
+    "question": "An admin wants users to quickly access frequently used objects from the app navigation bar. What should be configured?",
+    "type": "single",
+    "options": [
+      "Lightning App Navigation",
+      "Validation Rule",
+      "Duplicate Rule",
+      "Sharing Rule"
+    ],
+    "answers": [
+      "Lightning App Navigation"
+    ],
+    "explanation": "Lightning app navigation controls the items users see in the navigation bar."
+  },
+  {
+    "id": 56,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Agentforce AI",
+    "difficulty": "Medium",
+    "question": "Which Salesforce capability helps users build AI-powered agents that can assist with business tasks?",
+    "type": "single",
+    "options": [
+      "Agentforce",
+      "Data Loader",
+      "Schema Builder",
+      "Classic Email Templates"
+    ],
+    "answers": [
+      "Agentforce"
+    ],
+    "explanation": "Agentforce provides AI agent capabilities for assisting with business workflows and user interactions."
+  },
+  {
+    "id": 57,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Agentforce AI",
+    "difficulty": "Medium",
+    "question": "An admin wants to create and test reusable prompts grounded in CRM data. Which tool is most relevant?",
+    "type": "single",
+    "options": [
+      "Prompt Builder",
+      "Data Import Wizard",
+      "Report Builder",
+      "Path"
+    ],
+    "answers": [
+      "Prompt Builder"
+    ],
+    "explanation": "Prompt Builder is used to create, test, and manage prompt templates for generative AI experiences."
+  },
+  {
+    "id": 58,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Agentforce AI",
+    "difficulty": "Hard",
+    "question": "Which two concepts are important when using generative AI safely with CRM data?",
+    "type": "multiple",
+    "options": [
+      "Einstein Trust Layer",
+      "Data grounding",
+      "Dashboard gauges",
+      "Compact layouts"
+    ],
+    "answers": [
+      "Einstein Trust Layer",
+      "Data grounding"
+    ],
+    "explanation": "The Einstein Trust Layer and data grounding help support secure, relevant, and trusted generative AI responses.",
+    "select_count": 2
+  },
+  {
+    "id": 59,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Agentforce AI",
+    "difficulty": "Medium",
+    "question": "A company wants AI responses to respect Salesforce data access and avoid exposing unauthorized CRM data. Which concept is most relevant?",
+    "type": "single",
+    "options": [
+      "Einstein Trust Layer",
+      "Campaign Hierarchy",
+      "Record Type Selection",
+      "Bucket Fields"
+    ],
+    "answers": [
+      "Einstein Trust Layer"
+    ],
+    "explanation": "The Einstein Trust Layer is designed to support secure and trusted AI use with Salesforce data."
+  },
+  {
+    "id": 60,
+    "exam": "Salesforce Platform Administrator",
+    "topic": "Agentforce AI",
+    "difficulty": "Hard",
+    "question": "Which two admin responsibilities are most relevant when enabling AI features?",
+    "type": "multiple",
+    "options": [
+      "Review user permissions",
+      "Test prompts before deployment",
+      "Disable all validation rules",
+      "Remove all sharing settings"
+    ],
+    "answers": [
+      "Review user permissions",
+      "Test prompts before deployment"
+    ],
+    "explanation": "Admins should consider user permissions and test prompts to help ensure secure and reliable AI behavior.",
+    "select_count": 2
+  }
 ]
