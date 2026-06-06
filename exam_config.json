@@ -3,7 +3,7 @@
   "certification": "Salesforce Certified Platform Administrator",
   "time_limit_minutes": 105,
   "passing_score": 68,
-  "question_file": "questions/mock_exam_1.json",
+  "question_file": "questions/mock_exam_2.json",
   "sections": [
     {
       "name": "Data and Analytics Management",
