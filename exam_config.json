@@ -1,0 +1,16 @@
+{
+  "exam_title": "Salesforce Administrator Practice Exam",
+  "certification": "Salesforce Certified Administrator",
+  "time_limit_minutes": 105,
+  "passing_score": 65,
+  "question_file": "questions/mock_exam_1.json",
+  "sections": [
+    "Configuration and Setup",
+    "Object Manager and Lightning App Builder",
+    "Sales and Marketing Applications",
+    "Service and Support Applications",
+    "Productivity and Collaboration",
+    "Data and Analytics Management",
+    "Workflow/Process Automation"
+  ]
+}
