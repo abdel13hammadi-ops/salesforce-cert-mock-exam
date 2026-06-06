@@ -1,0 +1,51 @@
+[
+  {
+    "id": 1,
+    "exam": "Salesforce Admin",
+    "topic": "Security and Access",
+    "difficulty": "Medium",
+    "question": "A sales manager needs to see all opportunities owned by users below them in the hierarchy. What should the admin configure?",
+    "type": "single",
+    "options": [
+      "Profiles",
+      "Role Hierarchy",
+      "Permission Sets",
+      "Queues"
+    ],
+    "answers": ["Role Hierarchy"],
+    "explanation": "Role hierarchy allows managers to access records owned by users beneath them when sharing settings allow hierarchy access."
+  },
+  {
+    "id": 2,
+    "exam": "Salesforce Admin",
+    "topic": "Security and Access",
+    "difficulty": "Hard",
+    "question": "Which two features can grant additional access to a user without changing the user's profile?",
+    "type": "multiple",
+    "select_count": 2,
+    "options": [
+      "Permission Sets",
+      "Sharing Rules",
+      "Page Layouts",
+      "Validation Rules"
+    ],
+    "answers": ["Permission Sets", "Sharing Rules"],
+    "explanation": "Permission sets grant additional object or field permissions. Sharing rules extend record access. Page layouts affect UI arrangement, and validation rules enforce data quality."
+  },
+  {
+    "id": 3,
+    "exam": "Salesforce Admin",
+    "topic": "Automation",
+    "difficulty": "Medium",
+    "question": "Which automation tool is recommended for creating complex business automation in Salesforce?",
+    "type": "single",
+    "options": [
+      "Workflow Rules",
+      "Process Builder",
+      "Flow Builder",
+      "Assignment Rules"
+    ],
+    "answers": ["Flow Builder"],
+    "explanation": "Flow Builder is Salesforce’s primary declarative automation tool for complex business processes."
+  }
+]
