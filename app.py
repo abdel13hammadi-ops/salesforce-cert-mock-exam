@@ -164,15 +164,20 @@ st.markdown(
         padding-top: 0.75rem;
     }
 
-    .timer-sticky {
-        position: sticky;
-        top: 0;
-        z-index: 999;
+    .timer-fixed {
+        position: fixed;
+        top: 0.65rem;
+        left: 0.75rem;
+        width: 18.25rem;
+        z-index: 999999;
         background: #ffffff;
-        padding-top: 4px;
-        padding-bottom: 14px;
+        padding: 8px 10px 12px 10px;
         border-bottom: 1px solid #d8dde6;
-        margin-bottom: 14px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+    }
+
+    .navigator-spacer {
+        height: 118px;
     }
 
     .timer-label {
@@ -210,8 +215,15 @@ st.markdown(
 
     section[data-testid="stSidebar"] div.stButton > button {
         width: 100%;
-        padding: 0.35rem 0.5rem;
-        font-size: 14px;
+        padding: 0.28rem 0.2rem;
+        font-size: 12px;
+        border-radius: 6px;
+        min-height: 2.1rem;
+    }
+
+    section[data-testid="stSidebar"] div[data-testid="column"] {
+        padding-left: 0.12rem;
+        padding-right: 0.12rem;
     }
 
     div.stButton > button {
@@ -319,10 +331,11 @@ elif not st.session_state.submitted:
 
     st.sidebar.markdown(
         f"""
-        <div class="timer-sticky">
+        <div class="timer-fixed">
             <div class="timer-label">Time Remaining</div>
             <div class="timer-box">{mins:02d}:{secs:02d}</div>
         </div>
+        <div class="navigator-spacer"></div>
         <div class="question-nav-title">Question Navigator</div>
         <div class="small-help">✓ answered &nbsp;&nbsp; 🚩 marked</div>
         """,
