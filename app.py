@@ -4,7 +4,7 @@ from collections import defaultdict
 import streamlit as st
 
 st.set_page_config(
-    page_title="Salesforce Certification Mock Exam",
+    page_title="Salesforce Admin Mock Exam",
     layout="wide"
 )
 
@@ -25,7 +25,8 @@ defaults = {
     "current_question": 0,
     "answers": {},
     "marked": set(),
-    "start_time": None
+    "start_time": None,
+    "review_filter": "All Questions"
 }
 
 for key, value in defaults.items():
@@ -54,7 +55,7 @@ def calculate_breakdown(field):
 
     return stats
 
-st.title("Salesforce Certification Mock Exam")
+st.title("Salesforce Admin Mock Exam Simulator")
 
 if not st.session_state.started:
     st.header("Exam Instructions")
@@ -68,6 +69,7 @@ if not st.session_state.started:
     - Some questions may have multiple correct answers.
     - You can mark questions for review.
     - Review all answers before final submission.
+    - Explanations will appear only after submission.
     """)
 
     if st.button("Start Exam"):
@@ -257,10 +259,22 @@ else:
 
     st.header("Answer Review")
 
+    review_filter = st.radio(
+        "Review filter:",
+        ["All Questions", "Incorrect Only", "Correct Only"],
+        horizontal=True
+    )
+
     for i, q in enumerate(questions):
         user_answer = st.session_state.answers.get(i, [])
         correct_answers = q["answers"]
         result_correct = is_correct(user_answer, correct_answers)
+
+        if review_filter == "Incorrect Only" and result_correct:
+            continue
+
+        if review_filter == "Correct Only" and not result_correct:
+            continue
 
         if result_correct:
             st.success(f"Question {i + 1} — Correct")
