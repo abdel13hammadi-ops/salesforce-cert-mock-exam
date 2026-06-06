@@ -4,10 +4,7 @@ import random
 from collections import defaultdict
 import streamlit as st
 
-st.set_page_config(
-    page_title="Salesforce Admin Mock Exam",
-    layout="wide"
-)
+st.set_page_config(page_title="Salesforce Admin Mock Exam", layout="wide")
 
 PASSING_SCORE = 65
 EXAM_MINUTES = 105
@@ -42,7 +39,6 @@ def get_questions():
         st.session_state.question_order = list(range(len(all_questions)))
         if st.session_state.randomize_questions:
             random.shuffle(st.session_state.question_order)
-
     return [all_questions[i] for i in st.session_state.question_order]
 
 questions = get_questions()
@@ -53,80 +49,75 @@ def get_options(q_index, q):
         if st.session_state.randomize_choices:
             random.shuffle(options)
         st.session_state.choice_orders[q_index] = options
-
     return st.session_state.choice_orders[q_index]
 
-def normalize_answer(answer):
-    if answer is None:
-        return []
-    if isinstance(answer, list):
-        return answer
-    return [answer]
-
 def is_correct(user_answer, correct_answers):
-    return set(normalize_answer(user_answer)) == set(correct_answers)
+    return set(user_answer) == set(correct_answers)
 
 def calculate_breakdown(field):
     stats = defaultdict(lambda: {"correct": 0, "total": 0})
-
     for i, q in enumerate(questions):
         value = q.get(field, "Uncategorized")
         stats[value]["total"] += 1
-
         if is_correct(st.session_state.answers.get(i, []), q["answers"]):
             stats[value]["correct"] += 1
-
     return stats
 
 st.markdown("""
 <style>
 .exam-header {
-    background-color: #f4f6f9;
-    padding: 18px;
-    border-radius: 10px;
+    background: #f3f6fb;
+    padding: 16px 20px;
     border: 1px solid #d8dde6;
-    margin-bottom: 20px;
+    border-radius: 8px;
+    margin-bottom: 18px;
 }
 .exam-title {
-    font-size: 28px;
+    font-size: 26px;
     font-weight: 700;
 }
 .exam-subtitle {
     color: #5f6368;
-    font-size: 15px;
 }
 .timer-box {
-    background-color: #fff3cd;
-    padding: 12px;
+    background: #fff4d6;
+    border: 1px solid #e0b84f;
     border-radius: 8px;
-    border: 1px solid #ffeeba;
+    padding: 12px;
     text-align: center;
-    font-size: 22px;
+    font-size: 24px;
     font-weight: 700;
+}
+.question-card {
+    background: white;
+    border: 1px solid #d8dde6;
+    border-radius: 8px;
+    padding: 22px;
+    margin-top: 15px;
 }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="exam-header">
-    <div class="exam-title">Salesforce Admin Mock Exam Simulator</div>
-    <div class="exam-subtitle">Timed practice exam with review, scoring, explanations, and performance breakdown.</div>
+    <div class="exam-title">Salesforce Administrator Practice Exam</div>
+    <div class="exam-subtitle">Timed certification-style simulator</div>
 </div>
 """, unsafe_allow_html=True)
 
 if not st.session_state.started:
     st.header("Exam Instructions")
-    st.write(f"Time limit: {EXAM_MINUTES} minutes")
-    st.write(f"Questions: {len(all_questions)}")
-    st.write(f"Passing score: {PASSING_SCORE}%")
+    st.write(f"**Time Limit:** {EXAM_MINUTES} minutes")
+    st.write(f"**Questions:** {len(all_questions)}")
+    st.write(f"**Passing Score:** {PASSING_SCORE}%")
 
-    st.write("""
-    Instructions:
-    - Read each question carefully.
-    - Some questions may have multiple correct answers.
-    - You can mark questions for review.
-    - Review all answers before final submission.
-    - Explanations will appear only after submission.
+    st.info("""
+    During the exam:
+    - Single-answer questions use radio buttons.
+    - Multiple-answer questions use checkboxes.
+    - Questions may say “Choose 2 answers” or “Choose 3 answers.”
+    - You may mark questions for review.
+    - Explanations appear only after final submission.
     """)
 
     st.session_state.randomize_questions = st.checkbox(
@@ -139,7 +130,7 @@ if not st.session_state.started:
         value=st.session_state.randomize_choices
     )
 
-    if st.button("Start Exam"):
+    if st.button("Begin Exam"):
         st.session_state.started = True
         st.session_state.start_time = time.time()
         st.session_state.question_order = []
@@ -157,7 +148,7 @@ elif not st.session_state.submitted:
     mins = int(remaining // 60)
     secs = int(remaining % 60)
 
-    st.sidebar.markdown("## Exam Timer")
+    st.sidebar.markdown("## Time Remaining")
     st.sidebar.markdown(
         f"<div class='timer-box'>{mins:02d}:{secs:02d}</div>",
         unsafe_allow_html=True
@@ -166,11 +157,9 @@ elif not st.session_state.submitted:
     st.sidebar.markdown("## Question Navigator")
 
     for i in range(len(questions)):
-        label = f"Q{i + 1}"
-
+        label = f"{i + 1}"
         if i in st.session_state.answers:
             label += " ✓"
-
         if i in st.session_state.marked:
             label += " 🚩"
 
@@ -180,23 +169,23 @@ elif not st.session_state.submitted:
             st.rerun()
 
     if st.session_state.review_mode:
-        st.header("Review Before Submit")
+        st.header("Review Before Final Submission")
 
         answered = len(st.session_state.answers)
         unanswered = len(questions) - answered
+        marked = len(st.session_state.marked)
 
-        st.metric("Answered", answered)
-        st.metric("Unanswered", unanswered)
-        st.metric("Marked for Review", len(st.session_state.marked))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Answered", answered)
+        c2.metric("Unanswered", unanswered)
+        c3.metric("Marked", marked)
 
         st.divider()
 
         for i in range(len(questions)):
             status = "Answered" if i in st.session_state.answers else "Unanswered"
-
             if i in st.session_state.marked:
-                status += " | 🚩 Marked for Review"
-
+                status += " | 🚩 Marked"
             st.write(f"Question {i + 1}: {status}")
 
         col1, col2 = st.columns(2)
@@ -216,12 +205,14 @@ elif not st.session_state.submitted:
         q = questions[q_index]
         options = get_options(q_index, q)
 
-        col_a, col_b, col_c = st.columns(3)
-        col_a.metric("Question", f"{q_index + 1} / {len(questions)}")
-        col_b.metric("Answered", len(st.session_state.answers))
-        col_c.metric("Marked", len(st.session_state.marked))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Question", f"{q_index + 1} of {len(questions)}")
+        c2.metric("Answered", len(st.session_state.answers))
+        c3.metric("Marked", len(st.session_state.marked))
 
         st.progress((q_index + 1) / len(questions))
+
+        st.markdown("<div class='question-card'>", unsafe_allow_html=True)
 
         st.caption(
             f"Topic: {q.get('topic', 'Uncategorized')} | "
@@ -233,17 +224,19 @@ elif not st.session_state.submitted:
         question_type = q.get("type", "single")
 
         if question_type == "multiple":
-            st.write(f"Select {q.get('select_count', 'all that apply')} answers.")
+            select_count = q.get("select_count", "all correct")
+            st.warning(f"Choose {select_count} answers.")
 
-            selected = st.multiselect(
-                "Choose answers:",
-                options,
-                default=st.session_state.answers.get(q_index, []),
-                key=f"question_{q_index}"
-            )
+            selected_answers = []
 
-            if selected:
-                st.session_state.answers[q_index] = selected
+            for option in options:
+                checked = option in st.session_state.answers.get(q_index, [])
+
+                if st.checkbox(option, value=checked, key=f"q_{q_index}_{option}"):
+                    selected_answers.append(option)
+
+            if selected_answers:
+                st.session_state.answers[q_index] = selected_answers
             elif q_index in st.session_state.answers:
                 del st.session_state.answers[q_index]
 
@@ -252,16 +245,16 @@ elif not st.session_state.submitted:
             previous_answer = previous_answer[0] if previous_answer else None
 
             selected = st.radio(
-                "Choose one answer:",
+                "Choose one answer.",
                 options,
-                index=options.index(previous_answer)
-                if previous_answer in options
-                else None,
+                index=options.index(previous_answer) if previous_answer in options else None,
                 key=f"question_{q_index}"
             )
 
             if selected:
                 st.session_state.answers[q_index] = [selected]
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
         col1, col2, col3, col4 = st.columns(4)
 
@@ -277,7 +270,7 @@ elif not st.session_state.submitted:
 
         with col3:
             if q_index in st.session_state.marked:
-                if st.button("Unmark Review"):
+                if st.button("Unmark"):
                     st.session_state.marked.remove(q_index)
                     st.rerun()
             else:
@@ -301,10 +294,10 @@ else:
 
     st.header("Exam Results")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Score", f"{score}%")
-    col2.metric("Correct", f"{correct} / {len(questions)}")
-    col3.metric("Passing Score", f"{PASSING_SCORE}%")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Score", f"{score}%")
+    c2.metric("Correct", f"{correct} / {len(questions)}")
+    c3.metric("Passing Score", f"{PASSING_SCORE}%")
 
     if score >= PASSING_SCORE:
         st.success("PASS")
@@ -316,16 +309,12 @@ else:
     st.header("Performance Breakdown")
 
     st.subheader("By Topic")
-    topic_stats = calculate_breakdown("topic")
-
-    for topic, data in topic_stats.items():
+    for topic, data in calculate_breakdown("topic").items():
         percent = round((data["correct"] / data["total"]) * 100, 2)
         st.write(f"**{topic}:** {data['correct']} / {data['total']} correct ({percent}%)")
 
     st.subheader("By Difficulty")
-    difficulty_stats = calculate_breakdown("difficulty")
-
-    for difficulty, data in difficulty_stats.items():
+    for difficulty, data in calculate_breakdown("difficulty").items():
         percent = round((data["correct"] / data["total"]) * 100, 2)
         st.write(f"**{difficulty}:** {data['correct']} / {data['total']} correct ({percent}%)")
 
