@@ -4,16 +4,11 @@
     "exam": "Salesforce Admin",
     "topic": "Security and Access",
     "difficulty": "Medium",
-    "question": "A sales manager needs to see all opportunities owned by users below them in the hierarchy. What should the admin configure?",
+    "question": "A sales manager needs to see all opportunities owned by users below them in the role hierarchy. What should the admin configure?",
     "type": "single",
-    "options": [
-      "Profiles",
-      "Role Hierarchy",
-      "Permission Sets",
-      "Queues"
-    ],
+    "options": ["Profiles", "Role Hierarchy", "Permission Sets", "Queues"],
     "answers": ["Role Hierarchy"],
-    "explanation": "Role hierarchy allows managers to access records owned by users beneath them when sharing settings allow hierarchy access."
+    "explanation": "Role hierarchy allows managers to access records owned by users below them when record access settings allow it."
   },
   {
     "id": 2,
@@ -23,29 +18,152 @@
     "question": "Which two features can grant additional access to a user without changing the user's profile?",
     "type": "multiple",
     "select_count": 2,
-    "options": [
-      "Permission Sets",
-      "Sharing Rules",
-      "Page Layouts",
-      "Validation Rules"
-    ],
+    "options": ["Permission Sets", "Sharing Rules", "Page Layouts", "Validation Rules"],
     "answers": ["Permission Sets", "Sharing Rules"],
-    "explanation": "Permission sets grant additional object or field permissions. Sharing rules extend record access. Page layouts affect UI arrangement, and validation rules enforce data quality."
+    "explanation": "Permission sets can grant additional object or field permissions. Sharing rules can extend record-level access."
   },
   {
     "id": 3,
     "exam": "Salesforce Admin",
-    "topic": "Automation",
+    "topic": "Workflow/Process Automation",
     "difficulty": "Medium",
-    "question": "Which automation tool is recommended for creating complex business automation in Salesforce?",
+    "question": "Which automation tool should an admin use to create complex business automation with clicks, not code?",
     "type": "single",
-    "options": [
-      "Workflow Rules",
-      "Process Builder",
-      "Flow Builder",
-      "Assignment Rules"
-    ],
+    "options": ["Flow Builder", "Data Loader", "Schema Builder", "Import Wizard"],
     "answers": ["Flow Builder"],
     "explanation": "Flow Builder is Salesforce’s primary declarative automation tool for complex business processes."
+  },
+  {
+    "id": 4,
+    "exam": "Salesforce Admin",
+    "topic": "Object Manager and Lightning App Builder",
+    "difficulty": "Medium",
+    "question": "Users need to track a custom value on Account records. What should the admin create?",
+    "type": "single",
+    "options": ["Custom Object", "Custom Field", "Custom Profile", "Custom App"],
+    "answers": ["Custom Field"],
+    "explanation": "A custom field stores additional information on an existing object such as Account."
+  },
+  {
+    "id": 5,
+    "exam": "Salesforce Admin",
+    "topic": "Data and Analytics Management",
+    "difficulty": "Medium",
+    "question": "An admin needs to import 40,000 lead records and prevent duplicate records. Which tool is most appropriate?",
+    "type": "single",
+    "options": ["Data Import Wizard", "AppExchange", "Schema Builder", "Approval Process"],
+    "answers": ["Data Import Wizard"],
+    "explanation": "Data Import Wizard supports importing common standard objects like Leads and includes duplicate handling options."
+  },
+  {
+    "id": 6,
+    "exam": "Salesforce Admin",
+    "topic": "Reports and Dashboards",
+    "difficulty": "Medium",
+    "question": "A sales director wants to see total opportunity amount by sales rep and stage. What should the admin create?",
+    "type": "single",
+    "options": ["Report", "Validation Rule", "Queue", "Permission Set"],
+    "answers": ["Report"],
+    "explanation": "Reports summarize and group Salesforce data, such as opportunity amounts by owner and stage."
+  },
+  {
+    "id": 7,
+    "exam": "Salesforce Admin",
+    "topic": "Security and Access",
+    "difficulty": "Hard",
+    "question": "A user can open an Account record but cannot see the Annual Revenue field. What should the admin check first?",
+    "type": "single",
+    "options": ["Field-Level Security", "Role Hierarchy", "Sharing Rule", "Record Type"],
+    "answers": ["Field-Level Security"],
+    "explanation": "Field-Level Security controls whether users can view or edit individual fields."
+  },
+  {
+    "id": 8,
+    "exam": "Salesforce Admin",
+    "topic": "Configuration and Setup",
+    "difficulty": "Easy",
+    "question": "Where should an admin go to create users, manage company settings, and configure Salesforce features?",
+    "type": "single",
+    "options": ["Setup", "App Launcher", "Chatter", "Recycle Bin"],
+    "answers": ["Setup"],
+    "explanation": "Setup is where admins configure Salesforce settings, users, objects, automation, and security."
+  },
+  {
+    "id": 9,
+    "exam": "Salesforce Admin",
+    "topic": "Sales and Marketing Applications",
+    "difficulty": "Medium",
+    "question": "A sales team wants to track potential revenue and sales stages. Which standard object should they use?",
+    "type": "single",
+    "options": ["Opportunity", "Case", "Campaign", "Contract"],
+    "answers": ["Opportunity"],
+    "explanation": "Opportunities track potential sales, revenue, stages, close dates, and sales pipeline details."
+  },
+  {
+    "id": 10,
+    "exam": "Salesforce Admin",
+    "topic": "Service and Support Applications",
+    "difficulty": "Medium",
+    "question": "A support team needs to track customer issues and resolutions. Which standard object should be used?",
+    "type": "single",
+    "options": ["Case", "Opportunity", "Campaign", "Lead"],
+    "answers": ["Case"],
+    "explanation": "Cases are used to track customer support issues, service requests, and resolutions."
+  },
+  {
+    "id": 11,
+    "exam": "Salesforce Admin",
+    "topic": "Workflow/Process Automation",
+    "difficulty": "Hard",
+    "question": "Which two automation features can an admin use to enforce business requirements before a record is saved?",
+    "type": "multiple",
+    "select_count": 2,
+    "options": ["Validation Rules", "Before-Save Flow", "Dashboard", "Queue"],
+    "answers": ["Validation Rules", "Before-Save Flow"],
+    "explanation": "Validation rules prevent invalid data from being saved. Before-save flows can update or evaluate data before the record is committed."
+  },
+  {
+    "id": 12,
+    "exam": "Salesforce Admin",
+    "topic": "Object Manager and Lightning App Builder",
+    "difficulty": "Medium",
+    "question": "Different teams need different picklist values and page layouts for the same object. What should the admin use?",
+    "type": "single",
+    "options": ["Record Types", "Queues", "Public Groups", "Dashboard Filters"],
+    "answers": ["Record Types"],
+    "explanation": "Record types allow different business processes, picklist values, and page layouts for the same object."
+  },
+  {
+    "id": 13,
+    "exam": "Salesforce Admin",
+    "topic": "Data and Analytics Management",
+    "difficulty": "Medium",
+    "question": "An admin wants to export all Salesforce data weekly for backup. Which feature should be used?",
+    "type": "single",
+    "options": ["Data Export Service", "Report Builder", "Data Import Wizard", "Schema Builder"],
+    "answers": ["Data Export Service"],
+    "explanation": "Data Export Service can export Salesforce data for backup on a scheduled basis."
+  },
+  {
+    "id": 14,
+    "exam": "Salesforce Admin",
+    "topic": "Productivity and Collaboration",
+    "difficulty": "Easy",
+    "question": "Which Salesforce feature allows users to collaborate on records using posts, comments, and mentions?",
+    "type": "single",
+    "options": ["Chatter", "Data Loader", "Approval Process", "Role Hierarchy"],
+    "answers": ["Chatter"],
+    "explanation": "Chatter enables collaboration through posts, comments, mentions, and record feeds."
+  },
+  {
+    "id": 15,
+    "exam": "Salesforce Admin",
+    "topic": "Reports and Dashboards",
+    "difficulty": "Hard",
+    "question": "A manager wants dashboard data to display based on the access of the person viewing the dashboard. What should the admin use?",
+    "type": "single",
+    "options": ["Dynamic Dashboard", "Static Dashboard", "Joined Report", "Bucket Field"],
+    "answers": ["Dynamic Dashboard"],
+    "explanation": "Dynamic dashboards show data according to the running user's own access permissions."
   }
 ]
