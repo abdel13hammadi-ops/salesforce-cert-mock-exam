@@ -4,9 +4,11 @@ import random
 from collections import defaultdict
 import streamlit as st
 
+
 def load_config():
     with open("exam_config.json", "r") as file:
         return json.load(file)
+
 
 config = load_config()
 
@@ -16,9 +18,11 @@ PASSING_SCORE = config["passing_score"]
 EXAM_MINUTES = config["time_limit_minutes"]
 QUESTION_FILE = config["question_file"]
 
+
 def load_questions():
     with open(QUESTION_FILE, "r") as file:
         return json.load(file)
+
 
 all_questions = load_questions()
 
@@ -40,44 +44,65 @@ for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
+
 def get_questions():
     if not st.session_state.question_order:
         st.session_state.question_order = list(range(len(all_questions)))
+
         if st.session_state.randomize_questions:
             random.shuffle(st.session_state.question_order)
+
     return [all_questions[i] for i in st.session_state.question_order]
 
+
 questions = get_questions()
+
 
 def get_options(q_index, q):
     if q_index not in st.session_state.choice_orders:
         options = q["options"].copy()
+
         if st.session_state.randomize_choices:
             random.shuffle(options)
+
         st.session_state.choice_orders[q_index] = options
+
     return st.session_state.choice_orders[q_index]
+
 
 def is_correct(user_answer, correct_answers):
     return set(user_answer) == set(correct_answers)
 
+
 def calculate_breakdown(field):
     stats = defaultdict(lambda: {"correct": 0, "total": 0})
+
     for i, q in enumerate(questions):
         value = q.get(field, "Uncategorized")
         stats[value]["total"] += 1
+
         if is_correct(st.session_state.answers.get(i, []), q["answers"]):
             stats[value]["correct"] += 1
+
     return stats
 
-st.markdown(f"""
-<div style="background:#f3f6fb;padding:16px 20px;border:1px solid #d8dde6;border-radius:8px;margin-bottom:18px;">
-  <div style="font-size:26px;font-weight:700;">{config["exam_title"]}</div>
-  <div style="color:#5f6368;">{config["certification"]} | Timed certification-style simulator</div>
-</div>
-""", unsafe_allow_html=True)
 
+# Header
+st.markdown(
+    f"""
+    <div style="background:#f3f6fb;padding:16px 20px;border:1px solid #d8dde6;border-radius:8px;margin-bottom:18px;">
+      <div style="font-size:26px;font-weight:700;">{config["exam_title"]}</div>
+      <div style="color:#5f6368;">{config["certification"]} | Timed certification-style simulator</div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+
+# Start screen
 if not st.session_state.started:
     st.header("Exam Instructions")
+
     st.write(f"**Time Limit:** {EXAM_MINUTES} minutes")
     st.write(f"**Questions:** {len(all_questions)}")
     st.write(f"**Passing Score:** {PASSING_SCORE}%")
@@ -86,23 +111,38 @@ if not st.session_state.started:
     for section in config["sections"]:
         st.write(f"- {section}")
 
-    st.info("""
-    - Single-answer questions use radio buttons.
-    - Multiple-answer questions use checkboxes.
-    - You may mark questions for review.
-    - Explanations appear only after final submission.
-    """)
+    st.info(
+        """
+        - Single-answer questions use radio buttons.
+        - Multiple-answer questions use checkboxes.
+        - You may mark questions for review.
+        - Explanations appear only after final submission.
+        """
+    )
 
-    st.session_state.randomize_questions = st.checkbox("Randomize question order", value=True)
-    st.session_state.randomize_choices = st.checkbox("Randomize answer choices", value=True)
+    st.session_state.randomize_questions = st.checkbox(
+        "Randomize question order",
+        value=st.session_state.randomize_questions
+    )
+
+    st.session_state.randomize_choices = st.checkbox(
+        "Randomize answer choices",
+        value=st.session_state.randomize_choices
+    )
 
     if st.button("Begin Exam"):
         st.session_state.started = True
         st.session_state.start_time = time.time()
         st.session_state.question_order = []
         st.session_state.choice_orders = {}
+        st.session_state.answers = {}
+        st.session_state.marked = set()
+        st.session_state.current_question = 0
+        st.session_state.review_mode = False
         st.rerun()
 
+
+# Exam screen
 elif not st.session_state.submitted:
     elapsed = time.time() - st.session_state.start_time
     remaining = (EXAM_MINUTES * 60) - elapsed
@@ -116,15 +156,23 @@ elif not st.session_state.submitted:
 
     st.sidebar.markdown("## Time Remaining")
     st.sidebar.markdown(
-        f"<div style='background:#fff4d6;border:1px solid #e0b84f;border-radius:8px;padding:12px;text-align:center;font-size:24px;font-weight:700;'>{mins:02d}:{secs:02d}</div>",
+        f"""
+        <div style='background:#fff4d6;border:1px solid #e0b84f;border-radius:8px;
+        padding:12px;text-align:center;font-size:24px;font-weight:700;'>
+        {mins:02d}:{secs:02d}
+        </div>
+        """,
         unsafe_allow_html=True
     )
 
     st.sidebar.markdown("## Question Navigator")
+
     for i in range(len(questions)):
         label = f"{i + 1}"
+
         if i in st.session_state.answers:
             label += " ✓"
+
         if i in st.session_state.marked:
             label += " 🚩"
 
@@ -136,24 +184,32 @@ elif not st.session_state.submitted:
     if st.session_state.review_mode:
         st.header("Review Before Final Submission")
 
+        answered = len(st.session_state.answers)
+        unanswered = len(questions) - answered
+        marked = len(st.session_state.marked)
+
         c1, c2, c3 = st.columns(3)
-        c1.metric("Answered", len(st.session_state.answers))
-        c2.metric("Unanswered", len(questions) - len(st.session_state.answers))
-        c3.metric("Marked", len(st.session_state.marked))
+        c1.metric("Answered", answered)
+        c2.metric("Unanswered", unanswered)
+        c3.metric("Marked", marked)
 
         st.divider()
 
         for i in range(len(questions)):
             status = "Answered" if i in st.session_state.answers else "Unanswered"
+
             if i in st.session_state.marked:
                 status += " | 🚩 Marked"
+
             st.write(f"Question {i + 1}: {status}")
 
         col1, col2 = st.columns(2)
+
         with col1:
             if st.button("Return to Exam"):
                 st.session_state.review_mode = False
                 st.rerun()
+
         with col2:
             if st.button("Final Submit"):
                 st.session_state.submitted = True
@@ -170,15 +226,24 @@ elif not st.session_state.submitted:
         c3.metric("Marked", len(st.session_state.marked))
 
         st.progress((q_index + 1) / len(questions))
-        st.caption(f"Topic: {q.get('topic', 'Uncategorized')} | Difficulty: {q.get('difficulty', 'N/A')}")
+
+        st.caption(
+            f"Topic: {q.get('topic', 'Uncategorized')} | "
+            f"Difficulty: {q.get('difficulty', 'N/A')}"
+        )
+
         st.subheader(q["question"])
 
-        if q.get("type", "single") == "multiple":
+        question_type = q.get("type", "single")
+
+        if question_type == "multiple":
             st.warning(f"Choose {q.get('select_count', 'all correct')} answers.")
+
             selected_answers = []
 
             for option in options:
                 checked = option in st.session_state.answers.get(q_index, [])
+
                 if st.checkbox(option, value=checked, key=f"q_{q_index}_{option}"):
                     selected_answers.append(option)
 
@@ -207,10 +272,12 @@ elif not st.session_state.submitted:
             if st.button("Previous") and q_index > 0:
                 st.session_state.current_question -= 1
                 st.rerun()
+
         with col2:
             if st.button("Next") and q_index < len(questions) - 1:
                 st.session_state.current_question += 1
                 st.rerun()
+
         with col3:
             if q_index in st.session_state.marked:
                 if st.button("Unmark"):
@@ -220,15 +287,21 @@ elif not st.session_state.submitted:
                 if st.button("Mark for Review"):
                     st.session_state.marked.add(q_index)
                     st.rerun()
+
         with col4:
             if st.button("Review / Submit"):
                 st.session_state.review_mode = True
                 st.rerun()
 
+
+# Results screen
 else:
     correct = 0
+
     for i, q in enumerate(questions):
-        if is_correct(st.session_state.answers.get(i, []), q["answers"]):
+        user_answer = st.session_state.answers.get(i, [])
+
+        if is_correct(user_answer, q["answers"]):
             correct += 1
 
     score = round((correct / len(questions)) * 100, 2)
@@ -240,28 +313,38 @@ else:
     c2.metric("Correct", f"{correct} / {len(questions)}")
     c3.metric("Passing Score", f"{PASSING_SCORE}%")
 
- if score >= PASSING_SCORE:
-    st.success("PASS")
-else:
-    st.error("FAIL")
+    if score >= PASSING_SCORE:
+        st.success("PASS")
+    else:
+        st.error("FAIL")
 
     st.divider()
+
     st.header("Performance Breakdown")
 
     st.subheader("By Topic")
     for topic, data in calculate_breakdown("topic").items():
         percent = round((data["correct"] / data["total"]) * 100, 2)
-        st.write(f"**{topic}:** {data['correct']} / {data['total']} correct ({percent}%)")
+        st.write(
+            f"**{topic}:** {data['correct']} / {data['total']} correct ({percent}%)"
+        )
 
     st.subheader("By Difficulty")
     for difficulty, data in calculate_breakdown("difficulty").items():
         percent = round((data["correct"] / data["total"]) * 100, 2)
-        st.write(f"**{difficulty}:** {data['correct']} / {data['total']} correct ({percent}%)")
+        st.write(
+            f"**{difficulty}:** {data['correct']} / {data['total']} correct ({percent}%)"
+        )
 
     st.divider()
+
     st.header("Answer Review")
 
-    review_filter = st.radio("Review filter:", ["All Questions", "Incorrect Only", "Correct Only"], horizontal=True)
+    review_filter = st.radio(
+        "Review filter:",
+        ["All Questions", "Incorrect Only", "Correct Only"],
+        horizontal=True
+    )
 
     for i, q in enumerate(questions):
         user_answer = st.session_state.answers.get(i, [])
@@ -270,13 +353,25 @@ else:
 
         if review_filter == "Incorrect Only" and result_correct:
             continue
+
         if review_filter == "Correct Only" and not result_correct:
             continue
 
-        st.success(f"Question {i + 1} — Correct") if result_correct else st.error(f"Question {i + 1} — Incorrect")
-        st.caption(f"Topic: {q.get('topic', 'Uncategorized')} | Difficulty: {q.get('difficulty', 'N/A')}")
+        if result_correct:
+            st.success(f"Question {i + 1} — Correct")
+        else:
+            st.error(f"Question {i + 1} — Incorrect")
+
+        st.caption(
+            f"Topic: {q.get('topic', 'Uncategorized')} | "
+            f"Difficulty: {q.get('difficulty', 'N/A')}"
+        )
+
         st.write(q["question"])
-        st.write("Your answer: " + (", ".join(user_answer) if user_answer else "No answer selected"))
+        st.write(
+            "Your answer: "
+            + (", ".join(user_answer) if user_answer else "No answer selected")
+        )
         st.write("Correct answer: " + ", ".join(correct_answers))
         st.info(q["explanation"])
         st.divider()
@@ -285,4 +380,5 @@ else:
         for key in list(defaults.keys()):
             if key in st.session_state:
                 del st.session_state[key]
+
         st.rerun()
