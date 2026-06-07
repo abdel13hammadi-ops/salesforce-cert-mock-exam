@@ -268,8 +268,8 @@ st.markdown(
     }
 
     section[data-testid="stSidebar"] div[data-testid="column"] {
-        padding-left: 0.02rem;
-        padding-right: 0.02rem;
+        padding-left: 0rem;
+        padding-right: 0rem;
     }
 
     @media (max-width: 900px) {
