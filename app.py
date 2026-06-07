@@ -59,7 +59,6 @@ def get_questions():
         st.session_state.question_order = list(range(len(all_questions)))
         if st.session_state.randomize_questions:
             random.shuffle(st.session_state.question_order)
-
     return [all_questions[i] for i in st.session_state.question_order]
 
 
@@ -72,7 +71,6 @@ def get_options(q_index, q):
         if st.session_state.randomize_choices:
             random.shuffle(options)
         st.session_state.choice_orders[q_index] = options
-
     return st.session_state.choice_orders[q_index]
 
 
@@ -82,14 +80,11 @@ def is_correct(user_answer, correct_answers):
 
 def calculate_breakdown(field):
     stats = defaultdict(lambda: {"correct": 0, "total": 0})
-
     for i, q in enumerate(questions):
         value = q.get(field, "Uncategorized")
         stats[value]["total"] += 1
-
         if is_correct(st.session_state.answers.get(i, []), q["answers"]):
             stats[value]["correct"] += 1
-
     return stats
 
 
@@ -161,7 +156,7 @@ st.markdown(
     }
 
     section[data-testid="stSidebar"] > div:first-child {
-        padding-top: 0.75rem;
+        padding-top: 0.5rem;
     }
 
     .timer-fixed {
@@ -176,13 +171,9 @@ st.markdown(
         box-shadow: 0 2px 4px rgba(0,0,0,0.06);
     }
 
-    .navigator-spacer {
-        height: 118px;
-    }
-
     .timer-label {
         font-weight: 700;
-        font-size: 16px;
+        font-size: 15px;
         margin-bottom: 7px;
         color: #1f2937;
     }
@@ -191,18 +182,22 @@ st.markdown(
         background: #fff4d6;
         border: 1px solid #e0b84f;
         border-radius: 8px;
-        padding: 12px;
+        padding: 10px;
         text-align: center;
-        font-size: 27px;
+        font-size: 26px;
         font-weight: 800;
         color: #1f2937;
         letter-spacing: 1px;
     }
 
+    .navigator-spacer {
+        height: 118px;
+    }
+
     .question-nav-title {
         font-weight: 700;
         font-size: 16px;
-        margin-top: 10px;
+        margin-top: 6px;
         margin-bottom: 8px;
         color: #1f2937;
     }
@@ -210,7 +205,7 @@ st.markdown(
     .small-help {
         color: #5f6368;
         font-size: 13px;
-        margin-bottom: 8px;
+        margin-bottom: 10px;
     }
 
     section[data-testid="stSidebar"] div.stButton > button {
@@ -221,14 +216,27 @@ st.markdown(
         min-height: 2.1rem;
     }
 
+    div.stButton > button {
+        border-radius: 6px;
+        font-weight: 600;
+    }
+
     section[data-testid="stSidebar"] div[data-testid="column"] {
         padding-left: 0.12rem;
         padding-right: 0.12rem;
     }
 
-    div.stButton > button {
-        border-radius: 6px;
-        font-weight: 600;
+    @media (max-width: 900px) {
+        .timer-fixed {
+            position: sticky;
+            top: 0;
+            width: auto;
+            left: auto;
+        }
+
+        .navigator-spacer {
+            height: 0px;
+        }
     }
     </style>
     """,
@@ -342,22 +350,24 @@ elif not st.session_state.submitted:
         unsafe_allow_html=True
     )
 
-nav_cols = st.sidebar.columns(2)
+    # Two-column question navigator
+    nav_cols = st.sidebar.columns(2)
+
     for i in range(len(questions)):
-    label = f"{i + 1}"
+        label = f"{i + 1}"
 
-    if i in st.session_state.answers:
-        label += "✓"
+        if i in st.session_state.answers:
+            label += "✓"
 
-    if i in st.session_state.marked:
-        label += "🚩"
+        if i in st.session_state.marked:
+            label += "🚩"
 
-    with nav_cols[i % 2]:
+        with nav_cols[i % 2]:
             if st.button(label, key=f"nav_{i}"):
                 st.session_state.current_question = i
                 st.session_state.review_mode = False
                 st.rerun()
-                
+
     if st.session_state.review_mode:
         st.header("Review Before Final Submission")
 
