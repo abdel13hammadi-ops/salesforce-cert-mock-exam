@@ -209,15 +209,13 @@ st.markdown(
     }
 
     section[data-testid="stSidebar"] div.stButton > button {
-      width: 100%;
-      height: 38px;
-      min-height: 38px;
-      padding: 0 !important;
-      font-size: 15px;
-      border-radius: 10px;
-      text-align: center;
-      font-weight: 700;
-}
+        width: 100%;
+        padding: 0.28rem 0.2rem;
+        font-size: 12px;
+        border-radius: 6px;
+        min-height: 2.1rem;
+    }
+
     div.stButton > button {
         border-radius: 6px;
         font-weight: 600;
@@ -353,23 +351,22 @@ elif not st.session_state.submitted:
     )
 
     # Two-column question navigator
-    nav_cols = st.sidebar.columns(3)
+    nav_cols = st.sidebar.columns(2)
 
-for i in range(len(questions)):
-    if i in st.session_state.answers and i in st.session_state.marked:
-        label = f"{i + 1} ✅ 🚩"
-    elif i in st.session_state.answers:
-        label = f"{i + 1} ✅"
-    elif i in st.session_state.marked:
-        label = f"{i + 1} 🚩"
-    else:
+    for i in range(len(questions)):
         label = f"{i + 1}"
 
-    with nav_cols[i % 3]:
-        if st.button(label, key=f"nav_{i}"):
-            st.session_state.current_question = i
-            st.session_state.review_mode = False
-            st.rerun()
+        if i in st.session_state.answers:
+            label += "✓"
+
+        if i in st.session_state.marked:
+            label += "🚩"
+
+        with nav_cols[i % 2]:
+            if st.button(label, key=f"nav_{i}"):
+                st.session_state.current_question = i
+                st.session_state.review_mode = False
+                st.rerun()
 
     if st.session_state.review_mode:
         st.header("Review Before Final Submission")
