@@ -233,7 +233,7 @@ st.markdown(
     }
 
     .navigator-spacer {
-        height: 118px;
+        height: 0px;
     }
 
     .question-nav-title {
@@ -253,8 +253,8 @@ st.markdown(
     section[data-testid="stSidebar"] div.stButton > button {
         width: 100%;
         min-width: 52px;
-        height: 42px;
-        min-height: 42px;
+        height: 46px;
+        min-height: 46px;
         padding: 0 8px !important;
         font-size: 14px;
         border-radius: 8px;
@@ -400,18 +400,13 @@ elif not st.session_state.submitted:
     mins = int(remaining // 60)
     secs = int(remaining % 60)
 
-    st.sidebar.markdown(
-        f"""
-        <div class="timer-fixed">
-            <div class="timer-label">Time Remaining</div>
-            <div class="timer-box">{mins:02d}:{secs:02d}</div>
-        </div>
-        <div class="navigator-spacer"></div>
-        <div class="question-nav-title">Question Navigator</div>
-        <div class="small-help">✔️ answered &nbsp;&nbsp; 🚩 marked</div>
-        """,
-        unsafe_allow_html=True
-    )
+   st.sidebar.markdown(
+    """
+    <div class="question-nav-title">Question Navigator</div>
+    <div class="small-help">✔️ answered &nbsp;&nbsp; 🚩 marked</div>
+    """,
+    unsafe_allow_html=True
+)
 
     nav_cols = st.sidebar.columns(3)
 
