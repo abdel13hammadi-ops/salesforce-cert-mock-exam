@@ -252,14 +252,16 @@ st.markdown(
 
     section[data-testid="stSidebar"] div.stButton > button {
         width: 100%;
-        height: 42px;
-        min-height: 42px;
-        padding: 0 !important;
+        min-width: 72px;
+        height: 46px;
+        min-height: 46px;
+        padding: 0 8px !important;
         font-size: 14px;
         border-radius: 8px;
         text-align: center;
-        font-weight: 600;
-        margin-bottom: 4px;
+       font-weight: 600;
+       margin-bottom: 5px;
+       white-space: nowrap;
     }
 
     div.stButton > button {
