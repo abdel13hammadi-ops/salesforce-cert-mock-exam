@@ -356,10 +356,10 @@ elif not st.session_state.submitted:
     for i in range(len(questions)):
 
         if i in st.session_state.answers and i in st.session_state.marked:
-            label = f"{i + 1} ✅ 🚩"
+            label = f"{i + 1} ✔️ 🚩"
 
         elif i in st.session_state.answers:
-            label = f"{i + 1} ✅"
+            label = f"{i + 1} ✔️"
 
         elif i in st.session_state.marked:
             label = f"{i + 1} 🚩"
