@@ -1,6 +1,7 @@
 import json
 import time
 import random
+from pathlib import Path
 from collections import defaultdict
 
 import streamlit as st
@@ -8,6 +9,7 @@ from streamlit_autorefresh import st_autorefresh
 
 
 CONFIG_FILE = "exam_config.json"
+QUESTION_FOLDER = Path("questions")
 
 
 def load_config():
@@ -25,15 +27,37 @@ st.set_page_config(
 
 PASSING_SCORE = config["passing_score"]
 EXAM_MINUTES = config["time_limit_minutes"]
-QUESTION_FILE = config["question_file"]
 
 
-def load_questions():
-    with open(QUESTION_FILE, "r", encoding="utf-8") as file:
+def get_exam_files():
+    return sorted(QUESTION_FOLDER.glob("*.json"))
+
+
+def format_exam_name(path):
+    return path.stem.replace("_", " ").replace("-", " ").title()
+
+
+exam_files = get_exam_files()
+
+if not exam_files:
+    st.error("No exam JSON files found in the questions folder.")
+    st.stop()
+
+
+if "selected_exam_file" not in st.session_state:
+    configured_file = config.get("question_file")
+    if configured_file and Path(configured_file) in exam_files:
+        st.session_state.selected_exam_file = configured_file
+    else:
+        st.session_state.selected_exam_file = str(exam_files[0])
+
+
+def load_questions(file_path):
+    with open(file_path, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
-all_questions = load_questions()
+all_questions = load_questions(st.session_state.selected_exam_file)
 
 defaults = {
     "started": False,
@@ -80,19 +104,37 @@ def is_correct(user_answer, correct_answers):
 
 def calculate_breakdown(field):
     stats = defaultdict(lambda: {"correct": 0, "total": 0})
+
     for i, q in enumerate(questions):
         value = q.get(field, "Uncategorized")
         stats[value]["total"] += 1
+
         if is_correct(st.session_state.answers.get(i, []), q["answers"]):
             stats[value]["correct"] += 1
+
     return stats
 
 
 def reset_exam():
+    selected_exam_file = st.session_state.get("selected_exam_file")
     for key in list(defaults.keys()):
         if key in st.session_state:
             del st.session_state[key]
+    if selected_exam_file:
+        st.session_state.selected_exam_file = selected_exam_file
     st.rerun()
+
+
+def reset_exam_progress_only():
+    st.session_state.started = False
+    st.session_state.submitted = False
+    st.session_state.review_mode = False
+    st.session_state.current_question = 0
+    st.session_state.answers = {}
+    st.session_state.marked = set()
+    st.session_state.start_time = None
+    st.session_state.question_order = []
+    st.session_state.choice_orders = {}
 
 
 st.markdown(
@@ -210,10 +252,14 @@ st.markdown(
 
     section[data-testid="stSidebar"] div.stButton > button {
         width: 100%;
-        padding: 0.28rem 0.2rem;
-        font-size: 12px;
-        border-radius: 6px;
-        min-height: 2.1rem;
+        height: 42px;
+        min-height: 42px;
+        padding: 0 !important;
+        font-size: 14px;
+        border-radius: 8px;
+        text-align: center;
+        font-weight: 600;
+        margin-bottom: 4px;
     }
 
     div.stButton > button {
@@ -222,8 +268,8 @@ st.markdown(
     }
 
     section[data-testid="stSidebar"] div[data-testid="column"] {
-        padding-left: 0.12rem;
-        padding-right: 0.12rem;
+        padding-left: 0.02rem;
+        padding-right: 0.02rem;
     }
 
     @media (max-width: 900px) {
@@ -264,11 +310,26 @@ st.markdown(
 if not st.session_state.started:
     st.header("Exam Instructions")
 
+    selected_exam = st.selectbox(
+        "Choose Mock Exam",
+        exam_files,
+        format_func=format_exam_name,
+        index=exam_files.index(Path(st.session_state.selected_exam_file))
+        if Path(st.session_state.selected_exam_file) in exam_files
+        else 0
+    )
+
+    if str(selected_exam) != st.session_state.selected_exam_file:
+        st.session_state.selected_exam_file = str(selected_exam)
+        reset_exam_progress_only()
+        st.rerun()
+
     st.markdown(
-        """
+        f"""
         <div class="exam-card">
-            <p>This simulator uses the current Platform Administrator-style structure, including Agentforce AI.</p>
+            <p><strong>Selected Exam:</strong> {format_exam_name(Path(st.session_state.selected_exam_file))}</p>
             <p>Answers and explanations are hidden until after final submission.</p>
+            <p>To add more exams later, upload another valid JSON file into the <code>questions</code> folder.</p>
         </div>
         """,
         unsafe_allow_html=True
@@ -345,22 +406,26 @@ elif not st.session_state.submitted:
         </div>
         <div class="navigator-spacer"></div>
         <div class="question-nav-title">Question Navigator</div>
-        <div class="small-help">✓ answered &nbsp;&nbsp; 🚩 marked</div>
+        <div class="small-help">✔️ answered &nbsp;&nbsp; 🚩 marked</div>
         """,
         unsafe_allow_html=True
     )
 
-    # Two-column question navigator
     nav_cols = st.sidebar.columns(3)
 
     for i in range(len(questions)):
-        label = f"{i + 1}"
 
-        if i in st.session_state.answers:
-            label += "✓"
+        if i in st.session_state.answers and i in st.session_state.marked:
+            label = f"{i + 1} ✔️ 🚩"
 
-        if i in st.session_state.marked:
-            label += "🚩"
+        elif i in st.session_state.answers:
+            label = f"{i + 1} ✔️"
+
+        elif i in st.session_state.marked:
+            label = f"{i + 1} 🚩"
+
+        else:
+            label = f"{i + 1}"
 
         with nav_cols[i % 3]:
             if st.button(label, key=f"nav_{i}"):
