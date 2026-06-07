@@ -350,29 +350,24 @@ elif not st.session_state.submitted:
         unsafe_allow_html=True
     )
 
-    # Three-column question navigator
-    nav_cols = st.sidebar.columns(3)
+    # Two-column question navigator
+    nav_cols = st.sidebar.columns(2)
 
     for i in range(len(questions)):
+        label = f"{i + 1}"
 
-        if i in st.session_state.answers and i in st.session_state.marked:
-            label = f"{i + 1} ✔️ 🚩"
+        if i in st.session_state.answers:
+            label += "✓"
 
-        elif i in st.session_state.answers:
-            label = f"{i + 1} ✔️"
+        if i in st.session_state.marked:
+            label += "🚩"
 
-        elif i in st.session_state.marked:
-            label = f"{i + 1} 🚩"
-
-        else:
-            label = f"{i + 1}"
-
-        with nav_cols[i % 3]:
+        with nav_cols[i % 2]:
             if st.button(label, key=f"nav_{i}"):
                 st.session_state.current_question = i
                 st.session_state.review_mode = False
                 st.rerun()
-                
+
     if st.session_state.review_mode:
         st.header("Review Before Final Submission")
 
