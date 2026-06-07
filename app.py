@@ -354,6 +354,7 @@ elif not st.session_state.submitted:
     nav_cols = st.sidebar.columns(3)
 
     for i in range(len(questions)):
+        if i in st.session_state.answers and i in st.session_state.marked:
         label = f"{i + 1} ✅ 🚩"
 
         elif i in st.session_state.answers:
