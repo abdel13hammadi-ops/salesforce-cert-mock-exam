@@ -6,42 +6,42 @@
   "question_file": "questions/mock_exam_3.json",
   "sections": [
     {
-      "name": "Data and Analytics Management",
+      "name": "Data and Analytics Management: 17%",
       "weight": 17,
       "target_questions": 10
     },
     {
-      "name": "Configuration and Setup",
+      "name": "Configuration and Setup: 15%",
       "weight": 15,
       "target_questions": 9
     },
     {
-      "name": "Object Manager & Lightning App Builder",
+      "name": "Object Manager & Lightning App Builder: 15%",
       "weight": 15,
       "target_questions": 9
     },
     {
-      "name": "Automation",
+      "name": "Automation: 15%",
       "weight": 15,
       "target_questions": 9
     },
     {
-      "name": "Sales and Marketing Applications",
+      "name": "Sales and Marketing Applications: 10%",
       "weight": 10,
       "target_questions": 6
     },
     {
-      "name": "Service and Support Applications",
+      "name": "Service and Support Applications: 10%",
       "weight": 10,
       "target_questions": 6
     },
     {
-      "name": "Productivity and Collaboration",
+      "name": "Productivity and Collaboration: 10%",
       "weight": 10,
       "target_questions": 6
     },
     {
-      "name": "Agentforce AI",
+      "name": "Agentforce AI: 8%",
       "weight": 8,
       "target_questions": 5
     }
