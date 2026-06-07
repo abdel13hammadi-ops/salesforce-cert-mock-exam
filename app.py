@@ -209,13 +209,15 @@ st.markdown(
     }
 
     section[data-testid="stSidebar"] div.stButton > button {
-        width: 100%;
-        padding: 0.28rem 0.2rem;
-        font-size: 12px;
-        border-radius: 6px;
-        min-height: 2.1rem;
-    }
-
+      width: 100%;
+      height: 38px;
+      min-height: 38px;
+      padding: 0 !important;
+      font-size: 13px;
+      border-radius: 8px;
+      text-align: center;
+      font-weight: 700;
+}
     div.stButton > button {
         border-radius: 6px;
         font-weight: 600;
