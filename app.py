@@ -252,6 +252,7 @@ st.markdown(
 
     section[data-testid="stSidebar"] div.stButton > button {
         width: 100%;
+        min-width: 70px;
         height: 42px;
         min-height: 42px;
         padding: 0 !important;
