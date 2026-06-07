@@ -201,17 +201,18 @@ st.markdown(
         padding-top: 0.5rem;
     }
 
-    .timer-fixed {
-        position: fixed;
-        top: 0.65rem;
-        left: 0.75rem;
-        width: 18.25rem;
-        z-index: 999999;
-        background: #ffffff;
-        padding: 8px 10px 12px 10px;
-        border-bottom: 1px solid #d8dde6;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.06);
-    }
+   .timer-fixed-right {
+    position: fixed;
+    top: 18px;
+    right: 24px;
+    width: 170px;
+    z-index: 999999;
+    background: #ffffff;
+    padding: 8px 10px 12px 10px;
+    border: 1px solid #d8dde6;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
 
     .timer-label {
         font-weight: 700;
@@ -399,18 +400,23 @@ elif not st.session_state.submitted:
     mins = int(remaining // 60)
     secs = int(remaining % 60)
 
-    st.sidebar.markdown(
-        f"""
-        <div class="timer-fixed">
-            <div class="timer-label">Time Remaining</div>
-            <div class="timer-box">{mins:02d}:{secs:02d}</div>
-        </div>
-        <div class="navigator-spacer"></div>
-        <div class="question-nav-title">Question Navigator</div>
-        <div class="small-help">✔️ answered &nbsp;&nbsp; 🚩 marked</div>
-        """,
-        unsafe_allow_html=True
-    )
+    st.markdown(
+    f"""
+    <div class="timer-fixed-right">
+        <div class="timer-label">Time Remaining</div>
+        <div class="timer-box">{mins:02d}:{secs:02d}</div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+   st.sidebar.markdown(
+    """
+    <div class="question-nav-title">Question Navigator</div>
+    <div class="small-help">✔️ answered &nbsp;&nbsp; 🚩 marked</div>
+    """,
+    unsafe_allow_html=True
+)
 
     nav_cols = st.sidebar.columns(3)
 
