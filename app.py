@@ -330,7 +330,6 @@ if not st.session_state.started:
         <div class="exam-card">
             <p><strong>Selected Exam:</strong> {format_exam_name(Path(st.session_state.selected_exam_file))}</p>
             <p>Answers and explanations are hidden until after final submission.</p>
-            <p>To add more exams later, upload another valid JSON file into the <code>questions</code> folder.</p>
         </div>
         """,
         unsafe_allow_html=True
