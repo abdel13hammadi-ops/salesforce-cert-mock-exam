@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client
 
-APP_VERSION = "ACCOUNT_V3_APP_USERS"
+APP_VERSION = "ACCOUNT_V4_PRESERVE_SUBSCRIPTION"
 
 st.set_page_config(page_title="Account", layout="wide")
 
@@ -24,12 +24,38 @@ def is_valid_email(email: str) -> bool:
     return "@" in email and "." in email.split("@")[-1]
 
 
-def save_user(email: str, full_name: str = ""):
+def get_user_status(email: str) -> str:
+    clean_email = normalize_email(email)
+    if not clean_email:
+        return "free"
+
     supabase = get_supabase_client()
+    result = (
+        supabase.table("app_users")
+        .select("subscription_status")
+        .eq("email", clean_email)
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return "free"
+
+    return str(result.data[0].get("subscription_status") or "free").strip().lower()
+
+
+def save_user(email: str, full_name: str = ""):
+    # IMPORTANT: Do not overwrite subscription_status when user updates name/email.
+    # Stripe/manual Supabase updates control subscription_status.
+    supabase = get_supabase_client()
+    clean_email = normalize_email(email)
+
+    existing_status = get_user_status(clean_email)
+
     payload = {
-        "email": normalize_email(email),
+        "email": clean_email,
         "full_name": str(full_name or "").strip() or None,
-        "subscription_status": "free",
+        "subscription_status": existing_status or "free",
     }
     return supabase.table("app_users").upsert(payload, on_conflict="email").execute()
 
@@ -73,9 +99,15 @@ if current_email:
 else:
     st.warning("No account email saved yet on this device/session.")
 
-st.markdown(
-    """
-    **Current access level:** Free  
-    Paid subscription status will be connected later using Stripe.
-    """
-)
+if current_email:
+    try:
+        current_status = get_user_status(current_email)
+        if current_status in {"active", "paid", "premium", "subscribed"}:
+            st.success(f"Current access level: {current_status} ✅")
+        else:
+            st.info(f"Current access level: {current_status}")
+    except Exception as e:
+        st.warning("Could not read subscription status from app_users.")
+        st.exception(e)
+else:
+    st.markdown("**Current access level:** Save your email first.")

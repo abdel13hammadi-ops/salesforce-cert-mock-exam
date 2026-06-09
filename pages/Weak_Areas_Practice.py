@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import streamlit as st
 from supabase import create_client
 
-APP_VERSION = "WEAK_AREAS_PRACTICE_V3_DOMAIN_ONLY"
+APP_VERSION = "WEAK_AREAS_PRACTICE_V5_STRICT_PAID_GATE"
 
 st.set_page_config(
     page_title="Weak Areas Practice",
@@ -26,6 +26,23 @@ CATEGORY_ORDER = [
 ]
 
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
+
+PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
+
+def get_user_subscription_status(email: str) -> str:
+    if not email:
+        return "free"
+    supabase = get_supabase_client()
+    result = (
+        supabase.table("app_users")
+        .select("subscription_status")
+        .eq("email", email)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        return "free"
+    return str(result.data[0].get("subscription_status") or "free").strip().lower()
 
 
 @st.cache_resource
@@ -280,6 +297,14 @@ if user_email:
 else:
     st.warning("No account email saved. Open the Account page and save your email before using Weak Areas Practice.")
     st.stop()
+
+subscription_status = get_user_subscription_status(user_email)
+if subscription_status not in PAID_STATUS_VALUES:
+    st.warning("Weak Areas Practice is a premium feature.")
+    st.info("Your account is currently Free. For testing, set subscription_status = 'active' in Supabase for your email.")
+    st.stop()
+
+st.success(f"Subscription status: {subscription_status} ✅ Weak Areas Practice unlocked")
 
 question_bank = fetch_question_bank()
 attempts = fetch_attempts(user_email)
