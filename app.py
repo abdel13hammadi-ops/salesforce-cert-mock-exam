@@ -65,15 +65,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-
-
 def get_current_user_email():
-    """Return saved account email from Streamlit session state.
-    Account.py saves this value as account_email.
-    """
-    email = st.session_state.get("account_email")
-    if email:
-        return str(email).strip().lower()
+    email = st.session_state.get("user_email", "")
+    email = str(email).strip().lower()
+
+    if email and "@" in email:
+        return email
+
     return None
 
 
