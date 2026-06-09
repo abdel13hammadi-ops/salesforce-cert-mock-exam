@@ -364,7 +364,14 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
         return True, None
     except Exception as exc:
         return False, str(exc)
+def get_current_user_email():
+    email = st.session_state.get("account_email", "")
+    email = str(email).strip().lower()
 
+    if email:
+        return email
+
+    return "guest@example.com"
 
 def reset_exam():
     for key in list(defaults.keys()) + ["all_questions", "bank_meta"]:
