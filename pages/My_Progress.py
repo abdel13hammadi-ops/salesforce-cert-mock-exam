@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client
 
-APP_VERSION = "MY_PROGRESS_V3_DOMAIN_ONLY"
+APP_VERSION = "MY_PROGRESS_V4_PAID_ACCESS"
 
 st.set_page_config(
     page_title="My Progress",
@@ -30,6 +30,45 @@ def get_current_user_email():
     if email and "@" in email and "." in email.split("@")[-1]:
         return email
     return None
+
+
+
+
+PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
+
+
+def get_user_subscription_status(email):
+    if not email:
+        return "free"
+
+    supabase = get_supabase_client()
+    result = (
+        supabase.table("app_users")
+        .select("subscription_status")
+        .eq("email", email)
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return "free"
+
+    return str(result.data[0].get("subscription_status") or "free").strip().lower()
+
+
+def require_paid_access(email):
+    status = get_user_subscription_status(email)
+
+    if status not in PAID_STATUS_VALUES:
+        st.warning("My Progress is available for paid users only.")
+        st.info(
+            "Your current access level is Free. Once Stripe is connected, paid users will unlock this automatically. "
+            "For testing now, set subscription_status = 'active' in Supabase for this email."
+        )
+        st.stop()
+
+    st.success(f"Subscription status: {status} ✅ My Progress unlocked")
+    return status
 
 
 def load_attempts():
@@ -97,10 +136,12 @@ st.caption(f"App version: {APP_VERSION}")
 
 user_email = get_current_user_email()
 if user_email:
-    st.success(f"Showing progress for: {user_email} ✅")
+    st.success(f"Account email: {user_email} ✅")
 else:
-    st.warning("No account email saved. Open the Account page and save your email to see your personal progress.")
+    st.warning("No account email saved. Open the Account page and save your email before viewing progress.")
     st.stop()
+
+require_paid_access(user_email)
 
 attempts = load_attempts()
 
