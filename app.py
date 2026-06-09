@@ -2,13 +2,14 @@ import json
 import time
 import random
 from collections import defaultdict, Counter
+from datetime import datetime, timezone
 
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 
 
-APP_VERSION = "SUPABASE_DB_V5_PROGRESS_TRACKING"
+APP_VERSION = "SUPABASE_DB_V6_ACCOUNT_PROGRESS"
 CONFIG_FILE = "exam_config.json"
 
 CATEGORY_COUNTS = {
@@ -342,8 +343,12 @@ def plain_breakdown(stats):
 
 def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficulty_breakdown):
     """Save one completed timed mock exam attempt into Supabase."""
+    user_email = get_current_user_email()
+    if not user_email:
+        return False, "No account email saved. Open the Account page and save your email first."
+
     payload = {
-        "user_email": "guest",
+        "user_email": user_email,
         "mode": "Timed Mock Exam",
         "category": "All Domains",
         "score": float(score),
@@ -351,6 +356,7 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
         "correct_answers": int(correct),
         "domain_breakdown": domain_breakdown,
         "difficulty_breakdown": difficulty_breakdown,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
     }
 
     try:
@@ -414,6 +420,12 @@ if not st.session_state.started:
     st.success(f"Connected to Supabase question bank ✅ | Generated exam loaded: {len(all_questions)} questions")
     st.caption(f"App version: {APP_VERSION}")
 
+    user_email = get_current_user_email()
+    if user_email:
+        st.success(f"Account email: {user_email} ✅")
+    else:
+        st.warning("No account email saved. Open the Account page and save your email before starting so progress is saved correctly.")
+
     exam_category_counts = Counter(q["category"] for q in all_questions)
     exam_difficulty_counts = Counter(q["difficulty"] for q in all_questions)
     exam_type_counts = Counter(q["type"] for q in all_questions)
@@ -463,7 +475,7 @@ if not st.session_state.started:
 
     col_start, col_regen = st.columns(2)
     with col_start:
-        if st.button("Begin Exam", type="primary"):
+        if st.button("Begin Exam", type="primary", disabled=(get_current_user_email() is None)):
             st.session_state.started = True
             st.session_state.start_time = time.time()
             st.session_state.choice_orders = {}
