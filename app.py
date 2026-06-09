@@ -7,9 +7,10 @@ from datetime import datetime, timezone
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
+from utils.access_control import get_user_subscription_status, PAID_STATUS_VALUES
 
 
-APP_VERSION = "SUPABASE_DB_V6_ACCOUNT_PROGRESS_PATCHED_EMAIL"
+APP_VERSION = "SUPABASE_DB_V8_PAID_ACCESS_GATE"
 CONFIG_FILE = "exam_config.json"
 
 CATEGORY_COUNTS = {
@@ -65,11 +66,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
+
 def get_current_user_email():
+    """Return saved account email from Account.py.
+    Account.py stores the signed-in email in st.session_state["user_email"].
+    """
     email = st.session_state.get("user_email", "")
     email = str(email).strip().lower()
 
-    if email and "@" in email:
+    if email and "@" in email and "." in email.split("@")[-1]:
         return email
 
     return None
@@ -431,10 +437,22 @@ if not st.session_state.started:
     st.caption(f"App version: {APP_VERSION}")
 
     user_email = get_current_user_email()
+    subscription_status = "free"
+    has_paid_access = False
+
     if user_email:
+        subscription_status = get_user_subscription_status(user_email)
+        has_paid_access = subscription_status in PAID_STATUS_VALUES
         st.success(f"Account email: {user_email} ✅")
+
+        if has_paid_access:
+            st.success(f"Subscription status: {subscription_status} ✅ Full mock exam unlocked")
+        else:
+            st.warning("Full 60-question mock exam is a premium feature.")
+            st.info("Your account is currently Free. For testing, set subscription_status = 'active' in Supabase for your email.")
     else:
-        st.warning("No account email saved. Open the Account page and save your email before starting so progress is saved correctly.")
+        st.warning("Please open the Account page and save your name/email before starting the exam. This is required so your score can be saved in My Progress.")
+        st.info("After saving your email in Account, return to this page. Paid/active accounts can start the full mock exam.")
 
     st.markdown(
         """
@@ -470,7 +488,8 @@ if not st.session_state.started:
 
     col_start, col_regen = st.columns(2)
     with col_start:
-        if st.button("Begin Exam", type="primary", disabled=(get_current_user_email() is None)):
+        begin_disabled = (user_email is None) or (not has_paid_access)
+        if st.button("Begin Exam", type="primary", disabled=begin_disabled):
             st.session_state.started = True
             st.session_state.start_time = time.time()
             st.session_state.choice_orders = {}
