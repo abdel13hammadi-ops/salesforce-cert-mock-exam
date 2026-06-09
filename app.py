@@ -8,7 +8,7 @@ from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 
 
-APP_VERSION = "SUPABASE_DB_V4_8_CATEGORIES_DIFFICULTY_MIX"
+APP_VERSION = "SUPABASE_DB_V5_PROGRESS_TRACKING"
 CONFIG_FILE = "exam_config.json"
 
 CATEGORY_COUNTS = {
@@ -296,6 +296,8 @@ defaults = {
     "randomize_questions": True,
     "randomize_choices": True,
     "choice_orders": {},
+    "attempt_saved": False,
+    "attempt_save_checked": False,
 }
 
 for key, value in defaults.items():
@@ -324,6 +326,38 @@ def calculate_breakdown(field):
         if is_correct(st.session_state.answers.get(i, []), q["answers"]):
             stats[value]["correct"] += 1
     return stats
+
+
+def plain_breakdown(stats):
+    """Convert defaultdict stats into normal JSON-safe dictionaries for Supabase."""
+    return {
+        str(key): {
+            "correct": int(value.get("correct", 0)),
+            "total": int(value.get("total", 0)),
+            "percent": round((value.get("correct", 0) / value.get("total", 1)) * 100, 2) if value.get("total", 0) else 0,
+        }
+        for key, value in stats.items()
+    }
+
+
+def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficulty_breakdown):
+    """Save one completed timed mock exam attempt into Supabase."""
+    payload = {
+        "user_email": "guest",
+        "mode": "Timed Mock Exam",
+        "category": "All Domains",
+        "score": float(score),
+        "total_questions": int(total_questions),
+        "correct_answers": int(correct),
+        "domain_breakdown": domain_breakdown,
+        "difficulty_breakdown": difficulty_breakdown,
+    }
+
+    try:
+        get_supabase_client().table("exam_attempts").insert(payload).execute()
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
 
 
 def reset_exam():
@@ -438,9 +472,11 @@ if not st.session_state.started:
             st.session_state.current_question = 0
             st.session_state.review_mode = False
             st.session_state.submitted = False
+            st.session_state.attempt_saved = False
+            st.session_state.attempt_save_checked = False
             st.rerun()
     with col_regen:
-        if st.button("Generate New Random Exam"):
+        if st.button("Start New Exam"):
             reset_exam()
 
 elif not st.session_state.submitted:
@@ -595,6 +631,24 @@ else:
             correct += 1
 
     score = round((correct / len(questions)) * 100, 2)
+
+    domain_stats = calculate_breakdown("category")
+    difficulty_stats = calculate_breakdown("difficulty")
+    domain_breakdown_json = plain_breakdown(domain_stats)
+    difficulty_breakdown_json = plain_breakdown(difficulty_stats)
+
+    if not st.session_state.get("attempt_save_checked", False):
+        saved, save_error = save_exam_attempt(
+            score=score,
+            correct=correct,
+            total_questions=len(questions),
+            domain_breakdown=domain_breakdown_json,
+            difficulty_breakdown=difficulty_breakdown_json,
+        )
+        st.session_state.attempt_saved = saved
+        st.session_state.attempt_save_error = save_error
+        st.session_state.attempt_save_checked = True
+
     st.header("Exam Results")
 
     c1, c2, c3 = st.columns(3)
@@ -607,11 +661,15 @@ else:
     else:
         st.error("FAIL")
 
+    if st.session_state.get("attempt_saved"):
+        st.success("Attempt saved to progress tracking ✅")
+    elif st.session_state.get("attempt_save_error"):
+        st.warning("Attempt was scored, but it was not saved to Supabase. Check exam_attempts columns if this continues.")
+
     st.divider()
     st.header("Performance Breakdown")
 
     st.subheader("By Domain")
-    domain_stats = calculate_breakdown("category")
     for domain in CATEGORY_COUNTS.keys():
         data = domain_stats.get(domain, {"correct": 0, "total": 0})
         if data["total"] == 0:
@@ -620,7 +678,6 @@ else:
         st.write(f"**{domain}:** {data['correct']} / {data['total']} correct ({percent}%)")
 
     st.subheader("By Difficulty")
-    difficulty_stats = calculate_breakdown("difficulty")
     for difficulty in ["easy", "medium", "hard"]:
         data = difficulty_stats.get(difficulty, {"correct": 0, "total": 0})
         if data["total"] == 0:
@@ -655,7 +712,5 @@ else:
         st.info(q["explanation"])
         st.divider()
 
-    if st.button("Restart Exam"):
-        reset_exam()
-    if st.button("Generate Completely New Exam"):
+    if st.button("Start New Exam", type="primary"):
         reset_exam()
