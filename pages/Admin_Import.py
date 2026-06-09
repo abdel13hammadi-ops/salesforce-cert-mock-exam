@@ -222,3 +222,39 @@ if uploaded_file:
     except Exception as e:
         st.error("Import failed.")
         st.exception(e)
+
+st.divider()
+st.subheader("Database Read Test")
+
+if st.button("Check Question Bank Counts"):
+    supabase = get_supabase_client()
+
+    questions_result = (
+        supabase.table("questions")
+        .select("id", count="exact")
+        .execute()
+    )
+
+    options_result = (
+        supabase.table("answer_options")
+        .select("id", count="exact")
+        .execute()
+    )
+
+    st.success("Connected to Supabase successfully.")
+    st.write(f"Questions in database: {questions_result.count}")
+    st.write(f"Answer options in database: {options_result.count}")
+
+    category_result = (
+        supabase.table("questions")
+        .select("category")
+        .execute()
+    )
+
+    category_counts = {}
+    for row in category_result.data:
+        category = row.get("category", "Uncategorized")
+        category_counts[category] = category_counts.get(category, 0) + 1
+
+    st.write("Category counts:")
+    st.json(category_counts)
