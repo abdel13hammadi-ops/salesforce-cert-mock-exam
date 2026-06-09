@@ -243,8 +243,7 @@ st.markdown(
 
 if not st.session_state.started:
     st.header("Exam Instructions")
-    st.success(f"Connected to Supabase question bank ✅ | Active exam questions loaded: {len(all_questions)}")
-    
+
     st.markdown(
         """
         <div class="exam-card">
