@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client
 
-APP_VERSION = "MY_PROGRESS_V1"
+APP_VERSION = "MY_PROGRESS_V2_ACCOUNT_FILTER"
 
 st.set_page_config(
     page_title="My Progress",
@@ -25,11 +25,23 @@ def get_supabase_client():
     return create_client(url, key)
 
 
+def get_current_user_email():
+    email = str(st.session_state.get("user_email", "")).strip().lower()
+    if email and "@" in email and "." in email.split("@")[-1]:
+        return email
+    return None
+
+
 def load_attempts():
+    user_email = get_current_user_email()
+    if not user_email:
+        return []
+
     supabase = get_supabase_client()
     result = (
         supabase.table("exam_attempts")
         .select("id,user_email,mode,category,score,correct_answers,total_questions,domain_breakdown,difficulty_breakdown,completed_at")
+        .eq("user_email", user_email)
         .order("id", desc=True)
         .execute()
     )
@@ -82,6 +94,13 @@ def make_breakdown_table(attempts, field_name):
 
 st.title("My Progress")
 st.caption(f"App version: {APP_VERSION}")
+
+user_email = get_current_user_email()
+if user_email:
+    st.success(f"Showing progress for: {user_email} ✅")
+else:
+    st.warning("No account email saved. Open the Account page and save your email to see your personal progress.")
+    st.stop()
 
 attempts = load_attempts()
 
