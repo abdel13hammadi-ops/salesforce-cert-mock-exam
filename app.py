@@ -6,11 +6,25 @@ from collections import defaultdict
 
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from supabase import create_client
 
 
 CONFIG_FILE = "exam_config.json"
 QUESTION_FOLDER = Path("questions")
 
+USE_SUPABASE = True
+
+
+def get_supabase_client():
+    url = st.secrets.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not url or not key:
+        st.error("Supabase secrets are missing. Please add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets.")
+        st.stop()
+
+    return create_client(url, key)
+    
 
 def load_config():
     with open(CONFIG_FILE, "r", encoding="utf-8") as file:
