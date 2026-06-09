@@ -1,7 +1,6 @@
 import json
 import time
 import random
-from pathlib import Path
 from collections import defaultdict
 
 import streamlit as st
@@ -9,7 +8,6 @@ from streamlit_autorefresh import st_autorefresh
 
 
 CONFIG_FILE = "exam_config.json"
-QUESTION_FOLDER = Path("questions")
 
 
 def load_config():
@@ -27,37 +25,15 @@ st.set_page_config(
 
 PASSING_SCORE = config["passing_score"]
 EXAM_MINUTES = config["time_limit_minutes"]
+QUESTION_FILE = config["question_file"]
 
 
-def get_exam_files():
-    return sorted(QUESTION_FOLDER.glob("*.json"))
-
-
-def format_exam_name(path):
-    return path.stem.replace("_", " ").replace("-", " ").title()
-
-
-exam_files = get_exam_files()
-
-if not exam_files:
-    st.error("No exam JSON files found in the questions folder.")
-    st.stop()
-
-
-if "selected_exam_file" not in st.session_state:
-    configured_file = config.get("question_file")
-    if configured_file and Path(configured_file) in exam_files:
-        st.session_state.selected_exam_file = configured_file
-    else:
-        st.session_state.selected_exam_file = str(exam_files[0])
-
-
-def load_questions(file_path):
-    with open(file_path, "r", encoding="utf-8") as file:
+def load_questions():
+    with open(QUESTION_FILE, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
-all_questions = load_questions(st.session_state.selected_exam_file)
+all_questions = load_questions()
 
 defaults = {
     "started": False,
@@ -83,6 +59,7 @@ def get_questions():
         st.session_state.question_order = list(range(len(all_questions)))
         if st.session_state.randomize_questions:
             random.shuffle(st.session_state.question_order)
+
     return [all_questions[i] for i in st.session_state.question_order]
 
 
@@ -95,6 +72,7 @@ def get_options(q_index, q):
         if st.session_state.randomize_choices:
             random.shuffle(options)
         st.session_state.choice_orders[q_index] = options
+
     return st.session_state.choice_orders[q_index]
 
 
@@ -116,25 +94,10 @@ def calculate_breakdown(field):
 
 
 def reset_exam():
-    selected_exam_file = st.session_state.get("selected_exam_file")
     for key in list(defaults.keys()):
         if key in st.session_state:
             del st.session_state[key]
-    if selected_exam_file:
-        st.session_state.selected_exam_file = selected_exam_file
     st.rerun()
-
-
-def reset_exam_progress_only():
-    st.session_state.started = False
-    st.session_state.submitted = False
-    st.session_state.review_mode = False
-    st.session_state.current_question = 0
-    st.session_state.answers = {}
-    st.session_state.marked = set()
-    st.session_state.start_time = None
-    st.session_state.question_order = []
-    st.session_state.choice_orders = {}
 
 
 st.markdown(
@@ -198,25 +161,23 @@ st.markdown(
     }
 
     section[data-testid="stSidebar"] > div:first-child {
-        padding-top: 0.5rem;
+        padding-top: 0.75rem;
     }
 
-   .timer-fixed-right {
-    position: fixed;
-    top: 18px;
-    right: 24px;
-    width: 170px;
-    z-index: 999999;
-    background: #ffffff;
-    padding: 8px 10px 12px 10px;
-    border: 1px solid #d8dde6;
-    border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-}
+    .timer-sticky {
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        background: #ffffff;
+        padding-top: 4px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid #d8dde6;
+        margin-bottom: 14px;
+    }
 
     .timer-label {
         font-weight: 700;
-        font-size: 15px;
+        font-size: 16px;
         margin-bottom: 7px;
         color: #1f2937;
     }
@@ -225,22 +186,18 @@ st.markdown(
         background: #fff4d6;
         border: 1px solid #e0b84f;
         border-radius: 8px;
-        padding: 10px;
+        padding: 12px;
         text-align: center;
-        font-size: 26px;
+        font-size: 27px;
         font-weight: 800;
         color: #1f2937;
         letter-spacing: 1px;
     }
 
-    .navigator-spacer {
-        height: 118px;
-    }
-
     .question-nav-title {
         font-weight: 700;
         font-size: 16px;
-        margin-top: 6px;
+        margin-top: 10px;
         margin-bottom: 8px;
         color: #1f2937;
     }
@@ -248,43 +205,18 @@ st.markdown(
     .small-help {
         color: #5f6368;
         font-size: 13px;
-        margin-bottom: 10px;
+        margin-bottom: 8px;
     }
 
     section[data-testid="stSidebar"] div.stButton > button {
         width: 100%;
-        min-width: 50px;
-        height: 42px;
-        min-height: 42px;
-        padding: 0 !important;
+        padding: 0.35rem 0.5rem;
         font-size: 14px;
-        border-radius: 8px;
-        text-align: center;
-        font-weight: 600;
-        margin-bottom: 4px;
     }
 
     div.stButton > button {
         border-radius: 6px;
         font-weight: 600;
-    }
-
-    section[data-testid="stSidebar"] div[data-testid="column"] {
-        padding-left: 0rem;
-        padding-right: 0rem;
-    }
-
-    @media (max-width: 900px) {
-        .timer-fixed {
-            position: sticky;
-            top: 0;
-            width: auto;
-            left: auto;
-        }
-
-        .navigator-spacer {
-            height: 0px;
-        }
     }
     </style>
     """,
@@ -312,26 +244,11 @@ st.markdown(
 if not st.session_state.started:
     st.header("Exam Instructions")
 
-    selected_exam = st.selectbox(
-        "Choose Mock Exam",
-        exam_files,
-        format_func=format_exam_name,
-        index=exam_files.index(Path(st.session_state.selected_exam_file))
-        if Path(st.session_state.selected_exam_file) in exam_files
-        else 0
-    )
-
-    if str(selected_exam) != st.session_state.selected_exam_file:
-        st.session_state.selected_exam_file = str(selected_exam)
-        reset_exam_progress_only()
-        st.rerun()
-
     st.markdown(
-        f"""
+        """
         <div class="exam-card">
-            <p><strong>Selected Exam:</strong> {format_exam_name(Path(st.session_state.selected_exam_file))}</p>
+            <p>This simulator uses the current Platform Administrator-style structure, including Agentforce AI.</p>
             <p>Answers and explanations are hidden until after final submission.</p>
-            <p>To add more exams later, upload another valid JSON file into the <code>questions</code> folder.</p>
         </div>
         """,
         unsafe_allow_html=True
@@ -400,45 +317,31 @@ elif not st.session_state.submitted:
     mins = int(remaining // 60)
     secs = int(remaining % 60)
 
-    st.markdown(
-    f"""
-    <div class="timer-fixed-right">
-        <div class="timer-label">Time Remaining</div>
-        <div class="timer-box">{mins:02d}:{secs:02d}</div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-   st.sidebar.markdown(
-    """
-    <div class="question-nav-title">Question Navigator</div>
-    <div class="small-help">✔️ answered &nbsp;&nbsp; 🚩 marked</div>
-    """,
-    unsafe_allow_html=True
-)
-
-    nav_cols = st.sidebar.columns(3)
+    st.sidebar.markdown(
+        f"""
+        <div class="timer-sticky">
+            <div class="timer-label">Time Remaining</div>
+            <div class="timer-box">{mins:02d}:{secs:02d}</div>
+        </div>
+        <div class="question-nav-title">Question Navigator</div>
+        <div class="small-help">✓ answered &nbsp;&nbsp; 🚩 marked</div>
+        """,
+        unsafe_allow_html=True
+    )
 
     for i in range(len(questions)):
+        label = f"Question {i + 1}"
 
-        if i in st.session_state.answers and i in st.session_state.marked:
-            label = f"{i + 1} ✔️ 🚩"
+        if i in st.session_state.answers:
+            label += " ✓"
 
-        elif i in st.session_state.answers:
-            label = f"{i + 1} ✔️"
+        if i in st.session_state.marked:
+            label += " 🚩"
 
-        elif i in st.session_state.marked:
-            label = f"{i + 1} 🚩"
-
-        else:
-            label = f"{i + 1}"
-
-        with nav_cols[i % 3]:
-            if st.button(label, key=f"nav_{i}"):
-                st.session_state.current_question = i
-                st.session_state.review_mode = False
-                st.rerun()
+        if st.sidebar.button(label, key=f"nav_{i}"):
+            st.session_state.current_question = i
+            st.session_state.review_mode = False
+            st.rerun()
 
     if st.session_state.review_mode:
         st.header("Review Before Final Submission")
