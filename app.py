@@ -9,7 +9,7 @@ from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 
 
-APP_VERSION = "SUPABASE_DB_V6_ACCOUNT_PROGRESS"
+APP_VERSION = "SUPABASE_DB_V6_ACCOUNT_PROGRESS_PATCHED_EMAIL"
 CONFIG_FILE = "exam_config.json"
 
 CATEGORY_COUNTS = {
@@ -64,6 +64,18 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+
+def get_current_user_email():
+    """Return saved account email from Streamlit session state.
+    Account.py saves this value as account_email.
+    """
+    email = st.session_state.get("account_email")
+    if email:
+        return str(email).strip().lower()
+    return None
+
 
 PASSING_SCORE = config.get("passing_score", PASSING_SCORE_DEFAULT)
 EXAM_MINUTES = config.get("time_limit_minutes", EXAM_MINUTES_DEFAULT)
@@ -364,15 +376,7 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
         return True, None
     except Exception as exc:
         return False, str(exc)
-        
-def get_current_user_email():
-    email = str(st.session_state.get("user_email", "")).strip().lower()
 
-    if email and "@" in email and "." in email.split("@")[-1]:
-        return email
-
-    return None
-    
 
 def reset_exam():
     for key in list(defaults.keys()) + ["all_questions", "bank_meta"]:
@@ -433,21 +437,6 @@ if not st.session_state.started:
         st.success(f"Account email: {user_email} ✅")
     else:
         st.warning("No account email saved. Open the Account page and save your email before starting so progress is saved correctly.")
-
-    exam_category_counts = Counter(q["category"] for q in all_questions)
-    exam_difficulty_counts = Counter(q["difficulty"] for q in all_questions)
-    exam_type_counts = Counter(q["type"] for q in all_questions)
-
-    with st.expander("Generated exam check", expanded=True):
-        st.write("Category counts for this exam:")
-        st.json(dict(exam_category_counts))
-        st.write("Difficulty counts for this exam:")
-        st.json(dict(exam_difficulty_counts))
-        st.write("Question type counts for this exam:")
-        st.json(dict(exam_type_counts))
-        if st.session_state.get("bank_meta"):
-            st.write("Full bank counts from Supabase:")
-            st.json(st.session_state.bank_meta)
 
     st.markdown(
         """
