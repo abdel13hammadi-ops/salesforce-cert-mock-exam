@@ -5,8 +5,9 @@ from datetime import datetime, timezone
 
 import streamlit as st
 from supabase import create_client
+from utils.access_control import get_user_subscription_status, PAID_STATUS_VALUES
 
-APP_VERSION = "WEAK_AREAS_PRACTICE_V2_ACCOUNT"
+APP_VERSION = "WEAK_AREAS_PRACTICE_V4_PAID_ACCESS"
 
 st.set_page_config(
     page_title="Weak Areas Practice",
@@ -217,7 +218,6 @@ def reset_weak_practice():
         "weak_feedback_shown",
         "weak_saved",
         "weak_categories",
-        "weak_difficulty",
         "weak_count",
     ]:
         if key in st.session_state:
@@ -225,38 +225,18 @@ def reset_weak_practice():
     st.rerun()
 
 
-def choose_questions(question_bank, selected_categories, target_difficulty, count):
+def choose_questions(question_bank, selected_categories, count):
     selected = []
 
-    # First preference: selected weak categories + weakest difficulty.
-    primary = [
+    # First preference: selected weak domains, any difficulty.
+    category_pool = [
         q for q in question_bank
-        if q["category"] in selected_categories and q["difficulty"] == target_difficulty
+        if q["category"] in selected_categories
     ]
-    random.shuffle(primary)
-    selected.extend(primary[:count])
+    random.shuffle(category_pool)
+    selected.extend(category_pool[:count])
 
-    # Second preference: selected weak categories, any difficulty.
-    if len(selected) < count:
-        used_ids = {q["id"] for q in selected}
-        category_pool = [
-            q for q in question_bank
-            if q["category"] in selected_categories and q["id"] not in used_ids
-        ]
-        random.shuffle(category_pool)
-        selected.extend(category_pool[:count - len(selected)])
-
-    # Fallback: weakest difficulty anywhere.
-    if len(selected) < count:
-        used_ids = {q["id"] for q in selected}
-        diff_pool = [
-            q for q in question_bank
-            if q["difficulty"] == target_difficulty and q["id"] not in used_ids
-        ]
-        random.shuffle(diff_pool)
-        selected.extend(diff_pool[:count - len(selected)])
-
-    # Final fallback: any approved question.
+    # Final fallback: any approved question if selected domains do not have enough questions.
     if len(selected) < count:
         used_ids = {q["id"] for q in selected}
         fallback = [q for q in question_bank if q["id"] not in used_ids]
@@ -265,7 +245,6 @@ def choose_questions(question_bank, selected_categories, target_difficulty, coun
 
     random.shuffle(selected)
     return selected[:count]
-
 
 st.markdown(
     """
@@ -303,6 +282,14 @@ else:
     st.warning("No account email saved. Open the Account page and save your email before using Weak Areas Practice.")
     st.stop()
 
+subscription_status = get_user_subscription_status(user_email)
+if subscription_status not in PAID_STATUS_VALUES:
+    st.warning("Weak Areas Practice is a premium feature.")
+    st.info("Your account is currently Free. For testing, set subscription_status = 'active' in Supabase for your email.")
+    st.stop()
+
+st.success(f"Subscription status: {subscription_status} ✅ Weak Areas Practice unlocked")
+
 question_bank = fetch_question_bank()
 attempts = fetch_attempts(user_email)
 
@@ -313,10 +300,6 @@ if not question_bank:
 available_categories = [c for c in CATEGORY_ORDER if any(q["category"] == c for q in question_bank)]
 extra_categories = sorted({q["category"] for q in question_bank if q["category"] not in CATEGORY_ORDER})
 available_categories.extend(extra_categories)
-
-available_difficulties = [d for d in ["easy", "medium", "hard"] if any(q["difficulty"] == d for q in question_bank)]
-if not available_difficulties:
-    available_difficulties = ["medium"]
 
 for key, default in {
     "weak_started": False,
@@ -330,7 +313,6 @@ for key, default in {
         st.session_state[key] = default
 
 weak_domains = aggregate_breakdown(attempts, "domain_breakdown")
-weak_difficulties = aggregate_breakdown(attempts, "difficulty_breakdown")
 
 if not st.session_state.weak_started:
     st.header("Build Practice from Your Weak Areas")
@@ -341,25 +323,15 @@ if not st.session_state.weak_started:
             "For now, you can manually choose a category."
         )
         recommended_categories = available_categories[:1]
-        recommended_difficulty = "medium" if "medium" in available_difficulties else available_difficulties[0]
     else:
         recommended_categories = [r["name"] for r in weak_domains[:2] if r["name"] in available_categories]
         if not recommended_categories:
             recommended_categories = available_categories[:1]
-        recommended_difficulty = weak_difficulties[0]["name"] if weak_difficulties else "medium"
-        if recommended_difficulty not in available_difficulties:
-            recommended_difficulty = "medium" if "medium" in available_difficulties else available_difficulties[0]
 
-        st.success("Your weakest areas were detected from saved attempts.")
-        left, right = st.columns(2)
-        with left:
-            st.subheader("Weakest Domains")
-            for row in weak_domains[:3]:
-                st.write(f"- **{row['name']}** — {row['accuracy']}% ({row['correct']} / {row['total']})")
-        with right:
-            st.subheader("Weakest Difficulty")
-            for row in weak_difficulties[:3]:
-                st.write(f"- **{row['name'].title()}** — {row['accuracy']}% ({row['correct']} / {row['total']})")
+        st.success("Your weakest domains were detected from saved attempts.")
+        st.subheader("Weakest Domains")
+        for row in weak_domains[:5]:
+            st.write(f"- **{row['name']}** — {row['accuracy']}% ({row['correct']} / {row['total']})")
 
     st.divider()
 
@@ -370,18 +342,11 @@ if not st.session_state.weak_started:
         default=[available_categories[i] for i in default_indices] if default_indices else available_categories[:1],
     )
 
-    difficulty_choice = st.selectbox(
-        "Focus difficulty:",
-        available_difficulties,
-        index=available_difficulties.index(recommended_difficulty) if recommended_difficulty in available_difficulties else 0,
-        format_func=lambda x: x.title(),
-    )
-
     question_count = st.selectbox("Number of questions:", QUESTION_COUNT_OPTIONS, index=0)
 
     st.info(
-        "The app first pulls questions from your selected weak domain(s) and weakest difficulty. "
-        "If there are not enough, it fills the practice set with more questions from those domains."
+        "The app pulls questions from your selected weak domain(s). "
+        "If there are not enough, it fills the practice set with other approved questions."
     )
 
     if st.button("Start Weak Areas Practice", type="primary"):
@@ -389,7 +354,7 @@ if not st.session_state.weak_started:
             st.error("Choose at least one category.")
             st.stop()
 
-        selected_questions = choose_questions(question_bank, selected_categories, difficulty_choice, int(question_count))
+        selected_questions = choose_questions(question_bank, selected_categories, int(question_count))
         if not selected_questions:
             st.error("No questions found for these settings.")
             st.stop()
@@ -400,7 +365,6 @@ if not st.session_state.weak_started:
 
         st.session_state.weak_questions = selected_questions
         st.session_state.weak_categories = selected_categories
-        st.session_state.weak_difficulty = difficulty_choice
         st.session_state.weak_count = len(selected_questions)
         st.session_state.weak_started = True
         st.session_state.weak_submitted = False
@@ -512,7 +476,7 @@ else:
     c1, c2, c3 = st.columns(3)
     c1.metric("Score", f"{score}%")
     c2.metric("Correct", f"{correct} / {total}")
-    c3.metric("Focus", st.session_state.get("weak_difficulty", "mixed").title())
+    c3.metric("Focus Domains", len(st.session_state.get("weak_categories", [])))
 
     if not st.session_state.weak_saved:
         try:
@@ -529,11 +493,6 @@ else:
     for name, data in domain_breakdown.items():
         pct = round((data["correct"] / data["total"]) * 100, 2) if data["total"] else 0
         st.write(f"**{name}:** {data['correct']} / {data['total']} correct ({pct}%)")
-
-    st.subheader("Breakdown by Difficulty")
-    for name, data in difficulty_breakdown.items():
-        pct = round((data["correct"] / data["total"]) * 100, 2) if data["total"] else 0
-        st.write(f"**{name.title()}:** {data['correct']} / {data['total']} correct ({pct}%)")
 
     st.divider()
     st.header("Answer Review")
