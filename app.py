@@ -10,7 +10,7 @@ from supabase import create_client
 from utils.access_control import get_user_subscription_status, PAID_STATUS_VALUES
 
 
-APP_VERSION = "SUPABASE_DB_V8_PAID_ACCESS_GATE"
+APP_VERSION = "SUPABASE_DB_V9_FREE_FIXED_MOCK_EXAM"
 CONFIG_FILE = "exam_config.json"
 
 CATEGORY_COUNTS = {
@@ -104,7 +104,7 @@ def fetch_question_bank():
 
     questions_result = (
         supabase.table("questions")
-        .select("id, exam_name, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status")
+        .select("id, exam_name, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status, free_mock_exam")
         .eq("is_active", True)
         .eq("is_exam_eligible", True)
         .eq("quality_status", "approved")
@@ -171,6 +171,7 @@ def fetch_question_bank():
             "options": options,
             "answers": answers,
             "explanation": q.get("explanation") or "",
+            "free_mock_exam": bool(q.get("free_mock_exam")),
         })
 
     meta = {
@@ -219,7 +220,8 @@ def select_by_difficulty(pool, count):
     return selected[:count]
 
 
-def generate_exam_questions(bank):
+def generate_paid_exam_questions(bank):
+    """Generate a randomized paid 60-question exam from the full approved bank."""
     selected = []
     by_category = defaultdict(list)
     for q in bank:
@@ -283,12 +285,41 @@ def generate_exam_questions(bank):
     return selected
 
 
-def ensure_exam_generated():
+def generate_free_mock_questions(bank):
+    """Load the fixed free 60-question mock exam. Same questions/order for every free user."""
+    selected = [q for q in bank if q.get("free_mock_exam") is True]
+
+    if len(selected) != 60:
+        st.error(f"Free mock exam setup error: expected 60 free questions, found {len(selected)}.")
+        st.info("In Supabase, verify questions.free_mock_exam = true for exactly 60 questions.")
+        st.stop()
+
+    selected.sort(key=lambda q: (list(CATEGORY_COUNTS.keys()).index(q["category"]) if q["category"] in CATEGORY_COUNTS else 999, q["id"]))
+    return selected
+
+
+def ensure_exam_generated(exam_access_type):
     bank, meta = fetch_question_bank()
     st.session_state.bank_meta = meta
 
+    existing_type = st.session_state.get("exam_access_type")
+    if existing_type != exam_access_type:
+        st.session_state.all_questions = []
+        st.session_state.choice_orders = {}
+        st.session_state.answers = {}
+        st.session_state.marked = set()
+        st.session_state.current_question = 0
+        st.session_state.submitted = False
+        st.session_state.started = False
+        st.session_state.review_mode = False
+        st.session_state.attempt_saved = False
+        st.session_state.exam_access_type = exam_access_type
+
     if "all_questions" not in st.session_state or not st.session_state.all_questions:
-        st.session_state.all_questions = generate_exam_questions(bank)
+        if exam_access_type == "paid":
+            st.session_state.all_questions = generate_paid_exam_questions(bank)
+        else:
+            st.session_state.all_questions = generate_free_mock_questions(bank)
 
     return st.session_state.all_questions
 
@@ -298,10 +329,7 @@ def format_diff(value):
     return str(value).strip().capitalize()
 
 
-all_questions = ensure_exam_generated()
-questions = all_questions
-
-# Defaults must be after all_questions is available.
+# Defaults are initialized before exam generation so access type can control the exam set.
 defaults = {
     "started": False,
     "submitted": False,
@@ -320,6 +348,24 @@ defaults = {
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+
+def get_access_context():
+    user_email = get_current_user_email()
+    subscription_status = "free"
+    has_paid_access = False
+
+    if user_email:
+        subscription_status = get_user_subscription_status(user_email)
+        has_paid_access = subscription_status in PAID_STATUS_VALUES
+
+    exam_access_type = "paid" if has_paid_access else "free"
+    return user_email, subscription_status, has_paid_access, exam_access_type
+
+
+user_email, subscription_status, has_paid_access, exam_access_type = get_access_context()
+all_questions = ensure_exam_generated(exam_access_type)
+questions = all_questions
 
 
 def get_options(q_index, q):
@@ -365,7 +411,7 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
 
     payload = {
         "user_email": user_email,
-        "mode": "Timed Mock Exam",
+        "mode": "Paid Mock Exam" if st.session_state.get("exam_access_type") == "paid" else "Free Mock Exam",
         "category": "All Domains",
         "score": float(score),
         "total_questions": int(total_questions),
@@ -433,31 +479,26 @@ st.markdown(
 
 if not st.session_state.started:
     st.header("Exam Instructions")
-    st.success(f"Connected to Supabase question bank ✅ | Generated exam loaded: {len(all_questions)} questions")
+    st.success(f"Connected to Supabase question bank ✅ | {'Paid randomized mock exam' if has_paid_access else 'Free fixed sample mock exam'} loaded: {len(all_questions)} questions")
     st.caption(f"App version: {APP_VERSION}")
 
-    user_email = get_current_user_email()
-    subscription_status = "free"
-    has_paid_access = False
-
     if user_email:
-        subscription_status = get_user_subscription_status(user_email)
-        has_paid_access = subscription_status in PAID_STATUS_VALUES
         st.success(f"Account email: {user_email} ✅")
 
         if has_paid_access:
-            st.success(f"Subscription status: {subscription_status} ✅ Full mock exam unlocked")
+            st.success(f"Subscription status: {subscription_status} ✅ Paid access: randomized full mock exam unlocked")
         else:
-            st.warning("Full 60-question mock exam is a premium feature.")
-            st.info("Your account is currently Free. For testing, set subscription_status = 'active' in Supabase for your email.")
+            st.info("Free access: fixed 60-question sample mock exam unlocked. Results and explanations are included at the end.")
+            st.caption("Upgrade later to unlock unlimited randomized mock exams, My Progress, Weak Areas Practice, and the larger question bank.")
     else:
-        st.warning("Please open the Account page and save your name/email before starting the exam. This is required so your score can be saved in My Progress.")
-        st.info("After saving your email in Account, return to this page. Paid/active accounts can start the full mock exam.")
+        st.warning("Please open the Account page and save your name/email before starting the exam. This is required so your result can be associated with your account.")
+        st.info("After saving your email in Account, return to this page to start the free sample mock exam.")
 
     st.markdown(
         """
         <div class="exam-card">
             <p>This simulator uses the Supabase question bank and the 8-domain Administrator structure.</p>
+            <p>Free users get one fixed sample mock exam. Paid users get randomized full mock exams.</p>
             <p>Answers and explanations are hidden until after final submission.</p>
         </div>
         """,
@@ -488,7 +529,7 @@ if not st.session_state.started:
 
     col_start, col_regen = st.columns(2)
     with col_start:
-        begin_disabled = (user_email is None) or (not has_paid_access)
+        begin_disabled = (user_email is None)
         if st.button("Begin Exam", type="primary", disabled=begin_disabled):
             st.session_state.started = True
             st.session_state.start_time = time.time()
