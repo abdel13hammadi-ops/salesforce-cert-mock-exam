@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client
 
-APP_VERSION = "MY_PROGRESS_V2_ACCOUNT_FILTER"
+APP_VERSION = "MY_PROGRESS_V3_DOMAIN_ONLY"
 
 st.set_page_config(
     page_title="My Progress",
@@ -125,30 +125,16 @@ c4.metric("Attempts", attempt_count)
 st.divider()
 
 # Weak areas
-st.header("Weak Areas")
+st.header("Weak Areas by Domain")
 
 domain_df = make_breakdown_table(attempts, "domain_breakdown")
-difficulty_df = make_breakdown_table(attempts, "difficulty_breakdown")
 
-left, right = st.columns(2)
-
-with left:
-    st.subheader("By Domain")
-    if domain_df.empty:
-        st.warning("No domain breakdown data saved yet.")
-    else:
-        st.dataframe(domain_df, use_container_width=True, hide_index=True)
-        weakest_domain = domain_df.iloc[0]
-        st.info(f"Weakest domain: {weakest_domain['Area']} ({weakest_domain['Accuracy %']}%)")
-
-with right:
-    st.subheader("By Difficulty")
-    if difficulty_df.empty:
-        st.warning("No difficulty breakdown data saved yet.")
-    else:
-        st.dataframe(difficulty_df, use_container_width=True, hide_index=True)
-        weakest_difficulty = difficulty_df.iloc[0]
-        st.info(f"Weakest difficulty: {weakest_difficulty['Area']} ({weakest_difficulty['Accuracy %']}%)")
+if domain_df.empty:
+    st.warning("No domain breakdown data saved yet.")
+else:
+    st.dataframe(domain_df, use_container_width=True, hide_index=True)
+    weakest_domain = domain_df.iloc[0]
+    st.info(f"Weakest domain: {weakest_domain['Area']} ({weakest_domain['Accuracy %']}%)")
 
 st.divider()
 
