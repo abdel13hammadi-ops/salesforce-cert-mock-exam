@@ -1,81 +1,131 @@
 import streamlit as st
 from supabase import create_client
 
-FREE_STATUS_VALUES = {"free", "trial", "inactive", "cancelled", "past_due", ""}
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
+APP_VERSION = "ACCESS_CONTROL_V2_SUPABASE_AUTH"
 
 
-def get_supabase_client():
-    """Create Supabase client from Streamlit secrets."""
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+def get_supabase_client(use_service_role=True):
+    """Create Supabase client.
+
+    use_service_role=True is used for trusted server-side reads/writes from Streamlit.
+    The anon key can be used for auth pages, but service role is better for profile lookups.
+    """
+    url = st.secrets.get("SUPABASE_URL", "")
+    key_name = "SUPABASE_SERVICE_ROLE_KEY" if use_service_role else "SUPABASE_ANON_KEY"
+    key = st.secrets.get(key_name, "")
 
     if not url or not key:
-        st.error("Supabase secrets are missing. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
+        st.error(f"Missing Supabase secret: SUPABASE_URL or {key_name}")
         st.stop()
 
     return create_client(url, key)
 
 
 def get_current_user_email():
-    """Return the email saved from the Account page."""
-    email = str(st.session_state.get("user_email", "")).strip().lower()
+    """Return the logged-in user's email from session state.
 
-    if email and "@" in email and "." in email.split("@")[-1]:
+    Account.py should set st.session_state['user_email'] after successful login/signup.
+    This function also supports older session keys to avoid breaking existing pages.
+    """
+    email = (
+        st.session_state.get("user_email")
+        or st.session_state.get("account_email")
+        or st.session_state.get("auth_user_email")
+        or ""
+    )
+    email = str(email).strip().lower()
+
+    if email and "@" in email:
         return email
 
     return None
 
 
-def get_user_subscription_status(email=None):
-    """Read subscription_status from app_users. Defaults to free if no user exists."""
-    if email is None:
-        email = get_current_user_email()
+def get_current_user_id():
+    """Return Supabase Auth user id if Account.py stored it in session state."""
+    user_id = st.session_state.get("auth_user_id") or st.session_state.get("user_id")
+    if user_id:
+        return str(user_id)
+    return None
 
+
+def is_logged_in():
+    return get_current_user_email() is not None
+
+
+def require_login():
+    """Stop page unless user is logged in."""
+    if not is_logged_in():
+        st.warning("Please log in from the Account page to continue.")
+        st.stop()
+
+
+def get_user_profile(email=None):
+    """Load app_users profile for current/supplied email."""
+    email = (email or get_current_user_email() or "").strip().lower()
     if not email:
-        return "free"
+        return None
 
-    supabase = get_supabase_client()
+    supabase = get_supabase_client(use_service_role=True)
     result = (
         supabase.table("app_users")
-        .select("subscription_status")
+        .select("*")
         .eq("email", email)
         .limit(1)
         .execute()
     )
 
-    if not result.data:
+    if result.data:
+        return result.data[0]
+
+    return None
+
+
+def get_subscription_status(email=None):
+    """Return subscription status from app_users. Defaults to free."""
+    profile = get_user_profile(email)
+    if not profile:
         return "free"
 
-    status = str(result.data[0].get("subscription_status") or "free").strip().lower()
-    return status or "free"
+    status = profile.get("subscription_status") or "free"
+    return str(status).strip().lower()
 
 
 def is_paid_user(email=None):
-    """Return True when user's subscription_status is active/paid."""
-    status = get_user_subscription_status(email)
-    return status in PAID_STATUS_VALUES
+    return get_subscription_status(email) in ["active", "paid", "trialing"]
 
 
-def require_account():
-    """Block page until user saves an email on Account page."""
+def require_paid_access(feature_name="This feature"):
+    """Require login and active subscription."""
+    require_login()
+
+    if not is_paid_user():
+        st.error(f"{feature_name} is available for paid users only.")
+        st.info("Your free account includes the fixed sample mock exam and limited free content.")
+        st.stop()
+
+
+def get_preferred_language(email=None):
+    """Return user's preferred language code. Defaults to English."""
+    profile = get_user_profile(email)
+    if not profile:
+        return "en"
+
+    language = profile.get("preferred_language_code") or "en"
+    return str(language).strip().lower()
+
+
+def show_account_status():
+    """Optional status banner for pages."""
     email = get_current_user_email()
-
     if not email:
-        st.warning("Please open the Account page and save your email first.")
-        st.stop()
+        st.info("Not logged in. Open Account to sign in.")
+        return
 
-    return email
+    status = get_subscription_status(email)
+    language = get_preferred_language(email)
 
-
-def require_paid_access(feature_name="this premium feature"):
-    """Block page unless user has paid/active subscription."""
-    email = require_account()
-    status = get_user_subscription_status(email)
-
-    if status not in PAID_STATUS_VALUES:
-        st.warning(f"{feature_name} is available for paid users only.")
-        st.info("Your current plan is Free. Later, Stripe will upgrade this automatically after payment. For now, you can manually set subscription_status = 'active' in Supabase for testing.")
-        st.stop()
-
-    return email
+    if status in ["active", "paid", "trialing"]:
+        st.success(f"Logged in as {email} | Access: {status} | Language: {language}")
+    else:
+        st.info(f"Logged in as {email} | Access: {status} | Language: {language}")
