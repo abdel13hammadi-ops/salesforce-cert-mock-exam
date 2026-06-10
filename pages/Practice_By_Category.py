@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import streamlit as st
 from supabase import create_client
 
-APP_VERSION = "PRACTICE_BY_CATEGORY_V3_CERT_SELECTOR"
+APP_VERSION = "PRACTICE_BY_CATEGORY_V4_ENROLLED_CERT_ACCESS"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
@@ -68,11 +68,29 @@ def language_label(language_code):
 
 
 @st.cache_data(ttl=60)
-def fetch_certifications():
+def fetch_user_certifications(user_email):
+    user_email = str(user_email or "").strip().lower()
+    if not user_email:
+        return []
+
     supabase = get_supabase_client()
+    access_result = (
+        supabase.table("user_certification_access")
+        .select("exam_name, access_status")
+        .eq("user_email", user_email)
+        .eq("access_status", "active")
+        .execute()
+    )
+    access_rows = access_result.data or []
+    allowed_exam_names = [row.get("exam_name") for row in access_rows if row.get("exam_name")]
+
+    if not allowed_exam_names:
+        return []
+
     result = (
         supabase.table("certifications")
         .select("exam_name,display_name,certification_code,is_active")
+        .in_("exam_name", allowed_exam_names)
         .eq("is_active", True)
         .order("display_name")
         .execute()
@@ -218,9 +236,10 @@ profile = fetch_user_profile(user_email)
 language_code = str(profile.get("preferred_language_code") or "en").strip().lower()
 st.success(f"Account: {user_email} ✅ | Preferred language: {language_label(language_code)}")
 
-certifications = fetch_certifications()
+certifications = fetch_user_certifications(user_email)
 if not certifications:
-    st.error("No active certifications found. Add a certification in Supabase first.")
+    st.error("No certification enrollment found for this account.")
+    st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
     st.stop()
 exam_names = [c["exam_name"] for c in certifications]
 display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications}

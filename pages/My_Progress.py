@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client
 
-APP_VERSION = "MY_PROGRESS_V5_CERT_SELECTOR"
+APP_VERSION = "MY_PROGRESS_V6_ENROLLED_CERT_ACCESS"
 PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
@@ -58,11 +58,29 @@ def fetch_languages():
 
 
 @st.cache_data(ttl=60)
-def fetch_certifications():
+def fetch_user_certifications(user_email):
+    user_email = str(user_email or "").strip().lower()
+    if not user_email:
+        return []
+
     supabase = get_supabase_client()
+    access_result = (
+        supabase.table("user_certification_access")
+        .select("exam_name, access_status")
+        .eq("user_email", user_email)
+        .eq("access_status", "active")
+        .execute()
+    )
+    access_rows = access_result.data or []
+    allowed_exam_names = [row.get("exam_name") for row in access_rows if row.get("exam_name")]
+
+    if not allowed_exam_names:
+        return []
+
     result = (
         supabase.table("certifications")
         .select("exam_name,display_name,certification_code,passing_score,time_limit_minutes,question_count,is_active")
+        .in_("exam_name", allowed_exam_names)
         .eq("is_active", True)
         .order("display_name")
         .execute()
@@ -157,9 +175,10 @@ require_paid_access(profile)
 preferred_language = str(profile.get("preferred_language_code") or "en").strip().lower()
 st.info(f"Account: {user_email} | Preferred language: {language_label(preferred_language)}")
 
-certifications = fetch_certifications()
+certifications = fetch_user_certifications(user_email)
 if not certifications:
-    st.error("No active certifications found. Add a certification in Supabase first.")
+    st.error("No certification enrollment found for this account.")
+    st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
     st.stop()
 
 exam_names = [c["exam_name"] for c in certifications]
