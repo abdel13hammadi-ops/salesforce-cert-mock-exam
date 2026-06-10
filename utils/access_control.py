@@ -129,3 +129,9 @@ def show_account_status():
         st.success(f"Logged in as {email} | Access: {status} | Language: {language}")
     else:
         st.info(f"Logged in as {email} | Access: {status} | Language: {language}")
+
+# Backward compatibility for older app.py imports
+PAID_STATUS = "active"
+
+def get_user_subscription_status():
+    return get_subscription_status()
