@@ -9,7 +9,7 @@ from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 
 
-APP_VERSION = "SUPABASE_DB_V11_CLEAN_CERT_SELECTOR"
+APP_VERSION = "SUPABASE_DB_V12_ENROLLED_CERT_ACCESS"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -220,31 +220,37 @@ def fetch_language_label(language_code):
     return language_code
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_active_certifications():
-    """Return active certifications that can be selected on the mock exam page."""
-    try:
-        result = (
-            get_supabase_client()
-            .table("certifications")
-            .select("exam_name, display_name, certification_code, is_active")
-            .eq("is_active", True)
-            .order("display_name")
-            .execute()
-        )
-        rows = result.data or []
-        if rows:
-            return rows
-    except Exception:
-        pass
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_user_certifications(user_email):
+    """Return only certifications this logged-in user is enrolled in."""
+    user_email = str(user_email or "").strip().lower()
+    if not user_email:
+        return []
 
-    # Fallback keeps the app usable if certification tables are not ready.
-    return [{
-        "exam_name": DEFAULT_EXAM_NAME,
-        "display_name": DEFAULT_EXAM_NAME,
-        "certification_code": "ADM-201",
-        "is_active": True,
-    }]
+    supabase = get_supabase_client()
+
+    access_result = (
+        supabase.table("user_certification_access")
+        .select("exam_name, access_status")
+        .eq("user_email", user_email)
+        .eq("access_status", "active")
+        .execute()
+    )
+    access_rows = access_result.data or []
+    allowed_exam_names = [row.get("exam_name") for row in access_rows if row.get("exam_name")]
+
+    if not allowed_exam_names:
+        return []
+
+    cert_result = (
+        supabase.table("certifications")
+        .select("exam_name, display_name, certification_code, is_active")
+        .in_("exam_name", allowed_exam_names)
+        .eq("is_active", True)
+        .order("display_name")
+        .execute()
+    )
+    return cert_result.data or []
 
 
 def get_user_preferred_language_code(email):
@@ -542,7 +548,15 @@ for key, value in defaults.items():
 
 
 # Language comes from the user profile. Certification is selected directly on this page.
-AVAILABLE_CERTIFICATIONS = fetch_active_certifications()
+AVAILABLE_CERTIFICATIONS = fetch_user_certifications(user_email_for_language)
+if not user_email_for_language:
+    st.warning("Please log in from the Account page before starting an exam.")
+    st.stop()
+if not AVAILABLE_CERTIFICATIONS:
+    st.error("No active certification enrollment found for this account.")
+    st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
+    st.stop()
+
 CERT_DISPLAY_BY_NAME = {
     row.get("exam_name"): row.get("display_name") or row.get("exam_name")
     for row in AVAILABLE_CERTIFICATIONS
