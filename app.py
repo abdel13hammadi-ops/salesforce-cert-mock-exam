@@ -9,9 +9,9 @@ from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 
 
-APP_VERSION = "SUPABASE_DB_V10_MULTI_CERT_LANGUAGE_READY"
+APP_VERSION = "SUPABASE_DB_V11_CLEAN_CERT_SELECTOR"
 CONFIG_FILE = "exam_config.json"
-DEFAULT_EXAM_NAME = "Salesforce Certified Administrator"
+DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
 
 FALLBACK_CATEGORY_COUNTS = {
@@ -218,6 +218,63 @@ def fetch_language_label(language_code):
     except Exception:
         pass
     return language_code
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_active_certifications():
+    """Return active certifications that can be selected on the mock exam page."""
+    try:
+        result = (
+            get_supabase_client()
+            .table("certifications")
+            .select("exam_name, display_name, certification_code, is_active")
+            .eq("is_active", True)
+            .order("display_name")
+            .execute()
+        )
+        rows = result.data or []
+        if rows:
+            return rows
+    except Exception:
+        pass
+
+    # Fallback keeps the app usable if certification tables are not ready.
+    return [{
+        "exam_name": DEFAULT_EXAM_NAME,
+        "display_name": DEFAULT_EXAM_NAME,
+        "certification_code": "ADM-201",
+        "is_active": True,
+    }]
+
+
+def get_user_preferred_language_code(email):
+    """Use the user profile language everywhere. Do not let exam pages override it."""
+    session_lang = str(st.session_state.get("preferred_language_code", "") or "").strip().lower()
+    if session_lang:
+        return session_lang
+
+    email = str(email or "").strip().lower()
+    if not email:
+        return DEFAULT_LANGUAGE_CODE
+
+    try:
+        result = (
+            get_supabase_client()
+            .table("app_users")
+            .select("preferred_language_code")
+            .eq("email", email)
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        if rows and rows[0].get("preferred_language_code"):
+            lang = str(rows[0]["preferred_language_code"]).strip().lower()
+            st.session_state.preferred_language_code = lang
+            return lang
+    except Exception:
+        pass
+
+    return DEFAULT_LANGUAGE_CODE
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -431,7 +488,7 @@ def ensure_exam_generated(exam_access_type, exam_name, language_code, category_c
 
     if meta.get("error"):
         st.error(meta["error"])
-        st.info("Open Exam Settings and choose a certification/language that has imported questions.")
+        st.info("Choose a certification on this page. Language comes from your Account profile. Make sure that certification has questions imported for your preferred language.")
         st.stop()
 
     exam_key = f"{exam_access_type}|{exam_name}|{language_code}"
@@ -484,9 +541,46 @@ for key, value in defaults.items():
         st.session_state[key] = value
 
 
-SELECTED_EXAM_NAME = get_selected_exam_name()
-SELECTED_LANGUAGE_CODE = get_selected_language_code()
+# Language comes from the user profile. Certification is selected directly on this page.
+AVAILABLE_CERTIFICATIONS = fetch_active_certifications()
+CERT_DISPLAY_BY_NAME = {
+    row.get("exam_name"): row.get("display_name") or row.get("exam_name")
+    for row in AVAILABLE_CERTIFICATIONS
+    if row.get("exam_name")
+}
+CERT_NAMES = list(CERT_DISPLAY_BY_NAME.keys()) or [DEFAULT_EXAM_NAME]
+
+user_email_for_language = get_current_user_email()
+SELECTED_LANGUAGE_CODE = get_user_preferred_language_code(user_email_for_language)
 LANGUAGE_LABEL = fetch_language_label(SELECTED_LANGUAGE_CODE)
+
+current_exam = st.session_state.get("selected_exam_name")
+if current_exam not in CERT_NAMES:
+    current_exam = CERT_NAMES[0]
+    st.session_state.selected_exam_name = current_exam
+
+if not st.session_state.get("started", False):
+    selected_exam = st.selectbox(
+        "Choose Certification",
+        options=CERT_NAMES,
+        index=CERT_NAMES.index(current_exam),
+        format_func=lambda name: CERT_DISPLAY_BY_NAME.get(name, name),
+        key="mock_exam_certification_selector",
+    )
+    if selected_exam != st.session_state.get("selected_exam_name"):
+        st.session_state.selected_exam_name = selected_exam
+        st.session_state.all_questions = []
+        st.session_state.choice_orders = {}
+        st.session_state.answers = {}
+        st.session_state.marked = set()
+        st.session_state.current_question = 0
+        st.session_state.submitted = False
+        st.session_state.review_mode = False
+        st.session_state.attempt_saved = False
+        st.session_state.exam_key = None
+        st.rerun()
+
+SELECTED_EXAM_NAME = st.session_state.get("selected_exam_name") or current_exam
 exam_setup = fetch_exam_setup(SELECTED_EXAM_NAME)
 
 PASSING_SCORE = exam_setup["passing_score"]
@@ -612,7 +706,7 @@ st.markdown(
     f"""
     <div class="exam-banner">{EXAM_TITLE}</div>
     <div class="exam-sub-banner">
-        {CERTIFICATION} | Language: {LANGUAGE_LABEL} | {len(all_questions)} questions | {EXAM_MINUTES} minutes | Passing score: {PASSING_SCORE}%
+        {CERTIFICATION} | {len(all_questions)} questions | {EXAM_MINUTES} minutes | Passing score: {PASSING_SCORE}%
     </div>
     """,
     unsafe_allow_html=True,
@@ -620,10 +714,8 @@ st.markdown(
 
 if not st.session_state.started:
     st.header("Exam Instructions")
-    st.success(f"Connected to Supabase question bank ✅ | {'Paid randomized mock exam' if has_paid_access else 'Free fixed sample mock exam'} loaded: {len(all_questions)} questions")
-    st.caption(f"App version: {APP_VERSION}")
-    st.caption(f"Selected certification: {SELECTED_EXAM_NAME} | Selected language: {SELECTED_LANGUAGE_CODE}")
-    st.info("To change certification or language, open the Exam Settings page.")
+    st.success(f"Question bank ready ✅ | {'Paid randomized mock exam' if has_paid_access else 'Free fixed sample mock exam'} | {len(all_questions)} questions")
+    st.caption(f"Preferred language: {LANGUAGE_LABEL}")
 
     if user_email:
         st.success(f"Account email: {user_email} ✅")
@@ -639,7 +731,7 @@ if not st.session_state.started:
     st.markdown(
         """
         <div class="exam-card">
-            <p>This simulator uses the selected certification and language from Exam Settings.</p>
+            <p>Choose the certification above. Your exam language is pulled automatically from your Account profile.</p>
             <p>Free users get a fixed sample mock exam. Paid users get randomized full mock exams.</p>
             <p>Answers and explanations are hidden until after final submission.</p>
         </div>
