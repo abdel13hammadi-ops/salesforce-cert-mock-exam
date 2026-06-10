@@ -107,3 +107,10 @@ def require_paid_access(feature_name="This feature"):
         st.stop()
 
     return True
+    
+# Backward compatibility for older app.py imports
+PAID_STATUS = "active"
+PAID_STATUS_VALUES = ["active", "paid", "trialing"]
+
+def get_user_subscription_status(email=None):
+    return get_subscription_status(email=email)
