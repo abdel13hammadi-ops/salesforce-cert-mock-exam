@@ -548,10 +548,15 @@ for key, value in defaults.items():
 
 
 # Language comes from the user profile. Certification is selected directly on this page.
-AVAILABLE_CERTIFICATIONS = fetch_user_certifications(user_email_for_language)
+user_email_for_language = get_current_user_email()
 if not user_email_for_language:
     st.warning("Please log in from the Account page before starting an exam.")
     st.stop()
+
+SELECTED_LANGUAGE_CODE = get_user_preferred_language_code(user_email_for_language)
+LANGUAGE_LABEL = fetch_language_label(SELECTED_LANGUAGE_CODE)
+
+AVAILABLE_CERTIFICATIONS = fetch_user_certifications(user_email_for_language)
 if not AVAILABLE_CERTIFICATIONS:
     st.error("No active certification enrollment found for this account.")
     st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
@@ -563,10 +568,6 @@ CERT_DISPLAY_BY_NAME = {
     if row.get("exam_name")
 }
 CERT_NAMES = list(CERT_DISPLAY_BY_NAME.keys()) or [DEFAULT_EXAM_NAME]
-
-user_email_for_language = get_current_user_email()
-SELECTED_LANGUAGE_CODE = get_user_preferred_language_code(user_email_for_language)
-LANGUAGE_LABEL = fetch_language_label(SELECTED_LANGUAGE_CODE)
 
 current_exam = st.session_state.get("selected_exam_name")
 if current_exam not in CERT_NAMES:
