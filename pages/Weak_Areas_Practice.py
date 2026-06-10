@@ -3,57 +3,24 @@ import random
 from collections import defaultdict
 from datetime import datetime, timezone
 
+import pandas as pd
 import streamlit as st
 from supabase import create_client
 
-APP_VERSION = "WEAK_AREAS_PRACTICE_V5_STRICT_PAID_GATE"
-
-st.set_page_config(
-    page_title="Weak Areas Practice",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-CATEGORY_ORDER = [
-    "Configuration and Setup",
-    "Object Manager and Lightning App Builder",
-    "Data and Analytics Management",
-    "Automation",
-    "Sales and Marketing Applications",
-    "Service and Support Applications",
-    "Agentforce AI",
-    "Productivity and Collaboration",
-]
-
+APP_VERSION = "WEAK_AREAS_PRACTICE_V6_CERT_SELECTOR"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
+PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
-
-def get_user_subscription_status(email: str) -> str:
-    if not email:
-        return "free"
-    supabase = get_supabase_client()
-    result = (
-        supabase.table("app_users")
-        .select("subscription_status")
-        .eq("email", email)
-        .limit(1)
-        .execute()
-    )
-    if not result.data:
-        return "free"
-    return str(result.data[0].get("subscription_status") or "free").strip().lower()
+st.set_page_config(page_title="Weak Areas Practice", layout="wide", initial_sidebar_state="expanded")
 
 
 @st.cache_resource
 def get_supabase_client():
     url = st.secrets.get("SUPABASE_URL")
     key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
-
     if not url or not key:
         st.error("Supabase secrets are missing. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
         st.stop()
-
     return create_client(url, key)
 
 
@@ -65,15 +32,77 @@ def get_current_user_email():
 
 
 @st.cache_data(ttl=60)
-def fetch_attempts(user_email):
-    if not user_email:
-        return []
-
-    supabase = get_supabase_client()
+def fetch_user_profile(email):
+    if not email:
+        return {}
     result = (
-        supabase.table("exam_attempts")
-        .select("id,user_email,mode,category,score,correct_answers,total_questions,domain_breakdown,difficulty_breakdown,completed_at")
+        get_supabase_client().table("app_users")
+        .select("email,full_name,subscription_status,preferred_language_code")
+        .eq("email", email)
+        .limit(1)
+        .execute()
+    )
+    return (result.data or [{}])[0]
+
+
+@st.cache_data(ttl=60)
+def fetch_languages():
+    try:
+        result = (
+            get_supabase_client().table("languages")
+            .select("language_code,language_name,native_name,is_active,display_order")
+            .eq("is_active", True)
+            .order("display_order")
+            .execute()
+        )
+        return result.data or []
+    except Exception:
+        return [{"language_code": "en", "language_name": "English", "native_name": "English"}]
+
+
+def language_label(language_code):
+    for lang in fetch_languages():
+        if lang.get("language_code") == language_code:
+            native = lang.get("native_name") or lang.get("language_name") or language_code
+            return f"{native} ({language_code})"
+    return language_code
+
+
+@st.cache_data(ttl=60)
+def fetch_certifications():
+    result = (
+        get_supabase_client().table("certifications")
+        .select("exam_name,display_name,certification_code,is_active")
+        .eq("is_active", True)
+        .order("display_name")
+        .execute()
+    )
+    return result.data or []
+
+
+@st.cache_data(ttl=60)
+def fetch_domains(exam_name):
+    result = (
+        get_supabase_client().table("certification_domains")
+        .select("domain_name,display_order,is_active")
+        .eq("exam_name", exam_name)
+        .eq("is_active", True)
+        .order("display_order")
+        .execute()
+    )
+    return [row["domain_name"] for row in (result.data or [])]
+
+
+@st.cache_data(ttl=60)
+def fetch_attempts(user_email, exam_name, language_code):
+    if not user_email or not exam_name or not language_code:
+        return []
+    result = (
+        get_supabase_client().table("exam_attempts")
+        .select("id,user_email,mode,category,score,correct_answers,total_questions,domain_breakdown,completed_at,exam_name,language_code")
         .eq("user_email", user_email)
+        .eq("exam_name", exam_name)
+        .eq("language_code", language_code)
         .order("id", desc=True)
         .execute()
     )
@@ -81,29 +110,27 @@ def fetch_attempts(user_email):
 
 
 @st.cache_data(ttl=60)
-def fetch_question_bank():
-    supabase = get_supabase_client()
-
+def fetch_question_bank(exam_name, language_code):
     q_response = (
-        supabase.table("questions")
-        .select("id, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status")
+        get_supabase_client().table("questions")
+        .select("id, exam_name, language_code, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status")
+        .eq("exam_name", exam_name)
+        .eq("language_code", language_code)
         .eq("is_active", True)
         .eq("is_exam_eligible", True)
         .eq("quality_status", "approved")
         .execute()
     )
     questions = q_response.data or []
-
     if not questions:
         return []
 
-    question_ids = [q["id"] for q in questions]
+    ids = [q["id"] for q in questions]
     options_by_question = defaultdict(list)
-
-    for start in range(0, len(question_ids), 100):
-        chunk = question_ids[start:start + 100]
+    for start in range(0, len(ids), 100):
+        chunk = ids[start:start + 100]
         opt_response = (
-            supabase.table("answer_options")
+            get_supabase_client().table("answer_options")
             .select("id, question_id, option_text, is_correct, display_order")
             .in_("question_id", chunk)
             .order("display_order")
@@ -117,30 +144,22 @@ def fetch_question_bank():
         opts = options_by_question.get(q["id"], [])
         if len(opts) < 2:
             continue
-
         correct_ids = [str(o["id"]) for o in opts if o.get("is_correct")]
         if not correct_ids:
             continue
-
         normalized.append({
             "id": q["id"],
+            "exam_name": q.get("exam_name"),
+            "language_code": q.get("language_code"),
             "category": q.get("category") or "Uncategorized",
             "difficulty": (q.get("difficulty") or "unknown").lower(),
             "question": q.get("question_text") or "",
             "type": q.get("question_type") or "single",
             "select_count": q.get("select_count"),
             "explanation": q.get("explanation") or "No explanation available.",
-            "options": [
-                {
-                    "id": str(o["id"]),
-                    "text": o.get("option_text") or "",
-                    "is_correct": bool(o.get("is_correct")),
-                }
-                for o in opts
-            ],
+            "options": [{"id": str(o["id"]), "text": o.get("option_text") or "", "is_correct": bool(o.get("is_correct"))} for o in opts],
             "correct_ids": correct_ids,
         })
-
     return normalized
 
 
@@ -158,11 +177,10 @@ def normalize_breakdown(value):
     return {}
 
 
-def aggregate_breakdown(attempts, field_name):
+def aggregate_domains(attempts):
     totals = defaultdict(lambda: {"correct": 0, "total": 0})
-
     for attempt in attempts:
-        breakdown = normalize_breakdown(attempt.get(field_name))
+        breakdown = normalize_breakdown(attempt.get("domain_breakdown"))
         for name, data in breakdown.items():
             if not isinstance(data, dict):
                 continue
@@ -175,17 +193,10 @@ def aggregate_breakdown(attempts, field_name):
 
     rows = []
     for name, data in totals.items():
-        total = data["total"]
-        correct = data["correct"]
-        accuracy = round((correct / total) * 100, 2) if total else 0
-        rows.append({
-            "name": name,
-            "correct": correct,
-            "total": total,
-            "accuracy": accuracy,
-        })
-
-    return sorted(rows, key=lambda r: (r["accuracy"], -r["total"], r["name"]))
+        accuracy = round((data["correct"] / data["total"]) * 100, 2) if data["total"] else 0
+        rows.append({"name": name, "correct": data["correct"], "total": data["total"], "accuracy": accuracy})
+    rows.sort(key=lambda r: r["accuracy"])
+    return rows
 
 
 def is_correct(user_ids, correct_ids):
@@ -194,22 +205,30 @@ def is_correct(user_ids, correct_ids):
 
 def build_breakdown(questions, answers, field):
     stats = defaultdict(lambda: {"correct": 0, "total": 0})
-
     for i, q in enumerate(questions):
         value = q.get(field, "Unknown") or "Unknown"
         stats[value]["total"] += 1
         if is_correct(answers.get(i, []), q.get("correct_ids", [])):
             stats[value]["correct"] += 1
-
     return dict(stats)
 
 
-def save_weak_attempt(score, correct, total, category_label, domain_breakdown, difficulty_breakdown):
-    supabase = get_supabase_client()
+def choose_questions(question_bank, selected_categories, count):
+    priority = [q for q in question_bank if q["category"] in selected_categories]
+    fallback = [q for q in question_bank if q["category"] not in selected_categories]
+    random.shuffle(priority)
+    random.shuffle(fallback)
+    selected = priority[:count]
+    if len(selected) < count:
+        selected.extend(fallback[:count - len(selected)])
+    random.shuffle(selected)
+    return selected[:count]
+
+
+def save_weak_attempt(score, correct, total, category_label, domain_breakdown, difficulty_breakdown, exam_name, language_code):
     user_email = get_current_user_email()
     if not user_email:
-        raise ValueError("No account email saved. Open the Account page and save your email first.")
-
+        raise ValueError("No account email saved.")
     payload = {
         "user_email": user_email,
         "mode": "Weak Areas Practice",
@@ -220,69 +239,28 @@ def save_weak_attempt(score, correct, total, category_label, domain_breakdown, d
         "domain_breakdown": domain_breakdown,
         "difficulty_breakdown": difficulty_breakdown,
         "completed_at": datetime.now(timezone.utc).isoformat(),
+        "exam_name": exam_name,
+        "language_code": language_code,
     }
-    supabase.table("exam_attempts").insert(payload).execute()
+    get_supabase_client().table("exam_attempts").insert(payload).execute()
 
 
-def reset_weak_practice():
+def reset_weak():
     for key in [
-        "weak_started",
-        "weak_submitted",
-        "weak_current_index",
-        "weak_questions",
-        "weak_answers",
-        "weak_feedback_shown",
-        "weak_saved",
-        "weak_categories",
-        "weak_count",
+        "weak_started", "weak_submitted", "weak_current_index", "weak_answers", "weak_feedback_shown",
+        "weak_saved", "weak_questions", "weak_categories", "weak_exam_name", "weak_language_code",
     ]:
-        if key in st.session_state:
-            del st.session_state[key]
+        st.session_state.pop(key, None)
     st.rerun()
 
-
-def choose_questions(question_bank, selected_categories, count):
-    selected = []
-
-    # First preference: selected weak domains, any difficulty.
-    category_pool = [
-        q for q in question_bank
-        if q["category"] in selected_categories
-    ]
-    random.shuffle(category_pool)
-    selected.extend(category_pool[:count])
-
-    # Final fallback: any approved question if selected domains do not have enough questions.
-    if len(selected) < count:
-        used_ids = {q["id"] for q in selected}
-        fallback = [q for q in question_bank if q["id"] not in used_ids]
-        random.shuffle(fallback)
-        selected.extend(fallback[:count - len(selected)])
-
-    random.shuffle(selected)
-    return selected[:count]
 
 st.markdown(
     """
     <style>
-    .block-container { max-width: 1120px; padding-top: 2rem !important; }
-    .weak-banner {
-        background: #16325c;
-        color: white;
-        padding: 18px 22px;
-        border-radius: 8px;
-        font-size: 27px;
-        font-weight: 700;
-        margin-bottom: 18px;
-    }
-    .weak-card {
-        border: 1px solid #d8dde6;
-        border-radius: 8px;
-        padding: 20px;
-        background: white;
-        margin-bottom: 18px;
-    }
-    .small-muted { color: #5f6368; font-size: 13px; }
+    .block-container { max-width:1120px; padding-top:2rem !important; }
+    .weak-banner { background:#16325c;color:white;padding:18px 22px;border-radius:8px;font-size:27px;font-weight:700;margin-bottom:18px; }
+    .weak-card { border:1px solid #d8dde6;border-radius:8px;padding:20px;background:white;margin-bottom:18px; }
+    .small-muted { color:#5f6368;font-size:13px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -292,96 +270,75 @@ st.markdown('<div class="weak-banner">Weak Areas Practice</div>', unsafe_allow_h
 st.caption(f"App version: {APP_VERSION}")
 
 user_email = get_current_user_email()
-if user_email:
-    st.success(f"Using progress for: {user_email} ✅")
-else:
-    st.warning("No account email saved. Open the Account page and save your email before using Weak Areas Practice.")
+if not user_email:
+    st.warning("Please log in from the Account page before using Weak Areas Practice.")
     st.stop()
 
-subscription_status = get_user_subscription_status(user_email)
-if subscription_status not in PAID_STATUS_VALUES:
+profile = fetch_user_profile(user_email)
+status = str(profile.get("subscription_status") or "free").strip().lower()
+if status not in PAID_STATUS_VALUES:
     st.warning("Weak Areas Practice is a premium feature.")
-    st.info("Your account is currently Free. For testing, set subscription_status = 'active' in Supabase for your email.")
+    st.info("Upgrade to unlock weak-area practice by certification.")
     st.stop()
 
-st.success(f"Subscription status: {subscription_status} ✅ Weak Areas Practice unlocked")
+language_code = str(profile.get("preferred_language_code") or "en").strip().lower()
+st.success(f"Account: {user_email} ✅ | Access: {status} | Preferred language: {language_label(language_code)}")
 
-question_bank = fetch_question_bank()
-attempts = fetch_attempts(user_email)
-
-if not question_bank:
-    st.error("No approved exam-eligible questions found in Supabase.")
+certifications = fetch_certifications()
+if not certifications:
+    st.error("No active certifications found. Add a certification in Supabase first.")
     st.stop()
+exam_names = [c["exam_name"] for c in certifications]
+display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications}
 
-available_categories = [c for c in CATEGORY_ORDER if any(q["category"] == c for q in question_bank)]
-extra_categories = sorted({q["category"] for q in question_bank if q["category"] not in CATEGORY_ORDER})
-available_categories.extend(extra_categories)
+if not st.session_state.get("weak_started", False):
+    selected_exam = st.selectbox(
+        "Choose certification",
+        exam_names,
+        format_func=lambda x: display_by_exam.get(x, x),
+        key="weak_selected_exam_name",
+    )
+    domains = fetch_domains(selected_exam)
+    question_bank = fetch_question_bank(selected_exam, language_code)
+    attempts = fetch_attempts(user_email, selected_exam, language_code)
 
-for key, default in {
-    "weak_started": False,
-    "weak_submitted": False,
-    "weak_current_index": 0,
-    "weak_answers": {},
-    "weak_feedback_shown": False,
-    "weak_saved": False,
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+    if not question_bank:
+        st.error(f"No approved questions found for {display_by_exam.get(selected_exam, selected_exam)} in {language_label(language_code)}.")
+        st.stop()
 
-weak_domains = aggregate_breakdown(attempts, "domain_breakdown")
+    available_categories = [d for d in domains if any(q["category"] == d for q in question_bank)]
+    extra_categories = sorted({q["category"] for q in question_bank if q["category"] not in available_categories})
+    available_categories.extend(extra_categories)
 
-if not st.session_state.weak_started:
+    weak_domains = aggregate_domains(attempts)
     st.header("Build Practice from Your Weak Areas")
 
     if not attempts or not weak_domains:
-        st.warning(
-            "No detailed weak-area data found yet. Complete at least one timed mock exam or category practice first. "
-            "For now, you can manually choose a category."
-        )
+        st.warning("No weak-area data found yet for this certification/language. Complete a mock exam or practice set first, or manually choose a domain.")
         recommended_categories = available_categories[:1]
     else:
-        recommended_categories = [r["name"] for r in weak_domains[:2] if r["name"] in available_categories]
-        if not recommended_categories:
-            recommended_categories = available_categories[:1]
-
-        st.success("Your weakest domains were detected from saved attempts.")
+        recommended_categories = [r["name"] for r in weak_domains[:2] if r["name"] in available_categories] or available_categories[:1]
+        st.success("Your weakest domains were detected from saved attempts for this certification.")
         st.subheader("Weakest Domains")
-        for row in weak_domains[:5]:
-            st.write(f"- **{row['name']}** — {row['accuracy']}% ({row['correct']} / {row['total']})")
+        st.dataframe(pd.DataFrame(weak_domains[:5]).rename(columns={"name": "Domain", "accuracy": "Accuracy %", "correct": "Correct", "total": "Total"}), use_container_width=True, hide_index=True)
 
-    st.divider()
-
-    default_indices = [available_categories.index(c) for c in recommended_categories if c in available_categories]
-    selected_categories = st.multiselect(
-        "Practice these weak domain(s):",
-        available_categories,
-        default=[available_categories[i] for i in default_indices] if default_indices else available_categories[:1],
-    )
-
+    selected_categories = st.multiselect("Practice these domain(s):", available_categories, default=recommended_categories)
     question_count = st.selectbox("Number of questions:", QUESTION_COUNT_OPTIONS, index=0)
-
-    st.info(
-        "The app pulls questions from your selected weak domain(s). "
-        "If there are not enough, it fills the practice set with other approved questions."
-    )
 
     if st.button("Start Weak Areas Practice", type="primary"):
         if not selected_categories:
             st.error("Choose at least one category.")
             st.stop()
-
         selected_questions = choose_questions(question_bank, selected_categories, int(question_count))
         if not selected_questions:
             st.error("No questions found for these settings.")
             st.stop()
-
-        # Randomize answer choices for each question.
         for q in selected_questions:
             random.shuffle(q["options"])
-
         st.session_state.weak_questions = selected_questions
         st.session_state.weak_categories = selected_categories
-        st.session_state.weak_count = len(selected_questions)
+        st.session_state.weak_exam_name = selected_exam
+        st.session_state.weak_language_code = language_code
         st.session_state.weak_started = True
         st.session_state.weak_submitted = False
         st.session_state.weak_current_index = 0
@@ -390,58 +347,38 @@ if not st.session_state.weak_started:
         st.session_state.weak_saved = False
         st.rerun()
 
-elif not st.session_state.weak_submitted:
+elif not st.session_state.get("weak_submitted", False):
     questions = st.session_state.weak_questions
-    q_index = st.session_state.weak_current_index
+    q_index = st.session_state.get("weak_current_index", 0)
     q = questions[q_index]
-
-    st.markdown(
-        f"""
-        <div class="weak-card">
-            <strong>Question:</strong> {q_index + 1} of {len(questions)}
-            &nbsp;&nbsp; | &nbsp;&nbsp;
-            <strong>Domain:</strong> {q['category']}
-            &nbsp;&nbsp; | &nbsp;&nbsp;
-            <strong>Difficulty:</strong> {q['difficulty'].title()}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
+    st.markdown(f"""
+    <div class="weak-card">
+        <strong>Question:</strong> {q_index + 1} of {len(questions)}<br>
+        <span class="small-muted">Certification: {display_by_exam.get(st.session_state.weak_exam_name, st.session_state.weak_exam_name)} | Domain: {q['category']} | Difficulty: {q['difficulty'].title()}</span>
+    </div>
+    """, unsafe_allow_html=True)
     st.progress((q_index + 1) / len(questions))
     st.subheader(q["question"])
 
-    current_answer = st.session_state.weak_answers.get(q_index, [])
+    current_answer = st.session_state.get("weak_answers", {}).get(q_index, [])
     selected_ids = []
-
     if q["type"] == "multiple":
         count_text = q.get("select_count") or len(q["correct_ids"])
         st.warning(f"Choose {count_text} answers.")
         for opt in q["options"]:
-            checked = opt["id"] in current_answer
-            if st.checkbox(opt["text"], value=checked, key=f"weak_{q_index}_{opt['id']}"):
+            if st.checkbox(opt["text"], value=opt["id"] in current_answer, key=f"weak_{q_index}_{opt['id']}"):
                 selected_ids.append(opt["id"])
     else:
         option_labels = [opt["text"] for opt in q["options"]]
         id_by_text = {opt["text"]: opt["id"] for opt in q["options"]}
-        current_text = None
-        if current_answer:
-            for opt in q["options"]:
-                if opt["id"] == current_answer[0]:
-                    current_text = opt["text"]
-                    break
-        selected_text = st.radio(
-            "Choose one answer.",
-            option_labels,
-            index=option_labels.index(current_text) if current_text in option_labels else None,
-            key=f"weak_radio_{q_index}",
-        )
+        current_text = next((opt["text"] for opt in q["options"] if current_answer and opt["id"] == current_answer[0]), None)
+        selected_text = st.radio("Choose one answer.", option_labels, index=option_labels.index(current_text) if current_text in option_labels else None, key=f"weak_radio_{q_index}")
         if selected_text:
             selected_ids = [id_by_text[selected_text]]
 
     if selected_ids:
         st.session_state.weak_answers[q_index] = selected_ids
-    elif q_index in st.session_state.weak_answers:
+    elif q_index in st.session_state.get("weak_answers", {}):
         del st.session_state.weak_answers[q_index]
 
     col1, col2, col3 = st.columns(3)
@@ -464,13 +401,9 @@ elif not st.session_state.weak_submitted:
                 st.session_state.weak_submitted = True
                 st.rerun()
 
-    if st.session_state.weak_feedback_shown:
+    if st.session_state.get("weak_feedback_shown", False):
         user_ids = st.session_state.weak_answers.get(q_index, [])
-        if is_correct(user_ids, q["correct_ids"]):
-            st.success("Correct")
-        else:
-            st.error("Incorrect")
-
+        st.success("Correct") if is_correct(user_ids, q["correct_ids"]) else st.error("Incorrect")
         correct_texts = [opt["text"] for opt in q["options"] if opt["id"] in q["correct_ids"]]
         selected_texts = [opt["text"] for opt in q["options"] if opt["id"] in user_ids]
         st.write("Your answer: " + (", ".join(selected_texts) if selected_texts else "No answer selected"))
@@ -483,7 +416,6 @@ else:
     correct = sum(1 for i, q in enumerate(questions) if is_correct(answers.get(i, []), q["correct_ids"]))
     total = len(questions)
     score = round((correct / total) * 100, 2) if total else 0
-
     domain_breakdown = build_breakdown(questions, answers, "category")
     difficulty_breakdown = build_breakdown(questions, answers, "difficulty")
     category_label = ", ".join(st.session_state.get("weak_categories", [])) or "Weak Areas"
@@ -494,15 +426,13 @@ else:
     c2.metric("Correct", f"{correct} / {total}")
     c3.metric("Focus Domains", len(st.session_state.get("weak_categories", [])))
 
-    if not st.session_state.weak_saved:
+    if not st.session_state.get("weak_saved", False):
         try:
-            save_weak_attempt(score, correct, total, category_label, domain_breakdown, difficulty_breakdown)
+            save_weak_attempt(score, correct, total, category_label, domain_breakdown, difficulty_breakdown, st.session_state.weak_exam_name, st.session_state.weak_language_code)
             st.session_state.weak_saved = True
             st.success("Weak areas practice attempt saved to progress tracking ✅")
         except Exception as exc:
             st.error(f"Practice result was calculated, but saving to Supabase failed: {exc}")
-    else:
-        st.success("Weak areas practice attempt saved to progress tracking ✅")
 
     st.divider()
     st.subheader("Breakdown by Domain")
@@ -515,19 +445,15 @@ else:
     for i, q in enumerate(questions):
         user_ids = answers.get(i, [])
         result_correct = is_correct(user_ids, q["correct_ids"])
-        if result_correct:
-            st.success(f"Question {i + 1} — Correct")
-        else:
-            st.error(f"Question {i + 1} — Incorrect")
-
-        st.caption(f"Domain: {q['category']} | Difficulty: {q['difficulty'].title()}")
-        st.write(q["question"])
+        st.success(f"Question {i + 1} — Correct") if result_correct else st.error(f"Question {i + 1} — Incorrect")
         selected_texts = [opt["text"] for opt in q["options"] if opt["id"] in user_ids]
         correct_texts = [opt["text"] for opt in q["options"] if opt["id"] in q["correct_ids"]]
+        st.caption(f"Domain: {q['category']} | Difficulty: {q['difficulty'].title()}")
+        st.write(q["question"])
         st.write("Your answer: " + (", ".join(selected_texts) if selected_texts else "No answer selected"))
         st.write("Correct answer: " + ", ".join(correct_texts))
         st.info(q["explanation"])
         st.divider()
 
-    if st.button("Start New Weak Areas Practice"):
-        reset_weak_practice()
+    if st.button("Start New Weak Areas Practice", type="primary"):
+        reset_weak()

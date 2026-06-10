@@ -1,27 +1,21 @@
 import json
-from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 from supabase import create_client
 
-APP_VERSION = "MY_PROGRESS_V4_PAID_ACCESS"
+APP_VERSION = "MY_PROGRESS_V5_CERT_SELECTOR"
+PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
-st.set_page_config(
-    page_title="My Progress",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 
 
 def get_supabase_client():
     url = st.secrets.get("SUPABASE_URL")
     key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
-
     if not url or not key:
         st.error("Supabase secrets are missing. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
         st.stop()
-
     return create_client(url, key)
 
 
@@ -32,55 +26,80 @@ def get_current_user_email():
     return None
 
 
-
-
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
-
-
-def get_user_subscription_status(email):
+@st.cache_data(ttl=60)
+def fetch_user_profile(email):
     if not email:
-        return "free"
-
+        return {}
     supabase = get_supabase_client()
     result = (
         supabase.table("app_users")
-        .select("subscription_status")
+        .select("email,full_name,subscription_status,preferred_language_code")
         .eq("email", email)
         .limit(1)
         .execute()
     )
-
-    if not result.data:
-        return "free"
-
-    return str(result.data[0].get("subscription_status") or "free").strip().lower()
+    return (result.data or [{}])[0]
 
 
-def require_paid_access(email):
-    status = get_user_subscription_status(email)
+@st.cache_data(ttl=60)
+def fetch_languages():
+    supabase = get_supabase_client()
+    try:
+        result = (
+            supabase.table("languages")
+            .select("language_code,language_name,native_name,is_active,display_order")
+            .eq("is_active", True)
+            .order("display_order")
+            .execute()
+        )
+        return result.data or []
+    except Exception:
+        return [{"language_code": "en", "language_name": "English", "native_name": "English"}]
 
+
+@st.cache_data(ttl=60)
+def fetch_certifications():
+    supabase = get_supabase_client()
+    result = (
+        supabase.table("certifications")
+        .select("exam_name,display_name,certification_code,passing_score,time_limit_minutes,question_count,is_active")
+        .eq("is_active", True)
+        .order("display_name")
+        .execute()
+    )
+    return result.data or []
+
+
+def language_label(language_code):
+    languages = fetch_languages()
+    for lang in languages:
+        if lang.get("language_code") == language_code:
+            native = lang.get("native_name") or lang.get("language_name") or language_code
+            return f"{native} ({language_code})"
+    return language_code
+
+
+def require_paid_access(profile):
+    status = str(profile.get("subscription_status") or "free").strip().lower()
     if status not in PAID_STATUS_VALUES:
         st.warning("My Progress is available for paid users only.")
-        st.info(
-            "Your current access level is Free. Once Stripe is connected, paid users will unlock this automatically. "
-            "For testing now, set subscription_status = 'active' in Supabase for this email."
-        )
+        st.info("Your current access level is Free. Upgrade to unlock progress tracking and analytics.")
         st.stop()
-
     st.success(f"Subscription status: {status} ✅ My Progress unlocked")
     return status
 
 
-def load_attempts():
-    user_email = get_current_user_email()
-    if not user_email:
+@st.cache_data(ttl=60)
+def load_attempts(user_email, exam_name, language_code):
+    if not user_email or not exam_name or not language_code:
         return []
-
     supabase = get_supabase_client()
     result = (
         supabase.table("exam_attempts")
-        .select("id,user_email,mode,category,score,correct_answers,total_questions,domain_breakdown,difficulty_breakdown,completed_at")
+        .select("id,user_email,mode,category,score,correct_answers,total_questions,domain_breakdown,completed_at,exam_name,language_code")
         .eq("user_email", user_email)
+        .eq("exam_name", exam_name)
+        .eq("language_code", language_code)
         .order("id", desc=True)
         .execute()
     )
@@ -101,11 +120,10 @@ def normalize_breakdown(value):
     return {}
 
 
-def make_breakdown_table(attempts, field_name):
+def make_domain_table(attempts):
     totals = {}
-
     for attempt in attempts:
-        breakdown = normalize_breakdown(attempt.get(field_name))
+        breakdown = normalize_breakdown(attempt.get("domain_breakdown"))
         for name, data in breakdown.items():
             if not isinstance(data, dict):
                 continue
@@ -121,13 +139,7 @@ def make_breakdown_table(attempts, field_name):
         total = data["total"]
         correct = data["correct"]
         percent = round((correct / total) * 100, 2) if total else 0
-        rows.append({
-            "Area": name,
-            "Correct": correct,
-            "Total": total,
-            "Accuracy %": percent,
-        })
-
+        rows.append({"Domain": name, "Correct": correct, "Total": total, "Accuracy %": percent})
     return pd.DataFrame(rows).sort_values("Accuracy %") if rows else pd.DataFrame()
 
 
@@ -135,24 +147,38 @@ st.title("My Progress")
 st.caption(f"App version: {APP_VERSION}")
 
 user_email = get_current_user_email()
-if user_email:
-    st.success(f"Account email: {user_email} ✅")
-else:
-    st.warning("No account email saved. Open the Account page and save your email before viewing progress.")
+if not user_email:
+    st.warning("Please log in from the Account page before viewing progress.")
     st.stop()
 
-require_paid_access(user_email)
+profile = fetch_user_profile(user_email)
+require_paid_access(profile)
 
-attempts = load_attempts()
+preferred_language = str(profile.get("preferred_language_code") or "en").strip().lower()
+st.info(f"Account: {user_email} | Preferred language: {language_label(preferred_language)}")
+
+certifications = fetch_certifications()
+if not certifications:
+    st.error("No active certifications found. Add a certification in Supabase first.")
+    st.stop()
+
+exam_names = [c["exam_name"] for c in certifications]
+display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications}
+selected_exam = st.selectbox(
+    "Choose certification for progress",
+    exam_names,
+    format_func=lambda x: display_by_exam.get(x, x),
+    key="my_progress_exam_name",
+)
+
+attempts = load_attempts(user_email, selected_exam, preferred_language)
 
 if not attempts:
-    st.info("No exam attempts saved yet. Complete a timed mock exam first, then come back here.")
+    st.info("No attempts found for this certification and language yet. Complete a mock exam or practice set first.")
     st.stop()
 
-# Summary metrics
 scores = [float(a.get("score") or 0) for a in attempts]
-latest = attempts[0]
-latest_score = float(latest.get("score") or 0)
+latest_score = float(attempts[0].get("score") or 0)
 average_score = round(sum(scores) / len(scores), 2) if scores else 0
 best_score = round(max(scores), 2) if scores else 0
 attempt_count = len(attempts)
@@ -164,47 +190,34 @@ c3.metric("Best Score", f"{best_score}%")
 c4.metric("Attempts", attempt_count)
 
 st.divider()
-
-# Weak areas
 st.header("Weak Areas by Domain")
-
-domain_df = make_breakdown_table(attempts, "domain_breakdown")
-
+domain_df = make_domain_table(attempts)
 if domain_df.empty:
     st.warning("No domain breakdown data saved yet.")
 else:
     st.dataframe(domain_df, use_container_width=True, hide_index=True)
-    weakest_domain = domain_df.iloc[0]
-    st.info(f"Weakest domain: {weakest_domain['Area']} ({weakest_domain['Accuracy %']}%)")
+    weakest = domain_df.iloc[0]
+    st.info(f"Weakest domain: {weakest['Domain']} ({weakest['Accuracy %']}%)")
 
 st.divider()
-
-# Attempt history
 st.header("Attempt History")
-
 history_rows = []
 for attempt in attempts:
-    completed_at = attempt.get("completed_at")
     history_rows.append({
         "Attempt ID": attempt.get("id"),
-        "Completed At": completed_at if completed_at else "Not recorded",
+        "Completed At": attempt.get("completed_at") or "Not recorded",
         "Mode": attempt.get("mode"),
         "Category": attempt.get("category"),
         "Score %": attempt.get("score"),
         "Correct": attempt.get("correct_answers"),
         "Total": attempt.get("total_questions"),
     })
-
-history_df = pd.DataFrame(history_rows)
-st.dataframe(history_df, use_container_width=True, hide_index=True)
+st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)
 
 st.divider()
-
 st.header("Recommendation")
 if not domain_df.empty:
     weakest = domain_df.iloc[0]
-    st.write(
-        f"Focus next on **{weakest['Area']}**. Your current accuracy there is **{weakest['Accuracy %']}%**."
-    )
+    st.write(f"Focus next on **{weakest['Domain']}** for **{display_by_exam.get(selected_exam, selected_exam)}**.")
 else:
-    st.write("Complete more exams to generate recommendations.")
+    st.write("Complete more attempts to generate recommendations.")
