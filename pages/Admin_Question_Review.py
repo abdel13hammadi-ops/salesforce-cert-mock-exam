@@ -5,10 +5,15 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 from supabase import create_client
+from utils.access_control import require_admin_access
 
 APP_VERSION = "ADMIN_QUESTION_REVIEW_V3_ID_LABELS"
 
 st.set_page_config(page_title="Admin Question Review", layout="wide")
+
+# Hard security gate: only admins can access this page, even by direct URL.
+admin_email = require_admin_access("Admin Question Review")
+
 
 CATEGORIES = [
     "Configuration and Setup",

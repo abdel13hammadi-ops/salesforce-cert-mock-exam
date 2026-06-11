@@ -3,10 +3,15 @@ from datetime import datetime, timezone
 
 import streamlit as st
 from supabase import create_client
+from utils.access_control import require_admin_access
 
 APP_VERSION = "ADMIN_IMPORT_V2_BA_COMPATIBLE"
 
 st.set_page_config(page_title="Admin Import", layout="wide")
+
+# Hard security gate: only admins can access this page, even by direct URL.
+admin_email = require_admin_access("Admin Import")
+
 st.title("Admin Import")
 st.caption(f"App version: {APP_VERSION}")
 
