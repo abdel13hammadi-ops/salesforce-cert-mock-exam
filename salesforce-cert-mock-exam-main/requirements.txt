@@ -1,0 +1,7 @@
+
+streamlit
+streamlit-autorefresh
+pandas
+psycopg2-binary
+sqlalchemy
+supabase

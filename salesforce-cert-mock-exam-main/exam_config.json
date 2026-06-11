@@ -1,0 +1,49 @@
+{
+  "exam_title": "Salesforce Platform Administrator Practice Exam",
+  "certification": "Salesforce Certified Platform Administrator",
+  "time_limit_minutes": 105,
+  "passing_score": 68,
+  "question_file": "questions/mock_exam_3.json",
+  "sections": [
+    {
+      "name": "Data and Analytics Management: 17%",
+      "weight": 17,
+      "target_questions": 10
+    },
+    {
+      "name": "Configuration and Setup: 15%",
+      "weight": 15,
+      "target_questions": 9
+    },
+    {
+      "name": "Object Manager & Lightning App Builder: 15%",
+      "weight": 15,
+      "target_questions": 9
+    },
+    {
+      "name": "Automation: 15%",
+      "weight": 15,
+      "target_questions": 9
+    },
+    {
+      "name": "Sales and Marketing Applications: 10%",
+      "weight": 10,
+      "target_questions": 6
+    },
+    {
+      "name": "Service and Support Applications: 10%",
+      "weight": 10,
+      "target_questions": 6
+    },
+    {
+      "name": "Productivity and Collaboration: 10%",
+      "weight": 10,
+      "target_questions": 6
+    },
+    {
+      "name": "Agentforce AI: 8%",
+      "weight": 8,
+      "target_questions": 5
+    }
+  ]
+}
