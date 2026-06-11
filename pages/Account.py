@@ -1,9 +1,11 @@
 import streamlit as st
+from utils.access_control import render_sidebar_navigation
 from supabase import create_client
 
 APP_VERSION = "ACCOUNT_V5_SUPABASE_AUTH_LOGIN"
 
 st.set_page_config(page_title="Account", layout="wide")
+render_sidebar_navigation()
 
 
 def get_secret(name: str, default: str = "") -> str:
