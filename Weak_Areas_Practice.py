@@ -5,8 +5,15 @@ from datetime import datetime, timezone
 
 import streamlit as st
 from supabase import create_client
-from utils.access_control import get_user_subscription_status, PAID_STATUS_VALUES
 
+
+# Ensure project utilities are importable.
+import sys
+from pathlib import Path
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+from utils.access_control import get_user_subscription_status, PAID_STATUS_VALUES, render_sidebar_navigation
 APP_VERSION = "WEAK_AREAS_PRACTICE_V4_PAID_ACCESS"
 
 st.set_page_config(
@@ -14,6 +21,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+render_sidebar_navigation()
 
 CATEGORY_ORDER = [
     "Configuration and Setup",

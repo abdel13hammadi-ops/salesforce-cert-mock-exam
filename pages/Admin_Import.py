@@ -3,15 +3,21 @@ from datetime import datetime, timezone
 
 import streamlit as st
 from supabase import create_client
-from utils.access_control import require_admin_access
 
+# Ensure Streamlit Cloud can import project-level utilities from pages/.
+import sys
+from pathlib import Path
+ROOT_DIR = Path(__file__).resolve().parent
+if ROOT_DIR.name == "pages":
+    ROOT_DIR = ROOT_DIR.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from utils.access_control import require_admin
 APP_VERSION = "ADMIN_IMPORT_V2_BA_COMPATIBLE"
 
 st.set_page_config(page_title="Admin Import", layout="wide")
-
-# Hard security gate: only admins can access this page, even by direct URL.
-admin_email = require_admin_access("Admin Import")
-
+require_admin()
 st.title("Admin Import")
 st.caption(f"App version: {APP_VERSION}")
 

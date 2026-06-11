@@ -5,15 +5,21 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 from supabase import create_client
-from utils.access_control import require_admin_access
 
+# Ensure Streamlit Cloud can import project-level utilities from pages/.
+import sys
+from pathlib import Path
+ROOT_DIR = Path(__file__).resolve().parent
+if ROOT_DIR.name == "pages":
+    ROOT_DIR = ROOT_DIR.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from utils.access_control import require_admin
 APP_VERSION = "ADMIN_QUESTION_REVIEW_V3_ID_LABELS"
 
 st.set_page_config(page_title="Admin Question Review", layout="wide")
-
-# Hard security gate: only admins can access this page, even by direct URL.
-admin_email = require_admin_access("Admin Question Review")
-
+require_admin()
 
 CATEGORIES = [
     "Configuration and Setup",

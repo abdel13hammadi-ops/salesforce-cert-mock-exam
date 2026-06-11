@@ -4,10 +4,21 @@ import pandas as pd
 import streamlit as st
 from supabase import create_client
 
+# Ensure Streamlit Cloud can import project-level utilities from pages/.
+import sys
+from pathlib import Path
+ROOT_DIR = Path(__file__).resolve().parent
+if ROOT_DIR.name == "pages":
+    ROOT_DIR = ROOT_DIR.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from utils.access_control import render_sidebar_navigation
 APP_VERSION = "MY_PROGRESS_V6_ENROLLED_CERT_ACCESS"
 PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
+render_sidebar_navigation()
 
 
 def get_supabase_client():
