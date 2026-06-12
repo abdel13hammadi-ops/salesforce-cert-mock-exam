@@ -3,6 +3,11 @@ import sys
 import streamlit as st
 from supabase import create_client
 
+try:
+    from streamlit_cookies_manager import EncryptedCookieManager
+except Exception:
+    EncryptedCookieManager = None
+
 
 def ensure_project_root_on_path():
     """Keep the project root importable from Streamlit pages."""
@@ -30,6 +35,93 @@ def get_secret(name, default=""):
         return default
 
 
+def get_cookie_password():
+    """Stable password used to encrypt the browser remember-me cookie.
+    Add COOKIE_PASSWORD in Streamlit Secrets. If missing, login will still work
+    for the current session, but it will not survive a hard browser refresh.
+    """
+    return get_secret("COOKIE_PASSWORD", "")
+
+
+def get_cookie_manager():
+    """Return an encrypted cookie manager, or None if not configured.
+
+    This is intentionally optional so the app does not crash if the dependency
+    or COOKIE_PASSWORD is missing. Persistent login simply disables itself.
+    """
+    if EncryptedCookieManager is None:
+        return None
+    password = get_cookie_password()
+    if not password:
+        return None
+    try:
+        cookies = EncryptedCookieManager(prefix="forceready_", password=password)
+        if not cookies.ready():
+            st.stop()
+        return cookies
+    except Exception:
+        return None
+
+
+def save_login_cookie(email, auth_user_id=""):
+    cookies = get_cookie_manager()
+    if cookies is None:
+        return False
+    email = str(email or "").strip().lower()
+    if not email:
+        return False
+    cookies["user_email"] = email
+    cookies["auth_user_id"] = str(auth_user_id or "")
+    cookies.save()
+    return True
+
+
+def clear_login_cookie():
+    cookies = get_cookie_manager()
+    if cookies is None:
+        return False
+    for key in ["user_email", "auth_user_id"]:
+        try:
+            del cookies[key]
+        except Exception:
+            pass
+    cookies.save()
+    return True
+
+
+def load_login_cookie():
+    cookies = get_cookie_manager()
+    if cookies is None:
+        return None, None
+    try:
+        email = str(cookies.get("user_email", "") or "").strip().lower()
+        auth_user_id = str(cookies.get("auth_user_id", "") or "").strip()
+    except Exception:
+        return None, None
+    if email and "@" in email and "." in email.split("@")[-1]:
+        return email, auth_user_id
+    return None, None
+
+
+def restore_login_from_cookie():
+    """Restore user_email/auth_user_id to session_state after browser refresh."""
+    if st.session_state.get("user_email"):
+        return st.session_state.get("user_email")
+    email, auth_user_id = load_login_cookie()
+    if not email:
+        return None
+    st.session_state["user_email"] = email
+    st.session_state["account_email"] = email
+    st.session_state["auth_user_id"] = auth_user_id or ""
+
+    profile = get_user_profile(email)
+    if profile:
+        st.session_state["full_name"] = profile.get("full_name") or ""
+        st.session_state["preferred_language_code"] = profile.get("preferred_language_code") or "en"
+        st.session_state["subscription_status"] = profile.get("subscription_status") or "free"
+    return email
+
+
 def get_admin_password():
     return get_secret("ADMIN_PASSWORD", "")
 
@@ -54,6 +146,12 @@ def get_current_user_email():
     email = str(email).strip().lower()
     if email and "@" in email and "." in email.split("@")[-1]:
         return email
+
+    # Browser refresh clears Streamlit session_state. Restore from encrypted cookie
+    # when COOKIE_PASSWORD is configured.
+    restored = restore_login_from_cookie()
+    if restored:
+        return restored
     return None
 
 
