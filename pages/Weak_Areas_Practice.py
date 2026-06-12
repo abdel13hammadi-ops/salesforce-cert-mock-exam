@@ -16,10 +16,10 @@ if ROOT_DIR.name == "pages":
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from utils.access_control import render_sidebar_navigation
-APP_VERSION = "WEAK_AREAS_PRACTICE_V7_ENROLLED_CERT_ACCESS"
+from utils.access_control import render_sidebar_navigation, require_premium_access, fetch_active_certifications
+APP_VERSION = "WEAK_AREAS_PRACTICE_V8_PREMIUM_BUNDLE"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
+PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
 
 st.set_page_config(page_title="Weak Areas Practice", layout="wide", initial_sidebar_state="expanded")
 render_sidebar_navigation()
@@ -81,33 +81,8 @@ def language_label(language_code):
 
 @st.cache_data(ttl=60)
 def fetch_user_certifications(user_email):
-    user_email = str(user_email or "").strip().lower()
-    if not user_email:
-        return []
-
-    supabase = get_supabase_client()
-    access_result = (
-        supabase.table("user_certification_access")
-        .select("exam_name, access_status")
-        .eq("user_email", user_email)
-        .eq("access_status", "active")
-        .execute()
-    )
-    access_rows = access_result.data or []
-    allowed_exam_names = [row.get("exam_name") for row in access_rows if row.get("exam_name")]
-
-    if not allowed_exam_names:
-        return []
-
-    result = (
-        supabase.table("certifications")
-        .select("exam_name,display_name,certification_code,is_active")
-        .in_("exam_name", allowed_exam_names)
-        .eq("is_active", True)
-        .order("display_name")
-        .execute()
-    )
-    return result.data or []
+    # Premium bundle includes every active certification.
+    return fetch_active_certifications()
 
 
 @st.cache_data(ttl=60)
@@ -305,19 +280,15 @@ if not user_email:
     st.stop()
 
 profile = fetch_user_profile(user_email)
+require_premium_access("Weak Areas Practice")
 status = str(profile.get("subscription_status") or "free").strip().lower()
-if status not in PAID_STATUS_VALUES:
-    st.warning("Weak Areas Practice is a premium feature.")
-    st.info("Upgrade to unlock weak-area practice by certification.")
-    st.stop()
-
 language_code = str(profile.get("preferred_language_code") or "en").strip().lower()
 st.success(f"Account: {user_email} ✅ | Access: {status} | Preferred language: {language_label(language_code)}")
 
 certifications = fetch_user_certifications(user_email)
 if not certifications:
-    st.error("No certification enrollment found for this account.")
-    st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
+    st.error("No active certifications found.")
+    st.info("Ask an admin to activate certifications in Supabase.")
     st.stop()
 exam_names = [c["exam_name"] for c in certifications]
 display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications}

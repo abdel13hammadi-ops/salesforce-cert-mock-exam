@@ -10,8 +10,9 @@ if ROOT_DIR.name == "pages":
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from utils.access_control import render_sidebar_navigation
-APP_VERSION = "ACCOUNT_V5_SUPABASE_AUTH_LOGIN"
+from utils.access_control import render_sidebar_navigation, has_premium_access, render_locked_premium_previews, render_upgrade_card, get_subscription_status, fetch_active_certifications
+from utils.readiness import calculate_readiness, readiness_methodology_text
+APP_VERSION = "ACCOUNT_V6_PREMIUM_PREVIEW_READINESS"
 
 st.set_page_config(page_title="Account", layout="wide")
 render_sidebar_navigation()
@@ -138,6 +139,57 @@ def clear_login_session():
         st.session_state.pop(key, None)
 
 
+
+
+@st.cache_data(ttl=60)
+def load_attempts_for_readiness(email, exam_name, language_code):
+    if not email or not exam_name:
+        return []
+    result = (
+        get_admin_client().table("exam_attempts")
+        .select("id,user_email,mode,category,score,correct_answers,total_questions,domain_breakdown,completed_at,exam_name,language_code")
+        .eq("user_email", email)
+        .eq("exam_name", exam_name)
+        .eq("language_code", language_code)
+        .order("id", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+@st.cache_data(ttl=60)
+def fetch_domain_weights(exam_name):
+    result = (
+        get_admin_client().table("certification_domains")
+        .select("domain_name, weight")
+        .eq("exam_name", exam_name)
+        .eq("is_active", True)
+        .execute()
+    )
+    return {row.get("domain_name"): float(row.get("weight") or 0) for row in (result.data or []) if row.get("domain_name")}
+
+
+def render_premium_offer_box():
+    st.subheader("Premium Launch Plan")
+    st.markdown(
+        """
+        <div style="border:1px solid #d8dde6;border-radius:10px;padding:18px;background:#f8fafc;">
+            <h3 style="margin-top:0;">Complete Salesforce Prep Access</h3>
+            <p><strong>Launch price:</strong> $29.99 for 3 months <span style="color:#64748b;">(regular price $49.99)</span></p>
+            <ul>
+                <li>Salesforce Administrator + Business Analyst included</li>
+                <li>Full 60-question timed mock exams</li>
+                <li>Full question bank</li>
+                <li>Practice by Category</li>
+                <li>Weak Areas Practice</li>
+                <li>Visual Progress Dashboard</li>
+                <li>Visual Readiness Score with domain colors</li>
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 st.title("Account")
 st.caption(f"App version: {APP_VERSION}")
 
@@ -194,8 +246,44 @@ if current_email:
 
     st.divider()
     st.write("Current access:")
-    st.write(f"Subscription status: **{st.session_state.get('subscription_status', 'free')}**")
+    current_status = st.session_state.get('subscription_status', 'free')
+    st.write(f"Subscription status: **{current_status}**")
     st.write(f"Preferred language: **{label_by_code.get(st.session_state.get('preferred_language_code', 'en'), 'English (en)')}**")
+
+    st.divider()
+    if has_premium_access(current_email):
+        st.subheader("Overall Readiness Snapshot")
+        st.caption("Readiness is an estimate based on saved mock exam history. It is not a guarantee of passing.")
+        certs = fetch_active_certifications()
+        if certs:
+            cert_names = [c.get("exam_name") for c in certs if c.get("exam_name")]
+            display_by_exam = {c.get("exam_name"): c.get("display_name") or c.get("exam_name") for c in certs}
+            selected_readiness_exam = st.selectbox(
+                "Readiness certification",
+                cert_names,
+                format_func=lambda x: display_by_exam.get(x, x),
+                key="account_readiness_exam",
+            )
+            attempts = load_attempts_for_readiness(current_email, selected_readiness_exam, st.session_state.get('preferred_language_code', 'en'))
+            cert = next((c for c in certs if c.get("exam_name") == selected_readiness_exam), {})
+            readiness = calculate_readiness(
+                attempts=attempts,
+                passing_score=float(cert.get("passing_score") or 65),
+                domain_weights=fetch_domain_weights(selected_readiness_exam),
+                expected_question_count=int(cert.get("question_count") or 60),
+                question_bank_total=None,
+            )
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Readiness", f"{readiness['score']}%")
+            c2.metric("Status", readiness["label"])
+            c3.metric("Confidence", readiness["confidence"])
+            st.progress(max(0, min(float(readiness['score']) / 100, 1)))
+            st.info(readiness["recommendation"])
+        else:
+            st.info("No active certifications found yet.")
+    else:
+        render_premium_offer_box()
+        render_locked_premium_previews()
 
 else:
     st.info("Create an account or log in to access the platform.")
@@ -282,3 +370,4 @@ else:
 
     st.divider()
     st.caption("Passwords are handled by Supabase Auth. They are not stored in the app_users profile table.")
+    render_premium_offer_box()

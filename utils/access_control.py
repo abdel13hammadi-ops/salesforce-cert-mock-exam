@@ -3,8 +3,9 @@ import sys
 import streamlit as st
 from supabase import create_client
 
-# Keep the project root importable when code runs from Streamlit's pages/ directory.
+
 def ensure_project_root_on_path():
+    """Keep the project root importable from Streamlit pages."""
     current = Path(__file__).resolve()
     project_root = current.parents[1]
     root = str(project_root)
@@ -12,12 +13,14 @@ def ensure_project_root_on_path():
         sys.path.insert(0, root)
     return project_root
 
+
 ensure_project_root_on_path()
 
-PAID_STATUS = "active"
 FREE_STATUS = "free"
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
+PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}  # trialing intentionally excluded
 ADMIN_SESSION_KEY = "admin_unlocked"
+LAUNCH_PRICE_TEXT = "$29.99 for 3 months"
+REGULAR_PRICE_TEXT = "$49.99 regular price"
 
 
 def get_secret(name, default=""):
@@ -36,6 +39,7 @@ def get_admin_emails():
     return {item.strip().lower() for item in raw.split(",") if item.strip()}
 
 
+@st.cache_resource(show_spinner=False)
 def get_supabase_client():
     url = get_secret("SUPABASE_URL")
     key = get_secret("SUPABASE_SERVICE_ROLE_KEY")
@@ -51,18 +55,6 @@ def get_current_user_email():
     if email and "@" in email and "." in email.split("@")[-1]:
         return email
     return None
-
-
-def get_current_user():
-    email = get_current_user_email()
-    if not email:
-        return None
-    return {
-        "email": email,
-        "auth_user_id": st.session_state.get("auth_user_id"),
-        "full_name": st.session_state.get("full_name", ""),
-        "preferred_language_code": st.session_state.get("preferred_language_code", "en"),
-    }
 
 
 def get_user_profile(email=None):
@@ -91,38 +83,8 @@ def get_subscription_status(email=None):
     return str(profile.get("subscription_status") or FREE_STATUS).strip().lower()
 
 
-def get_user_subscription_status(email=None):
-    return get_subscription_status(email=email)
-
-
 def is_paid_user(email=None):
     return get_subscription_status(email=email) in PAID_STATUS_VALUES
-
-
-def get_preferred_language_code(email=None):
-    profile = get_user_profile(email=email)
-    if profile:
-        return str(profile.get("preferred_language_code") or "en").strip().lower()
-    return str(st.session_state.get("preferred_language_code", "en") or "en").strip().lower()
-
-
-def require_login():
-    email = get_current_user_email()
-    if not email:
-        render_sidebar_navigation()
-        st.warning("Please go to the Account page and log in first.")
-        st.stop()
-    return email
-
-
-def require_paid_access(feature_name="This feature"):
-    email = require_login()
-    status = get_subscription_status(email=email)
-    if status not in PAID_STATUS_VALUES:
-        st.error(f"{feature_name} is available for paid users only.")
-        st.info("Please upgrade your account to unlock this feature.")
-        st.stop()
-    return True
 
 
 def is_admin_email(email=None):
@@ -133,6 +95,10 @@ def is_admin_email(email=None):
 
 def is_admin_unlocked():
     return bool(st.session_state.get(ADMIN_SESSION_KEY, False)) and is_admin_email()
+
+
+def has_premium_access(email=None):
+    return is_paid_user(email=email) or is_admin_unlocked()
 
 
 def lock_admin():
@@ -171,8 +137,6 @@ def safe_page_link(page, label, icon=None):
     try:
         st.sidebar.page_link(page, label=label, icon=icon)
     except Exception:
-        # If Streamlit page_link is unavailable, still show the label.
-        # Admin pages remain protected by require_admin().
         st.sidebar.write(f"{icon or ''} {label}")
 
 
@@ -183,17 +147,24 @@ def render_sidebar_navigation(current_page=None):
 
     email = get_current_user_email()
     if email:
+        status = get_subscription_status(email)
         st.sidebar.caption(f"Signed in: {email}")
+        if has_premium_access(email):
+            st.sidebar.success("Premium access")
+        else:
+            st.sidebar.info("Free Preview")
     else:
         st.sidebar.caption("Not signed in")
 
-    st.sidebar.markdown("#### User Pages")
-    safe_page_link("app.py", "Mock Exam", "📝")
+    st.sidebar.markdown("#### Main")
+    safe_page_link("app.py", "Free Preview / Mock Exam", "📝")
+    safe_page_link("pages/Account.py", "Account", "👤")
+    safe_page_link("pages/Support.py", "Support", "💬")
+
+    st.sidebar.markdown("#### Premium")
     safe_page_link("pages/Practice_By_Category.py", "Practice by Category", "📚")
     safe_page_link("pages/Weak_Areas_Practice.py", "Weak Areas Practice", "🎯")
-    safe_page_link("pages/My_Progress.py", "My Progress", "📈")
-    safe_page_link("pages/Support.py", "Support", "💬")
-    safe_page_link("pages/Account.py", "Account", "👤")
+    safe_page_link("pages/My_Progress.py", "My Progress & Readiness", "📈")
 
     st.sidebar.divider()
     st.sidebar.markdown("#### Admin")
@@ -211,6 +182,66 @@ def render_sidebar_navigation(current_page=None):
         st.sidebar.caption("Admin pages are hidden until admin is unlocked.")
 
 
+def require_login():
+    email = get_current_user_email()
+    if not email:
+        render_sidebar_navigation()
+        st.warning("Please log in from the Account page first.")
+        st.stop()
+    return email
+
+
+def render_upgrade_card(feature_name="this premium feature"):
+    st.warning(f"{feature_name} is available with Premium Access.")
+    st.markdown(
+        f"""
+        <div style="border:1px solid #d8dde6;border-radius:10px;padding:18px;background:#f8fafc;margin-top:8px;">
+            <h3 style="margin-top:0;">Unlock Complete Salesforce Prep Access</h3>
+            <p><strong>Launch Offer:</strong> {LAUNCH_PRICE_TEXT} <span style="color:#64748b;">({REGULAR_PRICE_TEXT})</span></p>
+            <ul>
+                <li>Salesforce Administrator + Business Analyst included</li>
+                <li>Full 60-question timed mock exams</li>
+                <li>Full question bank</li>
+                <li>Practice by Category</li>
+                <li>Weak Areas Practice</li>
+                <li>Visual Progress Dashboard</li>
+                <li>Visual Readiness Score with domain colors</li>
+            </ul>
+            <p style="color:#475569;">Free Preview includes 10 fixed sample questions with full explanations. Premium unlocks the full preparation system.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_locked_premium_previews():
+    st.subheader("Premium features locked")
+    cards = [
+        ("Overall Readiness Score", "Unlock a personalized readiness estimate based on mock exam performance, weighted domain scores, consistency, and practice volume."),
+        ("Weak Areas Practice", "Unlock targeted practice sessions based on the Salesforce domains where your scores are weakest."),
+        ("Visual Progress Dashboard", "Track score trends, domain performance, attempt history, and improvement over time."),
+        ("Full Mock Exams", "Take full 60-question timed exams for Salesforce Administrator and Salesforce Business Analyst."),
+    ]
+    for title, body in cards:
+        st.markdown(
+            f"""
+            <div style="border:1px solid #d8dde6;border-radius:10px;padding:14px;margin:10px 0;background:#ffffff;">
+                <strong>🔒 {title}</strong><br>
+                <span style="color:#475569;">{body}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def require_premium_access(feature_name="This feature"):
+    email = require_login()
+    if not has_premium_access(email):
+        render_upgrade_card(feature_name)
+        st.stop()
+    return True
+
+
 def require_admin():
     if is_admin_unlocked():
         render_sidebar_navigation()
@@ -220,9 +251,25 @@ def require_admin():
     st.info("Click Admin in the sidebar and unlock admin mode with the admin password.")
     st.stop()
 
-# Alias for any older files that might call this name.
+
 def require_admin_access():
     return require_admin()
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_active_certifications():
+    try:
+        result = (
+            get_supabase_client()
+            .table("certifications")
+            .select("exam_name, display_name, certification_code, passing_score, time_limit_minutes, question_count, is_active")
+            .eq("is_active", True)
+            .order("display_name")
+            .execute()
+        )
+        return result.data or []
+    except Exception:
+        return []
 
 
 def render_admin_login_page():

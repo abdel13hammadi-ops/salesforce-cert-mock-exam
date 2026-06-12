@@ -1,0 +1,72 @@
+Premium / Free Preview Launch Structure
+
+Free Preview
+- Requires account login.
+- Shows 10 fixed sample questions.
+- Shows basic score.
+- Shows full explanations for all 10 sample questions.
+- Shows locked premium previews.
+- The app prefers questions where questions.free_mock_exam = true. If fewer than 10 are tagged, it falls back to the first approved active questions so the preview does not break.
+
+Premium Launch Plan
+- Launch price: $29.99 for 3 months.
+- Regular price: $49.99.
+- Includes Salesforce Administrator + Salesforce Business Analyst.
+- Unlocks full 60-question timed mock exams.
+- Unlocks full question bank.
+- Unlocks Practice by Category.
+- Unlocks Weak Areas Practice.
+- Unlocks Visual Progress Dashboard.
+- Unlocks Visual Readiness Score.
+
+Access Rules
+- Free users: Free Preview, Account, Support.
+- Paid users: all premium learning pages.
+- Admin users: premium learning pages + admin pages after Admin unlock.
+- Trialing is intentionally NOT treated as premium.
+- Premium statuses recognized: active, paid, premium, subscribed.
+
+Recommended SQL to mark exactly 10 free sample questions per certification:
+
+UPDATE questions
+SET free_mock_exam = false
+WHERE exam_name = 'Salesforce Certified Platform Administrator';
+
+UPDATE questions
+SET free_mock_exam = true
+WHERE id IN (
+  SELECT id
+  FROM questions
+  WHERE exam_name = 'Salesforce Certified Platform Administrator'
+    AND language_code = 'en'
+    AND is_active = true
+    AND is_exam_eligible = true
+    AND quality_status = 'approved'
+  ORDER BY id
+  LIMIT 10
+);
+
+UPDATE questions
+SET free_mock_exam = false
+WHERE exam_name = 'Salesforce Certified Business Analyst';
+
+UPDATE questions
+SET free_mock_exam = true
+WHERE id IN (
+  SELECT id
+  FROM questions
+  WHERE exam_name = 'Salesforce Certified Business Analyst'
+    AND language_code = 'en'
+    AND is_active = true
+    AND is_exam_eligible = true
+    AND quality_status = 'approved'
+  ORDER BY id
+  LIMIT 10
+);
+
+Streamlit Secrets Needed
+SUPABASE_URL = "..."
+SUPABASE_ANON_KEY = "..."
+SUPABASE_SERVICE_ROLE_KEY = "..."
+ADMIN_EMAILS = "your-admin-email@example.com"
+ADMIN_PASSWORD = "your-strong-admin-password"

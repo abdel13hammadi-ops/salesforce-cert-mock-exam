@@ -14,8 +14,8 @@ if ROOT_DIR.name == "pages":
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from utils.access_control import render_sidebar_navigation
-APP_VERSION = "PRACTICE_BY_CATEGORY_V4_ENROLLED_CERT_ACCESS"
+from utils.access_control import render_sidebar_navigation, require_premium_access, fetch_active_certifications, has_premium_access
+APP_VERSION = "PRACTICE_BY_CATEGORY_V5_PREMIUM_BUNDLE"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
@@ -80,33 +80,8 @@ def language_label(language_code):
 
 @st.cache_data(ttl=60)
 def fetch_user_certifications(user_email):
-    user_email = str(user_email or "").strip().lower()
-    if not user_email:
-        return []
-
-    supabase = get_supabase_client()
-    access_result = (
-        supabase.table("user_certification_access")
-        .select("exam_name, access_status")
-        .eq("user_email", user_email)
-        .eq("access_status", "active")
-        .execute()
-    )
-    access_rows = access_result.data or []
-    allowed_exam_names = [row.get("exam_name") for row in access_rows if row.get("exam_name")]
-
-    if not allowed_exam_names:
-        return []
-
-    result = (
-        supabase.table("certifications")
-        .select("exam_name,display_name,certification_code,is_active")
-        .in_("exam_name", allowed_exam_names)
-        .eq("is_active", True)
-        .order("display_name")
-        .execute()
-    )
-    return result.data or []
+    # Premium bundle includes every active certification.
+    return fetch_active_certifications()
 
 
 @st.cache_data(ttl=60)
@@ -244,13 +219,14 @@ if not user_email:
     st.stop()
 
 profile = fetch_user_profile(user_email)
+require_premium_access("Practice by Category")
 language_code = str(profile.get("preferred_language_code") or "en").strip().lower()
 st.success(f"Account: {user_email} ✅ | Preferred language: {language_label(language_code)}")
 
 certifications = fetch_user_certifications(user_email)
 if not certifications:
-    st.error("No certification enrollment found for this account.")
-    st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
+    st.error("No active certifications found.")
+    st.info("Ask an admin to activate certifications in Supabase.")
     st.stop()
 exam_names = [c["exam_name"] for c in certifications]
 display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications}

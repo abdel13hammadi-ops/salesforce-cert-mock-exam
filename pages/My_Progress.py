@@ -13,9 +13,10 @@ if ROOT_DIR.name == "pages":
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from utils.access_control import render_sidebar_navigation
-APP_VERSION = "MY_PROGRESS_V6_ENROLLED_CERT_ACCESS"
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
+from utils.access_control import render_sidebar_navigation, require_premium_access, fetch_active_certifications
+from utils.readiness import calculate_readiness, readiness_methodology_text
+APP_VERSION = "MY_PROGRESS_V7_READINESS_PREMIUM_BUNDLE"
+PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 render_sidebar_navigation()
@@ -70,33 +71,8 @@ def fetch_languages():
 
 @st.cache_data(ttl=60)
 def fetch_user_certifications(user_email):
-    user_email = str(user_email or "").strip().lower()
-    if not user_email:
-        return []
-
-    supabase = get_supabase_client()
-    access_result = (
-        supabase.table("user_certification_access")
-        .select("exam_name, access_status")
-        .eq("user_email", user_email)
-        .eq("access_status", "active")
-        .execute()
-    )
-    access_rows = access_result.data or []
-    allowed_exam_names = [row.get("exam_name") for row in access_rows if row.get("exam_name")]
-
-    if not allowed_exam_names:
-        return []
-
-    result = (
-        supabase.table("certifications")
-        .select("exam_name,display_name,certification_code,passing_score,time_limit_minutes,question_count,is_active")
-        .in_("exam_name", allowed_exam_names)
-        .eq("is_active", True)
-        .order("display_name")
-        .execute()
-    )
-    return result.data or []
+    # Premium bundle includes every active certification.
+    return fetch_active_certifications()
 
 
 def language_label(language_code):
@@ -134,6 +110,34 @@ def load_attempts(user_email, exam_name, language_code):
     )
     return result.data or []
 
+
+
+
+@st.cache_data(ttl=60)
+def fetch_domain_weights(exam_name):
+    result = (
+        get_supabase_client().table("certification_domains")
+        .select("domain_name, weight")
+        .eq("exam_name", exam_name)
+        .eq("is_active", True)
+        .execute()
+    )
+    return {row.get("domain_name"): float(row.get("weight") or 0) for row in (result.data or []) if row.get("domain_name")}
+
+
+@st.cache_data(ttl=60)
+def fetch_question_bank_total(exam_name, language_code):
+    result = (
+        get_supabase_client().table("questions")
+        .select("id", count="exact")
+        .eq("exam_name", exam_name)
+        .eq("language_code", language_code)
+        .eq("is_active", True)
+        .eq("is_exam_eligible", True)
+        .eq("quality_status", "approved")
+        .execute()
+    )
+    return int(result.count or 0)
 
 def normalize_breakdown(value):
     if value is None:
@@ -181,15 +185,15 @@ if not user_email:
     st.stop()
 
 profile = fetch_user_profile(user_email)
-require_paid_access(profile)
+require_premium_access("My Progress and Overall Readiness")
 
 preferred_language = str(profile.get("preferred_language_code") or "en").strip().lower()
 st.info(f"Account: {user_email} | Preferred language: {language_label(preferred_language)}")
 
 certifications = fetch_user_certifications(user_email)
 if not certifications:
-    st.error("No certification enrollment found for this account.")
-    st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
+    st.error("No active certifications found.")
+    st.info("Ask an admin to activate certifications in Supabase.")
     st.stop()
 
 exam_names = [c["exam_name"] for c in certifications]
@@ -207,6 +211,47 @@ if not attempts:
     st.info("No attempts found for this certification and language yet. Complete a mock exam or practice set first.")
     st.stop()
 
+domain_weights = fetch_domain_weights(selected_exam)
+question_bank_total = fetch_question_bank_total(selected_exam, preferred_language)
+passing_score = float(next((c.get("passing_score") or 65 for c in certifications if c.get("exam_name") == selected_exam), 65))
+expected_question_count = int(next((c.get("question_count") or 60 for c in certifications if c.get("exam_name") == selected_exam), 60))
+readiness = calculate_readiness(
+    attempts=attempts,
+    passing_score=passing_score,
+    domain_weights=domain_weights,
+    expected_question_count=expected_question_count,
+    question_bank_total=question_bank_total,
+)
+
+st.header("Overall Readiness")
+st.caption("This is a readiness estimate, not a guarantee of passing. It is a study-planning signal.")
+r1, r2, r3, r4 = st.columns(4)
+r1.metric("Readiness Score", f"{readiness['score']}%")
+r2.metric("Status", readiness["label"])
+r3.metric("Confidence", readiness["confidence"])
+r4.metric("Passing Score", f"{passing_score}%")
+
+progress_value = max(0, min(float(readiness['score']) / 100, 1))
+st.progress(progress_value)
+st.info(readiness["recommendation"])
+
+with st.expander("How readiness is calculated", expanded=False):
+    st.write(readiness_methodology_text())
+    st.write("- 50% Recent Mock Performance")
+    st.write("- 30% Weighted Domain Readiness")
+    st.write("- 10% Consistency")
+    st.write("- 10% Practice Volume")
+
+if readiness.get("domain_scores"):
+    st.subheader("Domain Readiness")
+    rows = []
+    for domain, data in readiness["domain_scores"].items():
+        pct = float(data.get("percent") or 0)
+        risk = "High Risk" if pct < passing_score else "On Track" if pct < passing_score + 8 else "Strong"
+        rows.append({"Domain": domain, "Accuracy %": pct, "Correct": data.get("correct"), "Total": data.get("total"), "Status": risk})
+    st.dataframe(pd.DataFrame(rows).sort_values("Accuracy %"), use_container_width=True, hide_index=True)
+
+st.divider()
 scores = [float(a.get("score") or 0) for a in attempts]
 latest_score = float(attempts[0].get("score") or 0)
 average_score = round(sum(scores) / len(scores), 2) if scores else 0
