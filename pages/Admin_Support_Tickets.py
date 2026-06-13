@@ -1,19 +1,8 @@
 import streamlit as st
+from utils.access_control import hide_streamlit_native_navigation, restore_login_from_browser
+from supabase import create_client
 from datetime import datetime
 
-import sys
-from pathlib import Path
-
-_file = Path(__file__).resolve()
-_root = _file.parent.parent if _file.parent.name == "pages" else _file.parent
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
-
-import path_setup
-
-path_setup.ensure_project_root(__file__)
-
-from utils.access_control import require_admin, get_supabase_admin_client
 APP_VERSION = "ADMIN_SUPPORT_TICKETS_V1"
 
 st.set_page_config(
@@ -21,12 +10,21 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-require_admin()
 
 st.title("Admin Support Tickets")
 st.caption(f"App version: {APP_VERSION}")
 
-supabase = get_supabase_admin_client()
+def get_supabase_client():
+    url = st.secrets.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not url or not key:
+        st.error("Missing Supabase secrets. Please check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
+        st.stop()
+
+    return create_client(url, key)
+
+supabase = get_supabase_client()
 
 def fetch_tickets(status_filter="All", issue_filter="All", search_text=""):
     query = supabase.table("support_tickets").select("*").order("created_at", desc=True)

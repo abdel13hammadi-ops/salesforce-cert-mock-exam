@@ -3,47 +3,55 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 import streamlit as st
+from utils.access_control import hide_streamlit_native_navigation, restore_login_from_browser
+from supabase import create_client
 
-import sys
-from pathlib import Path
-
-_file = Path(__file__).resolve()
-_root = _file.parent.parent if _file.parent.name == "pages" else _file.parent
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
-
-import path_setup
-
-path_setup.ensure_project_root(__file__)
-
-from utils.access_control import (
-    render_app_chrome,
-    require_premium_access,
-    get_available_certifications,
-    get_current_user_email,
-    get_supabase_client,
-    get_supabase_public_client,
-    get_user_profile,
-)
-APP_VERSION = "PRACTICE_BY_CATEGORY_V5_PREMIUM_BUNDLE"
+APP_VERSION = "PRACTICE_BY_CATEGORY_V4_ENROLLED_CERT_ACCESS"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
-render_app_chrome()
-user_email = require_premium_access("Practice by Category")
+hide_streamlit_native_navigation()
+restore_login_from_browser()
+
+
+@st.cache_resource
+def get_supabase_client():
+    url = st.secrets.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        st.error("Supabase secrets are missing. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
+        st.stop()
+    return create_client(url, key)
+
+
+def get_current_user_email():
+    email = str(st.session_state.get("user_email", "")).strip().lower()
+    if email and "@" in email and "." in email.split("@")[-1]:
+        return email
+    return None
 
 
 @st.cache_data(ttl=60)
 def fetch_user_profile(email):
-    return get_user_profile(email) or {}
+    if not email:
+        return {}
+    supabase = get_supabase_client()
+    result = (
+        supabase.table("app_users")
+        .select("email,full_name,subscription_status,preferred_language_code")
+        .eq("email", email)
+        .limit(1)
+        .execute()
+    )
+    return (result.data or [{}])[0]
 
 
 @st.cache_data(ttl=60)
 def fetch_languages():
+    supabase = get_supabase_client()
     try:
         result = (
-            get_supabase_public_client()
-            .table("languages")
+            supabase.table("languages")
             .select("language_code,language_name,native_name,is_active,display_order")
             .eq("is_active", True)
             .order("display_order")
@@ -64,14 +72,40 @@ def language_label(language_code):
 
 @st.cache_data(ttl=60)
 def fetch_user_certifications(user_email):
-    # Premium bundle includes every active certification.
-    return get_available_certifications()
+    user_email = str(user_email or "").strip().lower()
+    if not user_email:
+        return []
+
+    supabase = get_supabase_client()
+    access_result = (
+        supabase.table("user_certification_access")
+        .select("exam_name, access_status")
+        .eq("user_email", user_email)
+        .eq("access_status", "active")
+        .execute()
+    )
+    access_rows = access_result.data or []
+    allowed_exam_names = [row.get("exam_name") for row in access_rows if row.get("exam_name")]
+
+    if not allowed_exam_names:
+        return []
+
+    result = (
+        supabase.table("certifications")
+        .select("exam_name,display_name,certification_code,is_active")
+        .in_("exam_name", allowed_exam_names)
+        .eq("is_active", True)
+        .order("display_name")
+        .execute()
+    )
+    return result.data or []
 
 
 @st.cache_data(ttl=60)
 def fetch_domains(exam_name):
+    supabase = get_supabase_client()
     result = (
-        get_supabase_public_client().table("certification_domains")
+        supabase.table("certification_domains")
         .select("domain_name,display_order,is_active")
         .eq("exam_name", exam_name)
         .eq("is_active", True)
@@ -196,11 +230,20 @@ st.markdown(
 st.markdown('<div class="practice-banner">Practice by Category</div>', unsafe_allow_html=True)
 st.caption(f"App version: {APP_VERSION}")
 
+user_email = get_current_user_email()
+if not user_email:
+    st.warning("Please log in from the Account page before starting practice.")
+    st.stop()
+
 profile = fetch_user_profile(user_email)
 language_code = str(profile.get("preferred_language_code") or "en").strip().lower()
 st.success(f"Account: {user_email} ✅ | Preferred language: {language_label(language_code)}")
 
 certifications = fetch_user_certifications(user_email)
+if not certifications:
+    st.error("No certification enrollment found for this account.")
+    st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
+    st.stop()
 exam_names = [c["exam_name"] for c in certifications]
 display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications}
 

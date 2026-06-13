@@ -4,24 +4,14 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
+from utils.access_control import hide_streamlit_native_navigation, restore_login_from_browser
+from supabase import create_client
 
-import sys
-from pathlib import Path
-
-_file = Path(__file__).resolve()
-_root = _file.parent.parent if _file.parent.name == "pages" else _file.parent
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
-
-import path_setup
-
-path_setup.ensure_project_root(__file__)
-
-from utils.access_control import require_admin, get_supabase_admin_client
 APP_VERSION = "ADMIN_QUESTION_REVIEW_V3_ID_LABELS"
 
 st.set_page_config(page_title="Admin Question Review", layout="wide")
-require_admin()
+hide_streamlit_native_navigation()
+restore_login_from_browser()
 
 CATEGORIES = [
     "Configuration and Setup",
@@ -39,9 +29,20 @@ QUALITY_STATUSES = ["approved", "needs_edit", "practice_only", "reject"]
 QUESTION_TYPES = ["single", "multiple"]
 
 
+def get_supabase_client():
+    url = st.secrets.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+
+    if not url or not key:
+        st.error("Missing Supabase secrets. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
+        st.stop()
+
+    return create_client(url, key)
+
+
 @st.cache_data(ttl=60)
 def load_questions():
-    supabase = get_supabase_admin_client()
+    supabase = get_supabase_client()
     result = (
         supabase.table("questions")
         .select(
@@ -57,7 +58,7 @@ def load_questions():
 
 @st.cache_data(ttl=60)
 def load_answer_option_counts():
-    supabase = get_supabase_admin_client()
+    supabase = get_supabase_client()
     result = supabase.table("answer_options").select("question_id, is_correct").execute()
     rows = result.data or []
 
@@ -73,7 +74,7 @@ def load_answer_option_counts():
 
 @st.cache_data(ttl=30)
 def load_answer_options(question_id):
-    supabase = get_supabase_admin_client()
+    supabase = get_supabase_client()
     result = (
         supabase.table("answer_options")
         .select("id, question_id, option_label, option_text, is_correct, display_order")
@@ -90,13 +91,13 @@ def clear_cache_and_rerun():
 
 
 def update_question(question_id, updates):
-    supabase = get_supabase_admin_client()
+    supabase = get_supabase_client()
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     return supabase.table("questions").update(updates).eq("id", question_id).execute()
 
 
 def update_answer_option(option_id, updates):
-    supabase = get_supabase_admin_client()
+    supabase = get_supabase_client()
     return supabase.table("answer_options").update(updates).eq("id", option_id).execute()
 
 

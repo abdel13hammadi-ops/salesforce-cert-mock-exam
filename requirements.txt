@@ -1,6 +1,6 @@
+
 streamlit
 streamlit-autorefresh
-streamlit-js-eval
 pandas
 psycopg2-binary
 sqlalchemy
