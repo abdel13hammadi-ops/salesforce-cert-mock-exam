@@ -11,6 +11,7 @@ import path_setup
 path_setup.ensure_project_root(__file__)
 
 import urllib.parse
+import json
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -29,6 +30,7 @@ FR_COOKIE_USER_EMAIL = "fr_user_email"
 FR_COOKIE_AUTH_USER_ID = "fr_auth_user_id"
 FR_COOKIE_REFRESH_TOKEN = "fr_refresh_token"
 FR_COOKIE_SUBSCRIPTION_STATUS = "fr_subscription_status"
+FR_LOCAL_STORAGE_KEY = "fr_auth_session_v1"
 
 
 def ensure_project_root_on_path():
@@ -130,8 +132,31 @@ def _map_browser_cookies(parsed: dict) -> dict:
     }
 
 
+def _map_local_storage_session(raw_payload) -> dict:
+    """Map the localStorage auth payload into the same shape as cookie restore."""
+    if not raw_payload:
+        return {}
+    try:
+        payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "user_email": str(payload.get("user_email") or "").strip().lower(),
+        "auth_user_id": str(payload.get("auth_user_id") or "").strip(),
+        "supabase_refresh_token": str(payload.get("supabase_refresh_token") or payload.get("refresh_token") or "").strip(),
+        "subscription_status": str(payload.get("subscription_status") or FREE_STATUS).strip().lower(),
+    }
+
+
 def get_browser_cookies_once():
-    """Read browser cookies once per Streamlit script run (never calls CookieManager.get_all)."""
+    """Read persisted browser login once per Streamlit script run.
+
+    This intentionally does NOT use extra_streamlit_components.CookieManager.get_all(),
+    because that caused StreamlitDuplicateElementKey errors. It prefers localStorage
+    and falls back to document.cookie for older sessions.
+    """
     st.session_state.pop("_browser_cookie_manager", None)
 
     run_id = _current_script_run_id() or "default"
@@ -141,23 +166,35 @@ def get_browser_cookies_once():
     ):
         return st.session_state[BROWSER_COOKIES_CACHE_KEY]
 
-    cookies = {}
+    st.session_state["_browser_restore_attempted"] = True
+    restored = {}
+
     if HAS_JS_EVAL:
         try:
             raw = streamlit_js_eval(
-                js_expressions="document.cookie",
-                key="forceready_read_cookies_v1",
+                js_expressions=f"""
+                JSON.stringify({{
+                    local_storage: window.localStorage.getItem('{FR_LOCAL_STORAGE_KEY}'),
+                    cookies: document.cookie || ''
+                }})
+                """,
+                key="forceready_read_browser_auth_v2",
                 want_output=True,
                 do_restore=False,
             )
             if raw:
-                cookies = _map_browser_cookies(_parse_document_cookies(raw))
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(data, dict):
+                    restored = _map_local_storage_session(data.get("local_storage"))
+                    if not restored.get("user_email"):
+                        restored = _map_browser_cookies(_parse_document_cookies(data.get("cookies") or ""))
         except Exception:
-            cookies = {}
+            restored = {}
 
-    st.session_state[BROWSER_COOKIES_CACHE_KEY] = cookies
+    st.session_state[BROWSER_COOKIES_CACHE_KEY] = restored or {}
     st.session_state[BROWSER_COOKIES_FETCHED_RUN_KEY] = run_id
-    return cookies
+    st.session_state["_browser_restore_success"] = bool((restored or {}).get("user_email"))
+    return st.session_state[BROWSER_COOKIES_CACHE_KEY]
 
 
 def save_browser_login_session(
@@ -165,58 +202,83 @@ def save_browser_login_session(
     auth_user_id: str = "",
     refresh_token: str = "",
     subscription_status: str = "",
+    auto_reload: bool = False,
 ):
-    """Persist login in browser cookies (survives page refresh)."""
+    """Persist login in browser localStorage + legacy cookies.
+
+    The previous implementation wrote cookies through components.html and then the
+    Account page immediately called st.rerun(), so the browser never got a chance
+    to execute the write. This function renders a small JS block and, when requested
+    after login/logout, reloads the parent page from the browser after the write.
+    """
     email = str(email or "").strip().lower()
     if not email:
         return False
 
-    max_age = 30 * 24 * 60 * 60
-    html = f"""
-    <script>
-    (function() {{
-        const opts = "path=/; max-age={max_age}; SameSite=Lax";
-        document.cookie = "{FR_COOKIE_USER_EMAIL}={_cookie_js_escape(email)}; " + opts;
-        document.cookie = "{FR_COOKIE_AUTH_USER_ID}={_cookie_js_escape(auth_user_id)}; " + opts;
-        document.cookie = "{FR_COOKIE_REFRESH_TOKEN}={_cookie_js_escape(refresh_token)}; " + opts;
-        document.cookie = "{FR_COOKIE_SUBSCRIPTION_STATUS}={_cookie_js_escape(subscription_status)}; " + opts;
-    }})();
-    </script>
-    """
-    write_counter = int(st.session_state.get("_cookie_write_counter", 0)) + 1
-    st.session_state["_cookie_write_counter"] = write_counter
-    components.html(html, height=0, key=f"forceready_cookie_write_{write_counter}")
-
-    mapped = {
+    payload = {
         "user_email": email,
         "auth_user_id": str(auth_user_id or ""),
         "supabase_refresh_token": str(refresh_token or ""),
         "subscription_status": str(subscription_status or FREE_STATUS).strip().lower(),
     }
-    st.session_state[COOKIE_SYNCED_KEY] = True
-    st.session_state[BROWSER_COOKIES_CACHE_KEY] = mapped
-    return True
-
-
-def clear_browser_login_session():
+    payload_json = json.dumps(payload).replace("</", "<\\/")
+    max_age = 30 * 24 * 60 * 60
+    reload_js = "setTimeout(function(){ try { window.parent.location.reload(); } catch(e) { window.location.reload(); } }, 250);" if auto_reload else ""
     html = f"""
     <script>
     (function() {{
-        const names = [
-            "{FR_COOKIE_USER_EMAIL}",
-            "{FR_COOKIE_AUTH_USER_ID}",
-            "{FR_COOKIE_REFRESH_TOKEN}",
-            "{FR_COOKIE_SUBSCRIPTION_STATUS}",
-        ];
-        names.forEach((name) => {{
-            document.cookie = name + "=; path=/; max-age=0; SameSite=Lax";
-        }});
+        const payload = {payload_json};
+        try {{
+            window.parent.localStorage.setItem('{FR_LOCAL_STORAGE_KEY}', JSON.stringify(payload));
+        }} catch(e1) {{
+            try {{ window.localStorage.setItem('{FR_LOCAL_STORAGE_KEY}', JSON.stringify(payload)); }} catch(e2) {{}}
+        }}
+        try {{
+            const opts = "path=/; max-age={max_age}; SameSite=Lax";
+            document.cookie = "{FR_COOKIE_USER_EMAIL}={_cookie_js_escape(email)}; " + opts;
+            document.cookie = "{FR_COOKIE_AUTH_USER_ID}={_cookie_js_escape(auth_user_id)}; " + opts;
+            document.cookie = "{FR_COOKIE_REFRESH_TOKEN}={_cookie_js_escape(refresh_token)}; " + opts;
+            document.cookie = "{FR_COOKIE_SUBSCRIPTION_STATUS}={_cookie_js_escape(subscription_status)}; " + opts;
+        }} catch(e3) {{}}
+        {reload_js}
     }})();
     </script>
     """
-    clear_counter = int(st.session_state.get("_cookie_clear_counter", 0)) + 1
-    st.session_state["_cookie_clear_counter"] = clear_counter
-    components.html(html, height=0, key=f"forceready_cookie_clear_{clear_counter}")
+    write_counter = int(st.session_state.get("_browser_auth_write_counter", 0)) + 1
+    st.session_state["_browser_auth_write_counter"] = write_counter
+    components.html(html, height=0, key=f"forceready_browser_auth_write_{write_counter}")
+
+    st.session_state[COOKIE_SYNCED_KEY] = True
+    st.session_state[BROWSER_COOKIES_CACHE_KEY] = dict(payload)
+    return True
+
+
+def clear_browser_login_session(auto_reload: bool = False):
+    reload_js = "setTimeout(function(){ try { window.parent.location.reload(); } catch(e) { window.location.reload(); } }, 250);" if auto_reload else ""
+    html = f"""
+    <script>
+    (function() {{
+        try {{ window.parent.localStorage.removeItem('{FR_LOCAL_STORAGE_KEY}'); }} catch(e1) {{
+            try {{ window.localStorage.removeItem('{FR_LOCAL_STORAGE_KEY}'); }} catch(e2) {{}}
+        }}
+        try {{
+            const names = [
+                "{FR_COOKIE_USER_EMAIL}",
+                "{FR_COOKIE_AUTH_USER_ID}",
+                "{FR_COOKIE_REFRESH_TOKEN}",
+                "{FR_COOKIE_SUBSCRIPTION_STATUS}",
+            ];
+            names.forEach((name) => {{
+                document.cookie = name + "=; path=/; max-age=0; SameSite=Lax";
+            }});
+        }} catch(e3) {{}}
+        {reload_js}
+    }})();
+    </script>
+    """
+    clear_counter = int(st.session_state.get("_browser_auth_clear_counter", 0)) + 1
+    st.session_state["_browser_auth_clear_counter"] = clear_counter
+    components.html(html, height=0, key=f"forceready_browser_auth_clear_{clear_counter}")
     st.session_state.pop(BROWSER_COOKIES_CACHE_KEY, None)
     st.session_state.pop(BROWSER_COOKIES_FETCHED_RUN_KEY, None)
 
@@ -764,6 +826,7 @@ def save_logged_in_user(
     profile: dict | None = None,
     session=None,
     write_browser_cookies: bool | None = None,
+    auto_reload_browser: bool = False,
 ):
     """Centralized post-login session persistence."""
     email = str(email).strip().lower()
@@ -791,6 +854,7 @@ def save_logged_in_user(
             auth_user_id or "",
             refresh_token,
             subscription_status,
+            auto_reload=auto_reload_browser,
         )
 
     if profile:
@@ -803,9 +867,9 @@ def save_logged_in_user(
         st.session_state.setdefault("subscription_status", FREE_STATUS)
 
 
-def clear_logged_in_user():
+def clear_logged_in_user(auto_reload_browser: bool = False):
     clear_auth_session()
-    clear_browser_login_session()
+    clear_browser_login_session(auto_reload=auto_reload_browser)
     for key in [
         "user_email",
         "account_email",

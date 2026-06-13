@@ -131,9 +131,16 @@ def complete_login(
     auth_session=None,
     full_name: str = "",
     language_code: str = "en",
+    auto_reload_browser: bool = False,
 ):
     """Save auth session first, then best-effort profile sync without blocking login."""
-    save_logged_in_user(email, auth_user_id, profile=None, session=auth_session)
+    save_logged_in_user(
+        email,
+        auth_user_id,
+        profile=None,
+        session=auth_session,
+        auto_reload_browser=auto_reload_browser,
+    )
 
     profile = get_existing_profile(email)
     if not profile:
@@ -314,9 +321,9 @@ if current_email:
                 get_auth_client().auth.sign_out()
             except Exception:
                 pass
-            clear_logged_in_user()
-            st.success("Logged out.")
-            st.rerun()
+            clear_logged_in_user(auto_reload_browser=True)
+            st.success("Logged out. The page will refresh automatically.")
+            st.stop()
 
     st.divider()
     st.write("Current access:")
@@ -371,9 +378,15 @@ else:
                     if not user:
                         st.error("Login failed. Please check your email and password.")
                     else:
-                        complete_login(login_email, user.id, extract_auth_session(response))
+                        complete_login(
+                            login_email,
+                            user.id,
+                            extract_auth_session(response),
+                            auto_reload_browser=True,
+                        )
                         st.success("Logged in ✅")
-                        st.rerun()
+                        st.info("Finalizing login. The page will refresh automatically. If it does not, refresh once manually.")
+                        st.stop()
                 except Exception as exc:
                     st.error("Login failed. Please check your credentials or reset your password.")
                     st.caption(str(exc))
@@ -417,10 +430,11 @@ else:
                         extract_auth_session(response),
                         full_name=full_name.strip(),
                         language_code=selected_language,
+                        auto_reload_browser=True,
                     )
                     st.success("Account created ✅")
-                    st.info("If email confirmation is enabled in Supabase, check your inbox to confirm your account.")
-                    st.rerun()
+                    st.info("Finalizing account session. The page will refresh automatically. If email confirmation is enabled in Supabase, check your inbox too.")
+                    st.stop()
                 except Exception as exc:
                     st.error("Account creation failed. The email may already be registered.")
                     st.caption(str(exc))
