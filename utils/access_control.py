@@ -359,11 +359,13 @@ def render_sidebar_navigation() -> None:
         st.page_link("pages/Account.py", label="Account", icon="👤")
         st.page_link("pages/Support.py", label="Support", icon="🛟")
 
-        if level in {"paid", "admin"}:
-            st.divider()
-            st.page_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
-            st.page_link("pages/Weak_Areas_Practice.py", label="Weak Areas Practice", icon="🎯")
-            st.page_link("pages/My_Progress.py", label="My Progress", icon="📈")
+        st.divider()
+        st.markdown("### Premium")
+        st.page_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
+        st.page_link("pages/Weak_Areas_Practice.py", label="Weak Areas Practice", icon="🎯")
+        st.page_link("pages/My_Progress.py", label="My Progress", icon="📈")
+        if level not in {"paid", "admin"}:
+            st.caption("Premium access required")
 
         if email and is_admin_user(email):
             st.divider()
