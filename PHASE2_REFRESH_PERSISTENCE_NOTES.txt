@@ -1,0 +1,28 @@
+Phase 2 refresh persistence fix
+
+Changed file:
+- utils/access_control.py
+
+Main changes:
+- Persists user_email, auth_user_id, access token, refresh token, and subscription status.
+- Uses streamlit-js-eval as the primary browser localStorage/cookie persistence path for Streamlit Cloud.
+- Keeps components.html persistence only as fallback.
+- Reads localStorage/cookies during render_app_chrome before sidebar/access checks.
+- Restores Supabase auth tokens into session_state before RLS-backed queries.
+- Keeps CookieManager.get_all() out of the code to avoid StreamlitDuplicateElementKey errors.
+
+Important deployment steps:
+1. Replace the files in GitHub, do not upload this ZIP as a ZIP into the repo.
+2. Ensure requirements.txt includes streamlit-js-eval.
+3. Ensure Streamlit Cloud Secrets contain SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, ADMIN_EMAILS, ADMIN_PASSWORD, COOKIE_PASSWORD.
+4. Reboot the Streamlit app after GitHub updates.
+
+Test:
+1. Log in.
+2. Wait for the automatic browser refresh.
+3. Confirm the signed-in email appears.
+4. Hard refresh the browser.
+5. Confirm the user remains logged in.
+6. Logout.
+7. Hard refresh.
+8. Confirm the user remains logged out.
