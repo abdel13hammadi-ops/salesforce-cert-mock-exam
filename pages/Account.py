@@ -169,7 +169,10 @@ if current_email:
                 pass
             clear_login_session()
             st.success("Logged out.")
-            st.rerun()
+            st.info("Logout was saved. Click Continue to reload the Account page.")
+            if st.button("Continue after logout", type="primary", key="continue_after_logout"):
+                st.rerun()
+            st.stop()
 
     st.divider()
     st.write("Current access:")
@@ -212,7 +215,10 @@ else:
                             )
                         save_logged_in_user_to_session(login_email, user.id, profile)
                         st.success("Logged in ✅")
-                        st.rerun()
+                        st.info("Login was saved. Click Continue once, then test browser refresh.")
+                        if st.button("Continue to Account", type="primary", key="continue_after_login"):
+                            st.rerun()
+                        st.stop()
                 except Exception as exc:
                     st.error("Login failed. Please check your credentials or reset your password.")
                     st.caption(str(exc))
@@ -254,7 +260,10 @@ else:
                     save_logged_in_user_to_session(signup_email, auth_user_id, profile)
                     st.success("Account created ✅")
                     st.info("If email confirmation is enabled in Supabase, check your inbox to confirm your account.")
-                    st.rerun()
+                    st.info("Account session was saved. Click Continue once, then test browser refresh.")
+                    if st.button("Continue to Account", type="primary", key="continue_after_signup"):
+                        st.rerun()
+                    st.stop()
                 except Exception as exc:
                     st.error("Account creation failed. The email may already be registered.")
                     st.caption(str(exc))
