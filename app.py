@@ -5,9 +5,9 @@ from collections import defaultdict, Counter
 from datetime import datetime, timezone
 
 import streamlit as st
-from utils.access_control import hide_streamlit_native_navigation, restore_login_from_browser
 from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
+from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code
 
 
 APP_VERSION = "SUPABASE_DB_V12_ENROLLED_CERT_ACCESS"
@@ -37,7 +37,7 @@ FALLBACK_CATEGORY_WEIGHTS = {
     "Productivity and Collaboration": 10,
 }
 
-PASSING_SCORE_DEFAULT = 65
+PASSING_SCORE_DEFAULT = 68
 EXAM_MINUTES_DEFAULT = 105
 QUESTION_COUNT_DEFAULT = 60
 
@@ -47,8 +47,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-hide_streamlit_native_navigation()
-restore_login_from_browser()
+
+render_app_chrome()
 
 
 def load_config():
@@ -79,14 +79,7 @@ def get_supabase_client():
 
 
 def get_current_user_email():
-    """Return saved/logged-in account email from Account.py."""
-    email = st.session_state.get("user_email", "")
-    email = str(email).strip().lower()
-
-    if email and "@" in email and "." in email.split("@")[-1]:
-        return email
-
-    return None
+    return shared_get_current_user_email()
 
 
 def get_selected_exam_name():
@@ -101,26 +94,7 @@ PAID_STATUS_VALUES = {"active", "paid", "trialing"}
 
 
 def get_user_subscription_status(email):
-    """Read subscription_status from app_users for the saved/logged-in email."""
-    email = str(email or "").strip().lower()
-    if not email:
-        return "free"
-
-    try:
-        supabase = get_supabase_client()
-        result = (
-            supabase.table("app_users")
-            .select("subscription_status")
-            .eq("email", email)
-            .limit(1)
-            .execute()
-        )
-        rows = result.data or []
-        if not rows:
-            return "free"
-        return str(rows[0].get("subscription_status") or "free").strip().lower()
-    except Exception:
-        return "free"
+    return shared_get_user_subscription_status(email)
 
 
 def is_paid_subscription(status):

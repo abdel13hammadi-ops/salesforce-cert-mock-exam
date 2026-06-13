@@ -1,145 +1,115 @@
 import streamlit as st
-from supabase import create_client
+
 from utils.access_control import (
-    clear_login_session as shared_clear_login_session,
+    clear_login_state,
+    get_current_user_email,
+    get_supabase_admin_client,
     get_supabase_auth_client,
-    hide_streamlit_native_navigation,
-    restore_login_from_browser,
-    save_logged_in_user as shared_save_logged_in_user,
+    get_subscription_status,
+    is_admin_user,
+    is_admin_unlocked,
+    render_app_chrome,
+    save_logged_in_user,
+    unlock_admin,
 )
 
-APP_VERSION = "ACCOUNT_V5_SUPABASE_AUTH_LOGIN"
+APP_VERSION = "ACCOUNT_STABLE_AUTH_V1"
 
-st.set_page_config(page_title="Account", layout="wide")
-hide_streamlit_native_navigation()
-restore_login_from_browser()
+st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
+render_app_chrome()
 
 
-def get_secret(name: str, default: str = "") -> str:
+def get_existing_profile(email: str):
+    email = str(email or "").strip().lower()
+    if not email:
+        return None
     try:
-        return str(st.secrets.get(name, default)).strip()
+        result = (
+            get_supabase_admin_client()
+            .table("app_users")
+            .select("*")
+            .eq("email", email)
+            .limit(1)
+            .execute()
+        )
+        return (result.data or [None])[0]
     except Exception:
-        return default
+        return None
 
 
-def get_auth_client():
-    return get_supabase_auth_client()
+def upsert_profile(email: str, full_name: str = "", language_code: str = "en", auth_user_id: str | None = None):
+    email = str(email or "").strip().lower()
+    if not email:
+        return {"email": "", "subscription_status": "free", "preferred_language_code": "en"}
+
+    existing = get_existing_profile(email) or {}
+    payload = {
+        "email": email,
+        "full_name": str(full_name or existing.get("full_name") or "").strip(),
+        "preferred_language_code": str(language_code or existing.get("preferred_language_code") or "en").strip().lower() or "en",
+        "subscription_status": str(existing.get("subscription_status") or "free").strip().lower(),
+    }
+    if auth_user_id or existing.get("auth_user_id"):
+        payload["auth_user_id"] = auth_user_id or existing.get("auth_user_id")
+    if existing.get("stripe_customer_id"):
+        payload["stripe_customer_id"] = existing.get("stripe_customer_id")
+
+    try:
+        result = get_supabase_admin_client().table("app_users").upsert(payload, on_conflict="email").execute()
+        return (result.data or [payload])[0]
+    except Exception:
+        # Login must not fail just because profile sync failed.
+        return payload
 
 
-def get_admin_client():
-    url = get_secret("SUPABASE_URL")
-    service_key = get_secret("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not service_key:
-        st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
-        st.stop()
-    return create_client(url, service_key)
-
-
-@st.cache_data(ttl=300)
 def load_languages():
-    admin = get_admin_client()
-    result = (
-        admin.table("languages")
-        .select("language_code, language_name, native_name, is_active, display_order")
-        .eq("is_active", True)
-        .order("display_order")
-        .execute()
-    )
-    rows = result.data or []
-    if not rows:
-        rows = [
-            {"language_code": "en", "language_name": "English", "native_name": "English"}
-        ]
-    return rows
+    try:
+        result = (
+            get_supabase_admin_client()
+            .table("languages")
+            .select("language_code, language_name, native_name, is_active, display_order")
+            .eq("is_active", True)
+            .order("display_order")
+            .execute()
+        )
+        rows = result.data or []
+        return rows or [{"language_code": "en", "language_name": "English", "native_name": "English"}]
+    except Exception:
+        return [{"language_code": "en", "language_name": "English", "native_name": "English"}]
 
 
 def language_label(row: dict) -> str:
     native = row.get("native_name") or row.get("language_name") or row.get("language_code")
     name = row.get("language_name") or native
     code = row.get("language_code")
-    if native == name:
-        return f"{name} ({code})"
-    return f"{name} / {native} ({code})"
-
-
-def get_existing_profile(email: str):
-    admin = get_admin_client()
-    result = (
-        admin.table("app_users")
-        .select("*")
-        .eq("email", email)
-        .limit(1)
-        .execute()
-    )
-    data = result.data or []
-    return data[0] if data else None
-
-
-def upsert_profile(email: str, full_name: str, language_code: str, auth_user_id: str | None = None):
-    email = str(email).strip().lower()
-    full_name = str(full_name).strip()
-    language_code = str(language_code).strip().lower() or "en"
-
-    existing = get_existing_profile(email)
-
-    # Preserve paid/free status. Do not overwrite active subscription when user edits profile.
-    subscription_status = "free"
-    stripe_customer_id = None
-    if existing:
-        subscription_status = existing.get("subscription_status") or "free"
-        stripe_customer_id = existing.get("stripe_customer_id")
-
-    payload = {
-        "email": email,
-        "full_name": full_name,
-        "preferred_language_code": language_code,
-        "subscription_status": subscription_status,
-    }
-
-    if auth_user_id:
-        payload["auth_user_id"] = auth_user_id
-    elif existing and existing.get("auth_user_id"):
-        payload["auth_user_id"] = existing.get("auth_user_id")
-
-    if stripe_customer_id:
-        payload["stripe_customer_id"] = stripe_customer_id
-
-    admin = get_admin_client()
-    result = admin.table("app_users").upsert(payload, on_conflict="email").execute()
-    return (result.data or [payload])[0]
-
-
-def save_logged_in_user_to_session(email: str, auth_user_id: str | None, profile: dict | None = None):
-    shared_save_logged_in_user(email, auth_user_id or "", profile or {})
-
-
-def clear_login_session():
-    shared_clear_login_session()
+    return f"{name} ({code})" if native == name else f"{name} / {native} ({code})"
 
 
 st.title("Account")
 st.caption(f"App version: {APP_VERSION}")
 
 languages = load_languages()
-language_codes = [row["language_code"] for row in languages]
+language_codes = [row["language_code"] for row in languages] or ["en"]
 label_by_code = {row["language_code"]: language_label(row) for row in languages}
 
-current_email = str(st.session_state.get("user_email", "")).strip().lower()
-current_auth_user_id = str(st.session_state.get("auth_user_id", "")).strip()
+current_email = get_current_user_email()
 
 if current_email:
-    profile = get_existing_profile(current_email)
+    profile = get_existing_profile(current_email) or {}
     if profile:
-        save_logged_in_user_to_session(current_email, profile.get("auth_user_id") or current_auth_user_id, profile)
+        merged = dict(profile)
+        merged["email"] = current_email
+        save_logged_in_user(merged, persist=True)
 
     st.success(f"Signed in as {current_email}")
+    status = get_subscription_status(current_email)
+    st.write(f"Subscription status: **{status}**")
 
-    profile = get_existing_profile(current_email) or {}
+    st.subheader("Profile")
     saved_language = profile.get("preferred_language_code") or st.session_state.get("preferred_language_code", "en")
     if saved_language not in language_codes:
         saved_language = "en" if "en" in language_codes else language_codes[0]
 
-    st.subheader("Profile")
     full_name = st.text_input("Full name", value=profile.get("full_name") or st.session_state.get("full_name", ""))
     selected_language = st.selectbox(
         "Preferred language",
@@ -155,33 +125,33 @@ if current_email:
                 email=current_email,
                 full_name=full_name,
                 language_code=selected_language,
-                auth_user_id=current_auth_user_id or profile.get("auth_user_id"),
+                auth_user_id=st.session_state.get("auth_user_id") or profile.get("auth_user_id"),
             )
-            save_logged_in_user_to_session(current_email, updated.get("auth_user_id"), updated)
+            save_logged_in_user(updated, persist=True)
             st.success("Profile saved ✅")
             st.rerun()
-
     with c2:
         if st.button("Log Out"):
-            try:
-                get_auth_client().auth.sign_out()
-            except Exception:
-                pass
-            clear_login_session()
+            clear_login_state()
             st.success("Logged out.")
-            st.info("Logout was saved. Click Continue to reload the Account page.")
-            if st.button("Continue after logout", type="primary", key="continue_after_logout"):
-                st.rerun()
-            st.stop()
+            st.rerun()
 
-    st.divider()
-    st.write("Current access:")
-    st.write(f"Subscription status: **{st.session_state.get('subscription_status', 'free')}**")
-    st.write(f"Preferred language: **{label_by_code.get(st.session_state.get('preferred_language_code', 'en'), 'English (en)')}**")
+    if is_admin_user(current_email):
+        st.divider()
+        st.subheader("Admin Unlock")
+        if is_admin_unlocked():
+            st.success("Admin access unlocked for this session.")
+        else:
+            admin_password = st.text_input("Admin password", type="password")
+            if st.button("Unlock Admin"):
+                if unlock_admin(admin_password):
+                    st.success("Admin unlocked ✅")
+                    st.rerun()
+                else:
+                    st.error("Invalid admin password or email is not allowed.")
 
 else:
     st.info("Create an account or log in to access the platform.")
-
     sign_in_tab, sign_up_tab = st.tabs(["Log In", "Create Account"])
 
     with sign_in_tab:
@@ -193,9 +163,8 @@ else:
             if not login_email or not login_password:
                 st.warning("Enter your email and password.")
             else:
-                auth = get_auth_client()
                 try:
-                    response = auth.auth.sign_in_with_password({
+                    response = get_supabase_auth_client().auth.sign_in_with_password({
                         "email": login_email,
                         "password": login_password,
                     })
@@ -213,12 +182,13 @@ else:
                                 profile.get("preferred_language_code") or "en",
                                 user.id,
                             )
-                        save_logged_in_user_to_session(login_email, user.id, profile)
+                        profile = profile or {"email": login_email, "auth_user_id": user.id, "subscription_status": "free", "preferred_language_code": "en"}
+                        profile["email"] = login_email
+                        profile["auth_user_id"] = profile.get("auth_user_id") or user.id
+                        save_logged_in_user(profile, persist=True)
                         st.success("Logged in ✅")
-                        st.info("Login was saved. Click Continue once, then test browser refresh.")
-                        if st.button("Continue to Account", type="primary", key="continue_after_login"):
-                            st.rerun()
-                        st.stop()
+                        st.info("If the page does not refresh automatically, click Account again in the sidebar.")
+                        st.rerun()
                 except Exception as exc:
                     st.error("Login failed. Please check your credentials or reset your password.")
                     st.caption(str(exc))
@@ -247,9 +217,8 @@ else:
             elif signup_password != confirm_password:
                 st.warning("Passwords do not match.")
             else:
-                auth = get_auth_client()
                 try:
-                    response = auth.auth.sign_up({
+                    response = get_supabase_auth_client().auth.sign_up({
                         "email": signup_email,
                         "password": signup_password,
                         "options": {"data": {"full_name": full_name.strip()}},
@@ -257,16 +226,13 @@ else:
                     user = response.user
                     auth_user_id = user.id if user else None
                     profile = upsert_profile(signup_email, full_name, selected_language, auth_user_id)
-                    save_logged_in_user_to_session(signup_email, auth_user_id, profile)
+                    save_logged_in_user(profile, persist=True)
                     st.success("Account created ✅")
                     st.info("If email confirmation is enabled in Supabase, check your inbox to confirm your account.")
-                    st.info("Account session was saved. Click Continue once, then test browser refresh.")
-                    if st.button("Continue to Account", type="primary", key="continue_after_signup"):
-                        st.rerun()
-                    st.stop()
+                    st.rerun()
                 except Exception as exc:
                     st.error("Account creation failed. The email may already be registered.")
                     st.caption(str(exc))
 
-    st.divider()
-    st.caption("Passwords are handled by Supabase Auth. They are not stored in the app_users profile table.")
+st.divider()
+st.caption("Independent exam-prep platform. Not affiliated with Salesforce.")

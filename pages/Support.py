@@ -2,14 +2,13 @@ import re
 from datetime import datetime, timezone
 
 import streamlit as st
-from utils.access_control import hide_streamlit_native_navigation, restore_login_from_browser
 from supabase import create_client
+from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, require_paid_access
 
 APP_VERSION = "SUPPORT_V1_TICKET_SUBMISSION"
 
 st.set_page_config(page_title="Support", layout="wide")
-hide_streamlit_native_navigation()
-restore_login_from_browser()
+render_app_chrome()
 
 
 def get_supabase_client():
@@ -24,10 +23,7 @@ def get_supabase_client():
 
 
 def get_saved_email():
-    email = str(st.session_state.get("user_email", "")).strip().lower()
-    if email:
-        return email
-    return ""
+    return shared_get_current_user_email() or ""
 
 
 def is_valid_email(email: str) -> bool:

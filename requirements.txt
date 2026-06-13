@@ -5,4 +5,3 @@ pandas
 psycopg2-binary
 sqlalchemy
 supabase
-extra-streamlit-components

@@ -2,14 +2,14 @@ import json
 from datetime import datetime, timezone
 
 import streamlit as st
-from utils.access_control import hide_streamlit_native_navigation, restore_login_from_browser
 from supabase import create_client
+from utils.access_control import render_app_chrome, require_admin
 
 APP_VERSION = "ADMIN_IMPORT_V2_BA_COMPATIBLE"
 
 st.set_page_config(page_title="Admin Import", layout="wide")
-hide_streamlit_native_navigation()
-restore_login_from_browser()
+render_app_chrome()
+require_admin()
 st.title("Admin Import")
 st.caption(f"App version: {APP_VERSION}")
 

@@ -2,15 +2,15 @@ import json
 
 import pandas as pd
 import streamlit as st
-from utils.access_control import hide_streamlit_native_navigation, restore_login_from_browser
 from supabase import create_client
+from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, require_paid_access
 
 APP_VERSION = "MY_PROGRESS_V6_ENROLLED_CERT_ACCESS"
 PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
-hide_streamlit_native_navigation()
-restore_login_from_browser()
+render_app_chrome()
+require_paid_access("My Progress")
 
 
 def get_supabase_client():
@@ -23,10 +23,7 @@ def get_supabase_client():
 
 
 def get_current_user_email():
-    email = str(st.session_state.get("user_email", "")).strip().lower()
-    if email and "@" in email and "." in email.split("@")[-1]:
-        return email
-    return None
+    return shared_get_current_user_email()
 
 
 @st.cache_data(ttl=60)
@@ -77,13 +74,22 @@ def fetch_user_certifications(user_email):
     access_rows = access_result.data or []
     allowed_exam_names = [row.get("exam_name") for row in access_rows if row.get("exam_name")]
 
-    if not allowed_exam_names:
-        return []
+    if allowed_exam_names:
+        result = (
+            supabase.table("certifications")
+            .select("exam_name,display_name,certification_code,passing_score,time_limit_minutes,question_count,is_active")
+            .in_("exam_name", allowed_exam_names)
+            .eq("is_active", True)
+            .order("display_name")
+            .execute()
+        )
+        return result.data or []
 
+    # Fallback for paid users before certification-access rows are configured.
+    # Without this, an active/premium user can be blocked from progress even when attempts exist.
     result = (
         supabase.table("certifications")
         .select("exam_name,display_name,certification_code,passing_score,time_limit_minutes,question_count,is_active")
-        .in_("exam_name", allowed_exam_names)
         .eq("is_active", True)
         .order("display_name")
         .execute()
@@ -100,30 +106,19 @@ def language_label(language_code):
     return language_code
 
 
-def require_paid_access(profile):
-    status = str(profile.get("subscription_status") or "free").strip().lower()
-    if status not in PAID_STATUS_VALUES:
-        st.warning("My Progress is available for paid users only.")
-        st.info("Your current access level is Free. Upgrade to unlock progress tracking and analytics.")
-        st.stop()
-    st.success(f"Subscription status: {status} ✅ My Progress unlocked")
-    return status
-
-
 @st.cache_data(ttl=60)
 def load_attempts(user_email, exam_name, language_code):
-    if not user_email or not exam_name or not language_code:
+    if not user_email or not exam_name:
         return []
     supabase = get_supabase_client()
-    result = (
+    query = (
         supabase.table("exam_attempts")
-        .select("id,user_email,mode,category,score,correct_answers,correct_count,total_questions,domain_breakdown,started_at,completed_at,exam_name,language_code")
+        .select("id,user_email,mode,category,score,correct_answers,correct_count,total_questions,domain_breakdown,completed_at,started_at,exam_name,language_code")
         .eq("user_email", user_email)
         .eq("exam_name", exam_name)
-        .eq("language_code", language_code)
-        .order("completed_at", desc=True).order("started_at", desc=True).order("id", desc=True)
-        .execute()
     )
+    # Do not filter by language here. Older attempts may have null/blank/different language_code.
+    result = query.order("id", desc=True).execute()
     return result.data or []
 
 
@@ -173,7 +168,7 @@ if not user_email:
     st.stop()
 
 profile = fetch_user_profile(user_email)
-require_paid_access(profile)
+require_paid_access("My Progress")
 
 preferred_language = str(profile.get("preferred_language_code") or "en").strip().lower()
 st.info(f"Account: {user_email} | Preferred language: {language_label(preferred_language)}")

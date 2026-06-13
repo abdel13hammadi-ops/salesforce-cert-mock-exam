@@ -4,14 +4,14 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
-from utils.access_control import hide_streamlit_native_navigation, restore_login_from_browser
 from supabase import create_client
+from utils.access_control import render_app_chrome, require_admin
 
 APP_VERSION = "ADMIN_QUESTION_REVIEW_V3_ID_LABELS"
 
 st.set_page_config(page_title="Admin Question Review", layout="wide")
-hide_streamlit_native_navigation()
-restore_login_from_browser()
+render_app_chrome()
+require_admin()
 
 CATEGORIES = [
     "Configuration and Setup",

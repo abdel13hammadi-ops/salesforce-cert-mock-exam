@@ -1,6 +1,6 @@
 import streamlit as st
-from utils.access_control import hide_streamlit_native_navigation, restore_login_from_browser
 from supabase import create_client
+from utils.access_control import render_app_chrome, require_admin
 from datetime import datetime
 
 APP_VERSION = "ADMIN_SUPPORT_TICKETS_V1"
@@ -10,6 +10,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+render_app_chrome()
+require_admin()
 
 st.title("Admin Support Tickets")
 st.caption(f"App version: {APP_VERSION}")

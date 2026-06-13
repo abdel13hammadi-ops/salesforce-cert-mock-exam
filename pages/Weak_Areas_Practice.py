@@ -5,16 +5,16 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
-from utils.access_control import hide_streamlit_native_navigation, restore_login_from_browser
 from supabase import create_client
+from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, require_paid_access
 
 APP_VERSION = "WEAK_AREAS_PRACTICE_V7_ENROLLED_CERT_ACCESS"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
 st.set_page_config(page_title="Weak Areas Practice", layout="wide", initial_sidebar_state="expanded")
-hide_streamlit_native_navigation()
-restore_login_from_browser()
+render_app_chrome()
+require_paid_access("Weak Areas Practice")
 
 
 @st.cache_resource
@@ -28,10 +28,7 @@ def get_supabase_client():
 
 
 def get_current_user_email():
-    email = str(st.session_state.get("user_email", "")).strip().lower()
-    if email and "@" in email and "." in email.split("@")[-1]:
-        return email
-    return None
+    return shared_get_current_user_email()
 
 
 @st.cache_data(ttl=60)
