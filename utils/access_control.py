@@ -12,6 +12,7 @@ path_setup.ensure_project_root(__file__)
 
 import urllib.parse
 import json
+from datetime import datetime, timedelta
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -25,12 +26,21 @@ except Exception:
     streamlit_js_eval = None
     HAS_JS_EVAL = False
 
+try:
+    import extra_streamlit_components as stx
+
+    HAS_EXTRA_COOKIE_MANAGER = True
+except Exception:
+    stx = None
+    HAS_EXTRA_COOKIE_MANAGER = False
+
 # Cookie names written to document.cookie (no extra_streamlit_components).
 FR_COOKIE_USER_EMAIL = "fr_user_email"
 FR_COOKIE_AUTH_USER_ID = "fr_auth_user_id"
 FR_COOKIE_REFRESH_TOKEN = "fr_refresh_token"
 FR_COOKIE_SUBSCRIPTION_STATUS = "fr_subscription_status"
 FR_LOCAL_STORAGE_KEY = "fr_auth_session_v1"
+FR_SESSION_COOKIE = "fr_auth_session_v2"
 
 
 def ensure_project_root_on_path():
@@ -66,7 +76,7 @@ FALLBACK_CERTIFICATIONS = [
     {
         "exam_name": ADMIN_EXAM_NAME,
         "display_name": ADMIN_EXAM_NAME,
-        "passing_score": 65,
+        "passing_score": 68,
         "time_limit_minutes": 105,
         "question_count": 60,
     },
@@ -150,14 +160,49 @@ def _map_local_storage_session(raw_payload) -> dict:
     }
 
 
+def _map_session_payload(raw_payload) -> dict:
+    """Map JSON auth payload from cookie/localStorage into restore shape."""
+    if not raw_payload:
+        return {}
+    try:
+        payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "user_email": str(payload.get("user_email") or "").strip().lower(),
+        "auth_user_id": str(payload.get("auth_user_id") or "").strip(),
+        "supabase_refresh_token": str(payload.get("supabase_refresh_token") or payload.get("refresh_token") or "").strip(),
+        "subscription_status": str(payload.get("subscription_status") or FREE_STATUS).strip().lower(),
+    }
+
+
+def get_extra_cookie_manager():
+    """Return one CookieManager instance per Streamlit browser session.
+
+    The previous duplicate-key crash came from calling CookieManager.get_all()
+    repeatedly with the package's default key. This object is created once and
+    all reads go through get_browser_cookies_once().
+    """
+    if not HAS_EXTRA_COOKIE_MANAGER:
+        return None
+    if "_fr_cookie_manager" not in st.session_state:
+        try:
+            st.session_state["_fr_cookie_manager"] = stx.CookieManager(key="fr_cookie_manager")
+        except Exception:
+            st.session_state["_fr_cookie_manager"] = None
+    return st.session_state.get("_fr_cookie_manager")
+
+
 def get_browser_cookies_once():
     """Read persisted browser login once per Streamlit script run.
 
-    Primary path: Streamlit request cookies via st.context.cookies.
-    Fallback path: streamlit-js-eval reads localStorage/document.cookie.
+    Primary path: st.context.cookies, which sees cookies sent with the request.
+    Secondary path: extra_streamlit_components.CookieManager, with a unique key.
+    Fallback path: streamlit-js-eval reading localStorage/document.cookie.
 
-    Do not use extra_streamlit_components.CookieManager.get_all(); it caused
-    StreamlitDuplicateElementKey crashes.
+    There must be only one direct get_all() call, here.
     """
     st.session_state.pop("_browser_cookie_manager", None)
 
@@ -171,21 +216,35 @@ def get_browser_cookies_once():
     st.session_state["_browser_restore_attempted"] = True
     restored = {}
 
-    # Most reliable on deployed Streamlit: cookies that came with the request.
+    # 1) Request cookies on Streamlit Cloud after browser refresh.
     try:
         context_cookies = getattr(getattr(st, "context", None), "cookies", None)
         if context_cookies:
-            parsed = {
-                FR_COOKIE_USER_EMAIL: context_cookies.get(FR_COOKIE_USER_EMAIL, ""),
-                FR_COOKIE_AUTH_USER_ID: context_cookies.get(FR_COOKIE_AUTH_USER_ID, ""),
-                FR_COOKIE_REFRESH_TOKEN: context_cookies.get(FR_COOKIE_REFRESH_TOKEN, ""),
-                FR_COOKIE_SUBSCRIPTION_STATUS: context_cookies.get(FR_COOKIE_SUBSCRIPTION_STATUS, ""),
-            }
-            restored = _map_browser_cookies(parsed)
+            raw_payload = context_cookies.get(FR_SESSION_COOKIE, "")
+            restored = _map_session_payload(urllib.parse.unquote(raw_payload))
+            if not restored.get("user_email"):
+                parsed = {
+                    FR_COOKIE_USER_EMAIL: context_cookies.get(FR_COOKIE_USER_EMAIL, ""),
+                    FR_COOKIE_AUTH_USER_ID: context_cookies.get(FR_COOKIE_AUTH_USER_ID, ""),
+                    FR_COOKIE_REFRESH_TOKEN: context_cookies.get(FR_COOKIE_REFRESH_TOKEN, ""),
+                    FR_COOKIE_SUBSCRIPTION_STATUS: context_cookies.get(FR_COOKIE_SUBSCRIPTION_STATUS, ""),
+                }
+                restored = _map_browser_cookies(parsed)
     except Exception:
         restored = {}
 
-    # Fallback: browser JS. This may need one rerun before value is available.
+    # 2) CookieManager fallback. It writes real browser cookies better than iframe JS.
+    if not restored.get("user_email"):
+        try:
+            manager = get_extra_cookie_manager()
+            if manager is not None:
+                all_cookies = manager.get_all(key=f"fr_get_all_{run_id}") or {}
+                raw_payload = all_cookies.get(FR_SESSION_COOKIE, "")
+                restored = _map_session_payload(raw_payload)
+        except Exception:
+            restored = restored or {}
+
+    # 3) JS fallback. Usually needs a rerun before data arrives.
     if not restored.get("user_email") and HAS_JS_EVAL:
         try:
             raw = streamlit_js_eval(
@@ -195,7 +254,7 @@ def get_browser_cookies_once():
                     cookies: document.cookie || ''
                 }})
                 """,
-                key="forceready_read_browser_auth_v3",
+                key=f"forceready_read_browser_auth_{run_id}",
                 want_output=True,
             )
             if raw:
@@ -203,14 +262,17 @@ def get_browser_cookies_once():
                 if isinstance(data, dict):
                     restored = _map_local_storage_session(data.get("local_storage"))
                     if not restored.get("user_email"):
-                        restored = _map_browser_cookies(_parse_document_cookies(data.get("cookies") or ""))
+                        parsed_cookies = _parse_document_cookies(data.get("cookies") or "")
+                        raw_payload = parsed_cookies.get(FR_SESSION_COOKIE, "")
+                        restored = _map_session_payload(raw_payload) or _map_browser_cookies(parsed_cookies)
         except Exception:
-            restored = {}
+            restored = restored or {}
 
     st.session_state[BROWSER_COOKIES_CACHE_KEY] = restored or {}
     st.session_state[BROWSER_COOKIES_FETCHED_RUN_KEY] = run_id
     st.session_state["_browser_restore_success"] = bool((restored or {}).get("user_email"))
     return st.session_state[BROWSER_COOKIES_CACHE_KEY]
+
 
 def save_browser_login_session(
     email: str,
@@ -219,13 +281,7 @@ def save_browser_login_session(
     subscription_status: str = "",
     auto_reload: bool = False,
 ):
-    """Persist login in browser localStorage + legacy cookies.
-
-    The previous implementation wrote cookies through components.html and then the
-    Account page immediately called st.rerun(), so the browser never got a chance
-    to execute the write. This function renders a small JS block and, when requested
-    after login/logout, reloads the parent page from the browser after the write.
-    """
+    """Persist login in real browser cookie + localStorage fallback."""
     email = str(email or "").strip().lower()
     if not email:
         return False
@@ -236,20 +292,37 @@ def save_browser_login_session(
         "supabase_refresh_token": str(refresh_token or ""),
         "subscription_status": str(subscription_status or FREE_STATUS).strip().lower(),
     }
-    payload_json = json.dumps(payload).replace("</", "<\\/")
+    payload_json = json.dumps(payload, separators=(",", ":"))
+    payload_cookie_value = urllib.parse.quote(payload_json, safe="")
     max_age = 30 * 24 * 60 * 60
-    reload_js = "setTimeout(function(){ try { window.parent.location.reload(); } catch(e) { window.location.reload(); } }, 250);" if auto_reload else ""
+
+    # CookieManager path: real browser cookie. One JSON cookie avoids duplicate set keys.
+    try:
+        manager = get_extra_cookie_manager()
+        if manager is not None:
+            counter = int(st.session_state.get("_fr_cookie_set_counter", 0)) + 1
+            st.session_state["_fr_cookie_set_counter"] = counter
+            manager.set(
+                FR_SESSION_COOKIE,
+                payload_json,
+                expires_at=datetime.now() + timedelta(days=30),
+                key=f"fr_set_session_{counter}",
+            )
+    except Exception:
+        pass
+
+    # JS fallback: localStorage + legacy cookies.
+    reload_js = "setTimeout(function(){ try { window.parent.location.reload(); } catch(e) { window.location.reload(); } }, 900);" if auto_reload else ""
     html = f"""
     <script>
     (function() {{
-        const payload = {payload_json};
-        try {{
-            window.parent.localStorage.setItem('{FR_LOCAL_STORAGE_KEY}', JSON.stringify(payload));
-        }} catch(e1) {{
-            try {{ window.localStorage.setItem('{FR_LOCAL_STORAGE_KEY}', JSON.stringify(payload)); }} catch(e2) {{}}
+        const payload = {json.dumps(payload_json)};
+        try {{ window.parent.localStorage.setItem('{FR_LOCAL_STORAGE_KEY}', payload); }} catch(e1) {{
+            try {{ window.localStorage.setItem('{FR_LOCAL_STORAGE_KEY}', payload); }} catch(e2) {{}}
         }}
         try {{
             const opts = "path=/; max-age={max_age}; SameSite=Lax";
+            document.cookie = "{FR_SESSION_COOKIE}={payload_cookie_value}; " + opts;
             document.cookie = "{FR_COOKIE_USER_EMAIL}={_cookie_js_escape(email)}; " + opts;
             document.cookie = "{FR_COOKIE_AUTH_USER_ID}={_cookie_js_escape(auth_user_id)}; " + opts;
             document.cookie = "{FR_COOKIE_REFRESH_TOKEN}={_cookie_js_escape(refresh_token)}; " + opts;
@@ -269,7 +342,16 @@ def save_browser_login_session(
 
 
 def clear_browser_login_session(auto_reload: bool = False):
-    reload_js = "setTimeout(function(){ try { window.parent.location.reload(); } catch(e) { window.location.reload(); } }, 250);" if auto_reload else ""
+    try:
+        manager = get_extra_cookie_manager()
+        if manager is not None:
+            counter = int(st.session_state.get("_fr_cookie_delete_counter", 0)) + 1
+            st.session_state["_fr_cookie_delete_counter"] = counter
+            manager.delete(FR_SESSION_COOKIE, key=f"fr_delete_session_{counter}")
+    except Exception:
+        pass
+
+    reload_js = "setTimeout(function(){ try { window.parent.location.reload(); } catch(e) { window.location.reload(); } }, 700);" if auto_reload else ""
     html = f"""
     <script>
     (function() {{
@@ -278,14 +360,13 @@ def clear_browser_login_session(auto_reload: bool = False):
         }}
         try {{
             const names = [
+                "{FR_SESSION_COOKIE}",
                 "{FR_COOKIE_USER_EMAIL}",
                 "{FR_COOKIE_AUTH_USER_ID}",
                 "{FR_COOKIE_REFRESH_TOKEN}",
                 "{FR_COOKIE_SUBSCRIPTION_STATUS}",
             ];
-            names.forEach((name) => {{
-                document.cookie = name + "=; path=/; max-age=0; SameSite=Lax";
-            }});
+            names.forEach((name) => {{ document.cookie = name + "=; path=/; max-age=0; SameSite=Lax"; }});
         }} catch(e3) {{}}
         {reload_js}
     }})();
