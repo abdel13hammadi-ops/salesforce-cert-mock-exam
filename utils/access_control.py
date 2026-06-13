@@ -576,8 +576,31 @@ def unlock_admin(password):
 
 
 def hide_default_streamlit_pages():
-    """No-op: default page nav is disabled via .streamlit/config.toml."""
-    return
+    """Hide Streamlit's native multipage sidebar navigation.
+
+    Streamlit Cloud can still render the automatic pages/ navigation even when
+    .streamlit/config.toml is present, depending on version/cache/deployment.
+    We hide only the native nav container, not our custom ForceReady sidebar.
+    """
+    st.markdown(
+        """
+        <style>
+        /* Hide Streamlit's built-in multipage navigation only. */
+        [data-testid="stSidebarNav"] {
+            display: none !important;
+            visibility: hidden !important;
+            height: 0 !important;
+            overflow: hidden !important;
+        }
+        [data-testid="stSidebarNav"] * {
+            display: none !important;
+            visibility: hidden !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 
 def safe_page_link(page, label, icon=None):
