@@ -24,6 +24,7 @@ def hide_streamlit_native_navigation() -> None:
         <style>
         [data-testid="stSidebarNav"] {display: none !important;}
         section[data-testid="stSidebar"] nav {display: none !important;}
+        div[data-testid="stSidebarNav"] {display: none !important;}
         </style>
         """,
         unsafe_allow_html=True,
@@ -119,6 +120,35 @@ def verify_signed_session_token(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _get_query_session_token() -> str:
+    """Read signed session token from query params as a fallback for cookie issues."""
+    try:
+        token = st.query_params.get("frs", "")
+        if isinstance(token, list):
+            token = token[0] if token else ""
+        return str(token or "").strip()
+    except Exception:
+        return ""
+
+
+def _set_query_session_token(token: str) -> None:
+    """Best-effort URL fallback. Cookie is primary; query param is backup."""
+    if not token:
+        return
+    try:
+        st.query_params["frs"] = token
+    except Exception:
+        pass
+
+
+def _clear_query_session_token() -> None:
+    try:
+        if "frs" in st.query_params:
+            del st.query_params["frs"]
+    except Exception:
+        pass
+
+
 @st.cache_resource(show_spinner=False)
 def get_cookie_manager():
     """Return one CookieManager resource, if available.
@@ -187,6 +217,9 @@ def persist_login_to_browser(email: str, auth_user_id: str = "", profile: Option
     except Exception:
         pass
 
+    # Query-param fallback helps confirm persistence on Streamlit Cloud when component cookies lag.
+    _set_query_session_token(token)
+
     # Clear stale cookie read cache so same run can see current value if needed.
     st.session_state.pop(f"_cookie_read_once_{AUTH_COOKIE_NAME}", None)
 
@@ -198,6 +231,7 @@ def clear_browser_login() -> None:
             manager.delete(AUTH_COOKIE_NAME, key="delete_fr_auth_session_v3")
     except Exception:
         pass
+    _clear_query_session_token()
     st.session_state.pop(f"_cookie_read_once_{AUTH_COOKIE_NAME}", None)
 
 
@@ -209,6 +243,8 @@ def restore_login_from_browser() -> bool:
         return True
 
     token = _cookie_get_once(AUTH_COOKIE_NAME)
+    if not token:
+        token = _get_query_session_token()
     payload = verify_signed_session_token(token)
     if not payload:
         return False
