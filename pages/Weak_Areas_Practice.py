@@ -5,62 +5,45 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
-from supabase import create_client
 
-# Ensure Streamlit Cloud can import project-level utilities from pages/.
 import sys
 from pathlib import Path
-ROOT_DIR = Path(__file__).resolve().parent
-if ROOT_DIR.name == "pages":
-    ROOT_DIR = ROOT_DIR.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
-from utils.access_control import render_sidebar_navigation, require_premium_access, fetch_active_certifications
+_file = Path(__file__).resolve()
+_root = _file.parent.parent if _file.parent.name == "pages" else _file.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+import path_setup
+
+path_setup.ensure_project_root(__file__)
+
+from utils.access_control import (
+    render_app_chrome,
+    require_premium_access,
+    get_available_certifications,
+    get_supabase_client,
+    get_supabase_public_client,
+    get_user_profile,
+)
 APP_VERSION = "WEAK_AREAS_PRACTICE_V8_PREMIUM_BUNDLE"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
 
 st.set_page_config(page_title="Weak Areas Practice", layout="wide", initial_sidebar_state="expanded")
-render_sidebar_navigation()
-
-
-@st.cache_resource
-def get_supabase_client():
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        st.error("Supabase secrets are missing. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
-        st.stop()
-    return create_client(url, key)
-
-
-def get_current_user_email():
-    email = str(st.session_state.get("user_email", "")).strip().lower()
-    if email and "@" in email and "." in email.split("@")[-1]:
-        return email
-    return None
+render_app_chrome()
+user_email = require_premium_access("Weak Areas Practice")
 
 
 @st.cache_data(ttl=60)
 def fetch_user_profile(email):
-    if not email:
-        return {}
-    result = (
-        get_supabase_client().table("app_users")
-        .select("email,full_name,subscription_status,preferred_language_code")
-        .eq("email", email)
-        .limit(1)
-        .execute()
-    )
-    return (result.data or [{}])[0]
+    return get_user_profile(email) or {}
 
 
 @st.cache_data(ttl=60)
 def fetch_languages():
     try:
         result = (
-            get_supabase_client().table("languages")
+            get_supabase_public_client().table("languages")
             .select("language_code,language_name,native_name,is_active,display_order")
             .eq("is_active", True)
             .order("display_order")
@@ -82,13 +65,13 @@ def language_label(language_code):
 @st.cache_data(ttl=60)
 def fetch_user_certifications(user_email):
     # Premium bundle includes every active certification.
-    return fetch_active_certifications()
+    return get_available_certifications()
 
 
 @st.cache_data(ttl=60)
 def fetch_domains(exam_name):
     result = (
-        get_supabase_client().table("certification_domains")
+        get_supabase_public_client().table("certification_domains")
         .select("domain_name,display_order,is_active")
         .eq("exam_name", exam_name)
         .eq("is_active", True)
@@ -274,22 +257,10 @@ st.markdown(
 st.markdown('<div class="weak-banner">Weak Areas Practice</div>', unsafe_allow_html=True)
 st.caption(f"App version: {APP_VERSION}")
 
-user_email = get_current_user_email()
-if not user_email:
-    st.warning("Please log in from the Account page before using Weak Areas Practice.")
-    st.stop()
-
 profile = fetch_user_profile(user_email)
-require_premium_access("Weak Areas Practice")
-status = str(profile.get("subscription_status") or "free").strip().lower()
 language_code = str(profile.get("preferred_language_code") or "en").strip().lower()
-st.success(f"Account: {user_email} ✅ | Access: {status} | Preferred language: {language_label(language_code)}")
 
 certifications = fetch_user_certifications(user_email)
-if not certifications:
-    st.error("No active certifications found.")
-    st.info("Ask an admin to activate certifications in Supabase.")
-    st.stop()
 exam_names = [c["exam_name"] for c in certifications]
 display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications}
 

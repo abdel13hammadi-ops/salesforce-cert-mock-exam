@@ -1,17 +1,19 @@
 import streamlit as st
-from supabase import create_client
 from datetime import datetime
 
-# Ensure Streamlit Cloud can import project-level utilities from pages/.
 import sys
 from pathlib import Path
-ROOT_DIR = Path(__file__).resolve().parent
-if ROOT_DIR.name == "pages":
-    ROOT_DIR = ROOT_DIR.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
-from utils.access_control import require_admin
+_file = Path(__file__).resolve()
+_root = _file.parent.parent if _file.parent.name == "pages" else _file.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+import path_setup
+
+path_setup.ensure_project_root(__file__)
+
+from utils.access_control import require_admin, get_supabase_admin_client
 APP_VERSION = "ADMIN_SUPPORT_TICKETS_V1"
 
 st.set_page_config(
@@ -24,17 +26,7 @@ require_admin()
 st.title("Admin Support Tickets")
 st.caption(f"App version: {APP_VERSION}")
 
-def get_supabase_client():
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
-
-    if not url or not key:
-        st.error("Missing Supabase secrets. Please check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
-        st.stop()
-
-    return create_client(url, key)
-
-supabase = get_supabase_client()
+supabase = get_supabase_admin_client()
 
 def fetch_tickets(status_filter="All", issue_filter="All", search_text=""):
     query = supabase.table("support_tickets").select("*").order("created_at", desc=True)

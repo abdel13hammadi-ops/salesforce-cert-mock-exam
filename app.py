@@ -6,20 +6,38 @@ from datetime import datetime, timezone
 
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-from supabase import create_client
 
 
-# Ensure Streamlit Cloud can import project-level utilities from pages/.
 import sys
 from pathlib import Path
-ROOT_DIR = Path(__file__).resolve().parent
-if ROOT_DIR.name == "pages":
-    ROOT_DIR = ROOT_DIR.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
-from utils.access_control import render_sidebar_navigation, render_locked_premium_previews, fetch_active_certifications, has_premium_access, is_admin_unlocked
-APP_VERSION = "SUPABASE_DB_V12_ENROLLED_CERT_ACCESS"
+_file = Path(__file__).resolve()
+_root = _file.parent.parent if _file.parent.name == "pages" else _file.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+import path_setup
+
+path_setup.ensure_project_root(__file__)
+
+from utils.access_control import (
+    render_app_chrome,
+    render_locked_premium_previews,
+    get_available_certifications,
+    has_premium_access,
+    is_admin_unlocked,
+    get_current_user_email,
+    get_supabase_client,
+    get_supabase_public_client,
+    get_subscription_status,
+    is_paid_user,
+    PAID_STATUS_VALUES,
+    ADMIN_EXAM_NAME,
+    FALLBACK_CERTIFICATIONS,
+)
+
+FALLBACK_CERT_BY_EXAM = {cert["exam_name"]: cert for cert in FALLBACK_CERTIFICATIONS}
+APP_VERSION = "SUPABASE_DB_V13_CERT_SWITCH_FIX"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -56,7 +74,11 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-render_sidebar_navigation()
+try:
+    st.set_option("client.showSidebarNavigation", False)
+except Exception:
+    pass
+render_app_chrome()
 
 
 def load_config():
@@ -75,28 +97,6 @@ def load_config():
 config = load_config()
 
 
-def get_supabase_client():
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
-
-    if not url or not key:
-        st.error("Supabase secrets are missing. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets.")
-        st.stop()
-
-    return create_client(url, key)
-
-
-def get_current_user_email():
-    """Return saved/logged-in account email from Account.py."""
-    email = st.session_state.get("user_email", "")
-    email = str(email).strip().lower()
-
-    if email and "@" in email and "." in email.split("@")[-1]:
-        return email
-
-    return None
-
-
 def get_selected_exam_name():
     return st.session_state.get("selected_exam_name") or config.get("certification") or DEFAULT_EXAM_NAME
 
@@ -105,51 +105,8 @@ def get_selected_language_code():
     return st.session_state.get("selected_language_code") or DEFAULT_LANGUAGE_CODE
 
 
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}  # trialing intentionally excluded
-
-
-def get_user_subscription_status(email):
-    """Read subscription_status from app_users for the saved/logged-in email."""
-    email = str(email or "").strip().lower()
-    if not email:
-        return "free"
-
-    try:
-        supabase = get_supabase_client()
-        result = (
-            supabase.table("app_users")
-            .select("subscription_status")
-            .eq("email", email)
-            .limit(1)
-            .execute()
-        )
-        rows = result.data or []
-        if not rows:
-            return "free"
-        return str(rows[0].get("subscription_status") or "free").strip().lower()
-    except Exception:
-        return "free"
-
-
-def is_paid_subscription(status):
-    return str(status or "").strip().lower() in PAID_STATUS_VALUES
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_exam_setup(exam_name):
-    """Load exam metadata and domain structure from Supabase.
-    Falls back to Admin hard-coded values if tables are not ready.
-    """
-    supabase = get_supabase_client()
-    exam_name = exam_name or DEFAULT_EXAM_NAME
-
-    setup = {
-        "exam_name": exam_name,
-        "display_name": exam_name,
-        "certification_code": None,
-        "passing_score": PASSING_SCORE_DEFAULT,
-        "time_limit_minutes": EXAM_MINUTES_DEFAULT,
-        "question_count": QUESTION_COUNT_DEFAULT,
+def build_admin_domain_fallback():
+    return {
         "category_counts": FALLBACK_CATEGORY_COUNTS.copy(),
         "category_weights": FALLBACK_CATEGORY_WEIGHTS.copy(),
         "domains": [
@@ -161,6 +118,64 @@ def fetch_exam_setup(exam_name):
             }
             for idx, (domain, count) in enumerate(FALLBACK_CATEGORY_COUNTS.items())
         ],
+    }
+
+
+def enrich_setup_from_bank(setup, bank, question_count):
+    """Align domain breakdown with categories that exist in the selected certification bank."""
+    if not bank:
+        return setup
+
+    resolved_counts = resolve_category_counts(setup.get("category_counts") or {}, bank, question_count)
+    if not resolved_counts:
+        return setup
+
+    total = sum(resolved_counts.values()) or 1
+    domains = []
+    weights = {}
+    for idx, (name, count) in enumerate(sorted(resolved_counts.items())):
+        weight = max(1, round(100 * count / total))
+        domains.append({
+            "domain_name": name,
+            "weight": weight,
+            "question_count": count,
+            "display_order": idx + 1,
+        })
+        weights[name] = weight
+
+    weight_sum = sum(weights.values()) or 1
+    for name in weights:
+        weights[name] = round(100 * weights[name] / weight_sum)
+
+    enriched = setup.copy()
+    enriched["domains"] = domains
+    enriched["category_counts"] = resolved_counts
+    enriched["category_weights"] = weights
+    return enriched
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_exam_setup(exam_name):
+    """Load exam metadata and domain structure from Supabase.
+    Falls back to per-cert defaults; Admin domains only apply to the Admin exam.
+    """
+    supabase = get_supabase_public_client()
+    exam_name = exam_name or DEFAULT_EXAM_NAME
+    fallback_cert = FALLBACK_CERT_BY_EXAM.get(exam_name, {})
+    admin_domains = build_admin_domain_fallback() if exam_name == ADMIN_EXAM_NAME else {
+        "category_counts": {},
+        "category_weights": {},
+        "domains": [],
+    }
+
+    setup = {
+        "exam_name": exam_name,
+        "display_name": fallback_cert.get("display_name") or exam_name,
+        "certification_code": None,
+        "passing_score": int(fallback_cert.get("passing_score") or PASSING_SCORE_DEFAULT),
+        "time_limit_minutes": int(fallback_cert.get("time_limit_minutes") or EXAM_MINUTES_DEFAULT),
+        "question_count": int(fallback_cert.get("question_count") or QUESTION_COUNT_DEFAULT),
+        **admin_domains,
     }
 
     try:
@@ -215,7 +230,7 @@ def fetch_language_label(language_code):
     language_code = language_code or DEFAULT_LANGUAGE_CODE
     try:
         result = (
-            get_supabase_client()
+            get_supabase_public_client()
             .table("languages")
             .select("language_code, language_name, native_name")
             .eq("language_code", language_code)
@@ -233,12 +248,8 @@ def fetch_language_label(language_code):
 
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_user_certifications(user_email):
-    """Return certifications visible to this user.
-
-    Free users can select an active certification for the 10-question Free Preview.
-    Paid users/admins get the bundle: all active certifications.
-    """
-    return fetch_active_certifications()
+    """Return certifications visible to this user (Admin + BA at minimum)."""
+    return get_available_certifications()
 
 
 def get_user_preferred_language_code(email):
@@ -399,6 +410,67 @@ def select_by_difficulty(pool, count):
     return selected[:count]
 
 
+def resolve_category_counts(category_counts, bank, question_count):
+    """Use DB domain targets when they match the bank; otherwise derive from actual categories."""
+    by_category = defaultdict(int)
+    for q in bank:
+        by_category[q["category"]] += 1
+
+    if category_counts:
+        sufficient = True
+        for category, required_count in category_counts.items():
+            if required_count > 0 and by_category.get(category, 0) < required_count:
+                sufficient = False
+                break
+        if sufficient:
+            return category_counts
+
+    return derive_category_counts_from_bank(bank, question_count)
+
+
+def derive_category_counts_from_bank(bank, target_count):
+    """Build per-category question targets from categories that exist in the bank."""
+    pools = defaultdict(list)
+    for q in bank:
+        pools[q["category"]].append(q)
+    if not pools:
+        return {}
+
+    categories = sorted(pools.keys())
+    total_available = sum(len(pools[c]) for c in categories)
+    target = min(int(target_count or 60), total_available)
+    if target <= 0:
+        return {}
+
+    counts = {c: 1 for c in categories}
+    remaining = target - len(categories)
+    if remaining < 0:
+        counts = {}
+        for cat in sorted(categories, key=lambda name: -len(pools[name]))[:target]:
+            counts[cat] = 1
+        return counts
+
+    weights = {c: len(pools[c]) for c in categories}
+    weight_total = sum(weights.values()) or 1
+    for cat in categories:
+        counts[cat] += int(round(remaining * weights[cat] / weight_total))
+
+    while sum(counts.values()) > target:
+        cat = max(counts, key=lambda name: counts[name])
+        if counts[cat] > 1:
+            counts[cat] -= 1
+        else:
+            break
+    while sum(counts.values()) < target:
+        cat = max(categories, key=lambda name: len(pools[name]) - counts.get(name, 0))
+        if counts[cat] < len(pools[cat]):
+            counts[cat] += 1
+        else:
+            break
+
+    return counts
+
+
 def generate_paid_exam_questions(bank, category_counts):
     selected = []
     by_category = defaultdict(list)
@@ -413,10 +485,13 @@ def generate_paid_exam_questions(bank, category_counts):
         selected.extend(select_by_difficulty(pool, required_count))
 
     if missing:
-        st.error("Not enough questions in one or more categories for this certification/language:")
-        for item in missing:
-            st.write(f"- {item}")
-        st.stop()
+        available = ", ".join(sorted({q["category"] for q in bank}))
+        st.session_state.exam_setup_error = (
+            "Not enough questions in one or more categories for this certification/language: "
+            + "; ".join(missing)
+            + (f". Available categories in bank: {available}" if available else "")
+        )
+        return []
 
     min_multi = 8
     max_multi = 10
@@ -476,23 +551,25 @@ def generate_free_mock_questions(bank, category_counts):
         sample.extend(fallback[: 10 - len(sample)])
 
     if len(sample) < 10:
-        st.error(f"Free Preview setup error: expected 10 sample questions, found {len(sample)}.")
-        st.info("Import more approved questions or tag at least 10 questions with free_mock_exam = true.")
-        st.stop()
+        st.session_state.exam_setup_error = (
+            f"Free Preview setup error: expected 10 sample questions, found {len(sample)}."
+        )
+        return []
 
     category_order = list(category_counts.keys())
     sample.sort(key=lambda q: (category_order.index(q["category"]) if q["category"] in category_order else 999, q["id"]))
     return sample[:10]
 
 
-def ensure_exam_generated(exam_access_type, exam_name, language_code, category_counts):
+def ensure_exam_generated(exam_access_type, exam_name, language_code, category_counts, question_count=60):
     bank, meta = fetch_question_bank(exam_name, language_code)
     st.session_state.bank_meta = meta
 
     if meta.get("error"):
-        st.error(meta["error"])
-        st.info("Choose a certification on this page. Language comes from your Account profile. Make sure that certification has questions imported for your preferred language.")
-        st.stop()
+        st.session_state.exam_setup_error = meta["error"]
+        return []
+
+    st.session_state.pop("exam_setup_error", None)
 
     exam_key = f"{exam_access_type}|{exam_name}|{language_code}"
     existing_key = st.session_state.get("exam_key")
@@ -511,7 +588,8 @@ def ensure_exam_generated(exam_access_type, exam_name, language_code, category_c
 
     if "all_questions" not in st.session_state or not st.session_state.all_questions:
         if exam_access_type == "paid":
-            st.session_state.all_questions = generate_paid_exam_questions(bank, category_counts)
+            resolved_counts = resolve_category_counts(category_counts, bank, question_count)
+            st.session_state.all_questions = generate_paid_exam_questions(bank, resolved_counts)
         else:
             st.session_state.all_questions = generate_free_mock_questions(bank, category_counts)
 
@@ -544,20 +622,12 @@ for key, value in defaults.items():
         st.session_state[key] = value
 
 
-# Language comes from the user profile. Certification is selected directly on this page.
+# Language comes from the user profile when signed in; otherwise default to English.
 user_email_for_language = get_current_user_email()
-if not user_email_for_language:
-    st.warning("Please log in from the Account page before starting an exam.")
-    st.stop()
-
 SELECTED_LANGUAGE_CODE = get_user_preferred_language_code(user_email_for_language)
 LANGUAGE_LABEL = fetch_language_label(SELECTED_LANGUAGE_CODE)
 
 AVAILABLE_CERTIFICATIONS = fetch_user_certifications(user_email_for_language)
-if not AVAILABLE_CERTIFICATIONS:
-    st.error("No active certifications found.")
-    st.info("Ask an admin to activate at least one certification in Supabase.")
-    st.stop()
 
 CERT_DISPLAY_BY_NAME = {
     row.get("exam_name"): row.get("display_name") or row.get("exam_name")
@@ -566,34 +636,22 @@ CERT_DISPLAY_BY_NAME = {
 }
 CERT_NAMES = list(CERT_DISPLAY_BY_NAME.keys()) or [DEFAULT_EXAM_NAME]
 
-current_exam = st.session_state.get("selected_exam_name")
-if current_exam not in CERT_NAMES:
-    current_exam = CERT_NAMES[0]
-    st.session_state.selected_exam_name = current_exam
+if st.session_state.get("selected_exam_name") not in CERT_NAMES:
+    st.session_state.selected_exam_name = CERT_NAMES[0]
 
-if not st.session_state.get("started", False):
-    selected_exam = st.selectbox(
-        "Choose Certification",
+if not st.session_state.started:
+    st.subheader("Choose Certification")
+    st.selectbox(
+        "Certification",
         options=CERT_NAMES,
-        index=CERT_NAMES.index(current_exam),
         format_func=lambda name: CERT_DISPLAY_BY_NAME.get(name, name),
-        key="mock_exam_certification_selector",
+        key="selected_exam_name",
+        label_visibility="collapsed",
     )
-    if selected_exam != st.session_state.get("selected_exam_name"):
-        st.session_state.selected_exam_name = selected_exam
-        st.session_state.all_questions = []
-        st.session_state.choice_orders = {}
-        st.session_state.answers = {}
-        st.session_state.marked = set()
-        st.session_state.current_question = 0
-        st.session_state.submitted = False
-        st.session_state.review_mode = False
-        st.session_state.attempt_saved = False
-        st.session_state.exam_key = None
-        st.rerun()
 
-SELECTED_EXAM_NAME = st.session_state.get("selected_exam_name") or current_exam
+SELECTED_EXAM_NAME = st.session_state.get("selected_exam_name") or CERT_NAMES[0]
 exam_setup = fetch_exam_setup(SELECTED_EXAM_NAME)
+exam_setup["display_name"] = CERT_DISPLAY_BY_NAME.get(SELECTED_EXAM_NAME, exam_setup["display_name"])
 
 PASSING_SCORE = exam_setup["passing_score"]
 EXAM_MINUTES = exam_setup["time_limit_minutes"]
@@ -611,8 +669,8 @@ def get_access_context():
     has_paid_access = False
 
     if user_email:
-        subscription_status = get_user_subscription_status(user_email)
-        has_paid_access = is_paid_subscription(subscription_status)
+        subscription_status = get_subscription_status(user_email)
+        has_paid_access = is_paid_user(user_email)
 
     exam_access_type = "paid" if has_paid_access else "free"
     return user_email, subscription_status, has_paid_access, exam_access_type
@@ -630,8 +688,27 @@ if exam_access_type == "free":
 else:
     EXAM_TITLE = f"{exam_setup['display_name']} Mock Exam"
 
-all_questions = ensure_exam_generated(exam_access_type, SELECTED_EXAM_NAME, SELECTED_LANGUAGE_CODE, CATEGORY_COUNTS)
+all_questions = ensure_exam_generated(
+    exam_access_type,
+    SELECTED_EXAM_NAME,
+    SELECTED_LANGUAGE_CODE,
+    CATEGORY_COUNTS,
+    QUESTION_COUNT,
+)
 questions = all_questions
+
+question_bank, _bank_meta = fetch_question_bank(SELECTED_EXAM_NAME, SELECTED_LANGUAGE_CODE)
+exam_setup = enrich_setup_from_bank(exam_setup, question_bank, QUESTION_COUNT)
+PASSING_SCORE = exam_setup["passing_score"]
+EXAM_MINUTES = exam_setup["time_limit_minutes"] if exam_access_type == "paid" else 20
+CERTIFICATION = exam_setup["display_name"]
+CATEGORY_COUNTS = exam_setup["category_counts"]
+CATEGORY_WEIGHTS = exam_setup["category_weights"]
+DOMAIN_ROWS = exam_setup["domains"]
+if exam_access_type == "free":
+    EXAM_TITLE = f"{exam_setup['display_name']} Free Preview"
+else:
+    EXAM_TITLE = f"{exam_setup['display_name']} Mock Exam"
 
 
 def get_options(q_index, q):
@@ -736,8 +813,19 @@ st.markdown(
 )
 
 if not st.session_state.started:
+    setup_error = st.session_state.get("exam_setup_error")
+    if setup_error:
+        st.error(setup_error)
+        st.info(
+            "Choose a certification above. Language comes from your Account profile. "
+            "Make sure that certification has questions imported for your preferred language."
+        )
+
     st.header("Exam Instructions")
-    st.success(f"Question bank ready ✅ | {'Premium randomized full mock exam' if has_paid_access else 'Free Preview'} | {len(all_questions)} questions")
+    if all_questions:
+        st.success(f"Question bank ready ✅ | {'Premium randomized full mock exam' if has_paid_access else 'Free Preview'} | {len(all_questions)} questions")
+    else:
+        st.warning("Question bank is not ready yet for this certification and language.")
     st.caption(f"Preferred language: {LANGUAGE_LABEL}")
 
     if user_email:
@@ -747,6 +835,9 @@ if not st.session_state.started:
         else:
             st.info("Free Preview: 10 fixed sample questions, basic score, and full explanations for all 10 sample questions.")
             st.caption("Premium unlocks full 60-question exams, the full question bank, category practice, weak-area practice, visual progress, and readiness scoring.")
+    else:
+        st.warning("Please log in from the Account page before starting an exam.")
+        st.page_link("pages/Account.py", label="Go to Account to sign in", icon="👤")
 
     st.markdown(
         """
@@ -795,7 +886,7 @@ if not st.session_state.started:
 
     col_start, col_regen = st.columns(2)
     with col_start:
-        begin_disabled = (user_email is None)
+        begin_disabled = (user_email is None) or (not all_questions)
         if st.button("Begin Exam", type="primary", disabled=begin_disabled):
             st.session_state.started = True
             st.session_state.start_time = time.time()

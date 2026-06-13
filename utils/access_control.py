@@ -1,29 +1,82 @@
-from pathlib import Path
 import sys
+from pathlib import Path
+
+_file = Path(__file__).resolve()
+_root = _file.parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+import path_setup
+
+path_setup.ensure_project_root(__file__)
+
+import urllib.parse
+
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import create_client
 
 try:
-    from streamlit_cookies_manager import EncryptedCookieManager
+    from streamlit_js_eval import streamlit_js_eval
+
+    HAS_JS_EVAL = True
 except Exception:
-    EncryptedCookieManager = None
+    streamlit_js_eval = None
+    HAS_JS_EVAL = False
+
+# Cookie names written to document.cookie (no extra_streamlit_components).
+FR_COOKIE_USER_EMAIL = "fr_user_email"
+FR_COOKIE_AUTH_USER_ID = "fr_auth_user_id"
+FR_COOKIE_REFRESH_TOKEN = "fr_refresh_token"
+FR_COOKIE_SUBSCRIPTION_STATUS = "fr_subscription_status"
 
 
 def ensure_project_root_on_path():
-    """Keep the project root importable from Streamlit pages."""
-    current = Path(__file__).resolve()
-    project_root = current.parents[1]
-    root = str(project_root)
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    return project_root
+    """Backward-compatible alias used by older imports."""
+    return path_setup.ensure_project_root(__file__)
 
 
 ensure_project_root_on_path()
 
+# --- Access level constants ---
 FREE_STATUS = "free"
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}  # trialing intentionally excluded
+PAID_STATUS = "paid"
+ADMIN_STATUS = "admin"
+EXPIRED_STATUS = "expired"
+TRIAL_STATUS = "trialing"
+
+PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
+EXPIRED_STATUS_VALUES = {"expired", "cancelled", "canceled", "past_due", "inactive", "unpaid"}
+TRIALING_EXCLUDED_BY_DEFAULT = True
+
 ADMIN_SESSION_KEY = "admin_unlocked"
+ACCESS_TOKEN_KEY = "supabase_access_token"
+REFRESH_TOKEN_KEY = "supabase_refresh_token"
+COOKIE_SYNCED_KEY = "_login_cookie_synced"
+BROWSER_COOKIES_CACHE_KEY = "_browser_cookies_cache"
+BROWSER_COOKIES_FETCHED_RUN_KEY = "_browser_cookies_fetched_run"
+BROWSER_RESTORE_KEY = "_browser_login_restore_attempted"
+
+ADMIN_EXAM_NAME = "Salesforce Certified Platform Administrator"
+BA_EXAM_NAME = "Salesforce Certified Business Analyst"
+
+FALLBACK_CERTIFICATIONS = [
+    {
+        "exam_name": ADMIN_EXAM_NAME,
+        "display_name": ADMIN_EXAM_NAME,
+        "passing_score": 65,
+        "time_limit_minutes": 105,
+        "question_count": 60,
+    },
+    {
+        "exam_name": BA_EXAM_NAME,
+        "display_name": BA_EXAM_NAME,
+        "passing_score": 72,
+        "time_limit_minutes": 70,
+        "question_count": 60,
+    },
+]
+
 LAUNCH_PRICE_TEXT = "$29.99 for 3 months"
 REGULAR_PRICE_TEXT = "$49.99 regular price"
 
@@ -35,91 +88,253 @@ def get_secret(name, default=""):
         return default
 
 
-def get_cookie_password():
-    """Stable password used to encrypt the browser remember-me cookie.
-    Add COOKIE_PASSWORD in Streamlit Secrets. If missing, login will still work
-    for the current session, but it will not survive a hard browser refresh.
-    """
-    return get_secret("COOKIE_PASSWORD", "")
+def allow_trial_as_paid() -> bool:
+    """Trialing is not paid unless explicitly enabled in Streamlit secrets."""
+    raw = get_secret("ALLOW_TRIAL_AS_PAID", "false").lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
-def get_cookie_manager():
-    """Return an encrypted cookie manager, or None if not configured.
-
-    This is intentionally optional so the app does not crash if the dependency
-    or COOKIE_PASSWORD is missing. Persistent login simply disables itself.
-    """
-    if EncryptedCookieManager is None:
-        return None
-    password = get_cookie_password()
-    if not password:
-        return None
+def _current_script_run_id():
     try:
-        cookies = EncryptedCookieManager(prefix="forceready_", password=password)
-        if not cookies.ready():
-            st.stop()
-        return cookies
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        if ctx is not None:
+            return str(ctx.script_run_id)
     except Exception:
-        return None
+        pass
+    return None
 
 
-def save_login_cookie(email, auth_user_id=""):
-    cookies = get_cookie_manager()
-    if cookies is None:
-        return False
+def _cookie_js_escape(value: str) -> str:
+    return urllib.parse.quote(str(value or ""), safe="")
+
+
+def _parse_document_cookies(raw: str) -> dict:
+    cookies = {}
+    for part in str(raw or "").split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        cookies[name.strip()] = urllib.parse.unquote(value.strip())
+    return cookies
+
+
+def _map_browser_cookies(parsed: dict) -> dict:
+    return {
+        "user_email": str(parsed.get(FR_COOKIE_USER_EMAIL) or "").strip().lower(),
+        "auth_user_id": str(parsed.get(FR_COOKIE_AUTH_USER_ID) or "").strip(),
+        "supabase_refresh_token": str(parsed.get(FR_COOKIE_REFRESH_TOKEN) or "").strip(),
+        "subscription_status": str(parsed.get(FR_COOKIE_SUBSCRIPTION_STATUS) or "").strip().lower(),
+    }
+
+
+def get_browser_cookies_once():
+    """Read browser cookies once per Streamlit script run (never calls CookieManager.get_all)."""
+    st.session_state.pop("_browser_cookie_manager", None)
+
+    run_id = _current_script_run_id() or "default"
+    if (
+        st.session_state.get(BROWSER_COOKIES_FETCHED_RUN_KEY) == run_id
+        and BROWSER_COOKIES_CACHE_KEY in st.session_state
+    ):
+        return st.session_state[BROWSER_COOKIES_CACHE_KEY]
+
+    cookies = {}
+    if HAS_JS_EVAL:
+        try:
+            raw = streamlit_js_eval(
+                js_expressions="document.cookie",
+                key="forceready_read_cookies_v1",
+                want_output=True,
+                do_restore=False,
+            )
+            if raw:
+                cookies = _map_browser_cookies(_parse_document_cookies(raw))
+        except Exception:
+            cookies = {}
+
+    st.session_state[BROWSER_COOKIES_CACHE_KEY] = cookies
+    st.session_state[BROWSER_COOKIES_FETCHED_RUN_KEY] = run_id
+    return cookies
+
+
+def save_browser_login_session(
+    email: str,
+    auth_user_id: str = "",
+    refresh_token: str = "",
+    subscription_status: str = "",
+):
+    """Persist login in browser cookies (survives page refresh)."""
     email = str(email or "").strip().lower()
     if not email:
         return False
-    cookies["user_email"] = email
-    cookies["auth_user_id"] = str(auth_user_id or "")
-    cookies.save()
+
+    max_age = 30 * 24 * 60 * 60
+    html = f"""
+    <script>
+    (function() {{
+        const opts = "path=/; max-age={max_age}; SameSite=Lax";
+        document.cookie = "{FR_COOKIE_USER_EMAIL}={_cookie_js_escape(email)}; " + opts;
+        document.cookie = "{FR_COOKIE_AUTH_USER_ID}={_cookie_js_escape(auth_user_id)}; " + opts;
+        document.cookie = "{FR_COOKIE_REFRESH_TOKEN}={_cookie_js_escape(refresh_token)}; " + opts;
+        document.cookie = "{FR_COOKIE_SUBSCRIPTION_STATUS}={_cookie_js_escape(subscription_status)}; " + opts;
+    }})();
+    </script>
+    """
+    write_counter = int(st.session_state.get("_cookie_write_counter", 0)) + 1
+    st.session_state["_cookie_write_counter"] = write_counter
+    components.html(html, height=0, key=f"forceready_cookie_write_{write_counter}")
+
+    mapped = {
+        "user_email": email,
+        "auth_user_id": str(auth_user_id or ""),
+        "supabase_refresh_token": str(refresh_token or ""),
+        "subscription_status": str(subscription_status or FREE_STATUS).strip().lower(),
+    }
+    st.session_state[COOKIE_SYNCED_KEY] = True
+    st.session_state[BROWSER_COOKIES_CACHE_KEY] = mapped
     return True
 
 
-def clear_login_cookie():
-    cookies = get_cookie_manager()
-    if cookies is None:
+def clear_browser_login_session():
+    html = f"""
+    <script>
+    (function() {{
+        const names = [
+            "{FR_COOKIE_USER_EMAIL}",
+            "{FR_COOKIE_AUTH_USER_ID}",
+            "{FR_COOKIE_REFRESH_TOKEN}",
+            "{FR_COOKIE_SUBSCRIPTION_STATUS}",
+        ];
+        names.forEach((name) => {{
+            document.cookie = name + "=; path=/; max-age=0; SameSite=Lax";
+        }});
+    }})();
+    </script>
+    """
+    clear_counter = int(st.session_state.get("_cookie_clear_counter", 0)) + 1
+    st.session_state["_cookie_clear_counter"] = clear_counter
+    components.html(html, height=0, key=f"forceready_cookie_clear_{clear_counter}")
+    st.session_state.pop(BROWSER_COOKIES_CACHE_KEY, None)
+    st.session_state.pop(BROWSER_COOKIES_FETCHED_RUN_KEY, None)
+
+
+def try_restore_login_from_browser(cookies=None) -> bool:
+    """Restore login from browser cookies after refresh."""
+    if st.session_state.get("user_email") or st.session_state.get("account_email"):
         return False
-    for key in ["user_email", "auth_user_id"]:
+
+    if cookies is None:
+        cookies = get_browser_cookies_once()
+
+    email = str(cookies.get("user_email") or "").strip().lower()
+    if not email or "@" not in email:
+        return False
+
+    auth_user_id = str(cookies.get("auth_user_id") or "").strip()
+    refresh_token = str(cookies.get("supabase_refresh_token") or "").strip()
+    saved_status = str(cookies.get("subscription_status") or "").strip().lower()
+
+    _apply_restored_login(email, auth_user_id, refresh_token)
+    if saved_status:
+        st.session_state["subscription_status"] = saved_status
+    return True
+
+
+def save_auth_session(access_token: str = "", refresh_token: str = ""):
+    """Persist Supabase Auth tokens in session_state for RLS-aware requests."""
+    if access_token:
+        st.session_state[ACCESS_TOKEN_KEY] = str(access_token)
+    if refresh_token:
+        st.session_state[REFRESH_TOKEN_KEY] = str(refresh_token)
+
+
+def clear_auth_session():
+    for key in [ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY]:
+        st.session_state.pop(key, None)
+
+
+def _restore_auth_from_refresh_token(refresh_token: str) -> bool:
+    if not refresh_token:
+        return False
+    try:
+        client = _create_anon_supabase_client()
+        response = client.auth.refresh_session(refresh_token)
+        session = getattr(response, "session", None)
+        if session is None and isinstance(response, dict):
+            session = response.get("session")
+        if not session:
+            return False
+        access_token = getattr(session, "access_token", None) or (session.get("access_token") if isinstance(session, dict) else None)
+        new_refresh = getattr(session, "refresh_token", None) or (session.get("refresh_token") if isinstance(session, dict) else None)
+        if access_token and new_refresh:
+            save_auth_session(access_token, new_refresh)
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _create_anon_supabase_client():
+    url = get_secret("SUPABASE_URL")
+    key = get_secret("SUPABASE_ANON_KEY")
+    if not url or not key:
+        st.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY in Streamlit secrets.")
+        st.stop()
+    return create_client(url, key)
+
+
+def _create_admin_supabase_client():
+    url = get_secret("SUPABASE_URL")
+    key = get_secret("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
+        st.stop()
+    return create_client(url, key)
+
+
+@st.cache_resource(show_spinner=False)
+def get_supabase_public_client():
+    """Anonymous client for public metadata reads (certifications, languages)."""
+    return _create_anon_supabase_client()
+
+
+def get_supabase_auth_client():
+    """Fresh anon Supabase client used only for auth actions like login/signup.
+
+    Do not cache this client.
+    """
+    supabase_url = st.secrets.get("SUPABASE_URL")
+    supabase_anon_key = st.secrets.get("SUPABASE_ANON_KEY")
+
+    if not supabase_url or not supabase_anon_key:
+        raise RuntimeError("Missing SUPABASE_URL or SUPABASE_ANON_KEY in Streamlit secrets.")
+
+    return create_client(supabase_url, supabase_anon_key)
+
+
+def get_supabase_client():
+    """RLS-aware user client. Uses anon key + stored Supabase Auth session when available.
+
+    Do not cache: Streamlit cache_resource is shared across browser sessions.
+    """
+    client = _create_anon_supabase_client()
+    access = st.session_state.get(ACCESS_TOKEN_KEY)
+    refresh = st.session_state.get(REFRESH_TOKEN_KEY)
+    if access and refresh:
         try:
-            del cookies[key]
+            client.auth.set_session(access, refresh)
         except Exception:
             pass
-    cookies.save()
-    return True
+    return client
 
 
-def load_login_cookie():
-    cookies = get_cookie_manager()
-    if cookies is None:
-        return None, None
-    try:
-        email = str(cookies.get("user_email", "") or "").strip().lower()
-        auth_user_id = str(cookies.get("auth_user_id", "") or "").strip()
-    except Exception:
-        return None, None
-    if email and "@" in email and "." in email.split("@")[-1]:
-        return email, auth_user_id
-    return None, None
-
-
-def restore_login_from_cookie():
-    """Restore user_email/auth_user_id to session_state after browser refresh."""
-    if st.session_state.get("user_email"):
-        return st.session_state.get("user_email")
-    email, auth_user_id = load_login_cookie()
-    if not email:
-        return None
-    st.session_state["user_email"] = email
-    st.session_state["account_email"] = email
-    st.session_state["auth_user_id"] = auth_user_id or ""
-
-    profile = get_user_profile(email)
-    if profile:
-        st.session_state["full_name"] = profile.get("full_name") or ""
-        st.session_state["preferred_language_code"] = profile.get("preferred_language_code") or "en"
-        st.session_state["subscription_status"] = profile.get("subscription_status") or "free"
-    return email
+@st.cache_resource(show_spinner=False)
+def get_supabase_admin_client():
+    """Privileged client for admin/import operations only. Call require_admin() first."""
+    return _create_admin_supabase_client()
 
 
 def get_admin_password():
@@ -131,14 +346,44 @@ def get_admin_emails():
     return {item.strip().lower() for item in raw.split(",") if item.strip()}
 
 
-@st.cache_resource(show_spinner=False)
-def get_supabase_client():
-    url = get_secret("SUPABASE_URL")
-    key = get_secret("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in Streamlit Secrets.")
-        st.stop()
-    return create_client(url, key)
+def _apply_restored_login(email, auth_user_id, refresh_token):
+    if refresh_token and not st.session_state.get(ACCESS_TOKEN_KEY):
+        if _restore_auth_from_refresh_token(refresh_token):
+            st.session_state.pop(COOKIE_SYNCED_KEY, None)
+
+    st.session_state["user_email"] = email
+    st.session_state["account_email"] = email
+    st.session_state["auth_user_id"] = auth_user_id or ""
+    st.session_state.setdefault(COOKIE_SYNCED_KEY, True)
+
+    profile = get_user_profile(email)
+    if profile:
+        st.session_state["full_name"] = profile.get("full_name") or ""
+        st.session_state["preferred_language_code"] = profile.get("preferred_language_code") or "en"
+        st.session_state["subscription_status"] = profile.get("subscription_status") or FREE_STATUS
+    else:
+        st.session_state.setdefault("full_name", "")
+        st.session_state.setdefault("preferred_language_code", "en")
+        st.session_state.setdefault("subscription_status", FREE_STATUS)
+
+
+def ensure_browser_auth_ready():
+    """Restore login from browser cookies when session_state is empty."""
+    if get_current_user_email():
+        return
+
+    cookies = get_browser_cookies_once()
+    try_restore_login_from_browser(cookies)
+
+
+def try_restore_login_from_cookie() -> bool:
+    """Backward-compatible alias."""
+    return try_restore_login_from_browser(get_browser_cookies_once())
+
+
+def init_persistent_login():
+    """Backward-compatible alias."""
+    try_restore_login_from_browser(get_browser_cookies_once())
 
 
 def get_current_user_email():
@@ -146,57 +391,92 @@ def get_current_user_email():
     email = str(email).strip().lower()
     if email and "@" in email and "." in email.split("@")[-1]:
         return email
-
-    # Browser refresh clears Streamlit session_state. Restore from encrypted cookie
-    # when COOKIE_PASSWORD is configured.
-    restored = restore_login_from_cookie()
-    if restored:
-        return restored
     return None
+
+
+def is_logged_in() -> bool:
+    return get_current_user_email() is not None
+
+
+def restore_login_from_cookie():
+    """Backward-compatible alias."""
+    try_restore_login_from_cookie()
+    return st.session_state.get("user_email")
 
 
 def get_user_profile(email=None):
     email = (email or get_current_user_email() or "").strip().lower()
     if not email:
         return None
-    try:
-        result = (
-            get_supabase_client()
-            .table("app_users")
-            .select("*")
-            .eq("email", email)
-            .limit(1)
-            .execute()
-        )
-        rows = result.data or []
-        return rows[0] if rows else None
-    except Exception:
-        return None
+    for client_factory in (get_supabase_client, get_supabase_admin_client):
+        try:
+            result = (
+                client_factory()
+                .table("app_users")
+                .select("*")
+                .eq("email", email)
+                .limit(1)
+                .execute()
+            )
+            rows = result.data or []
+            if rows:
+                return rows[0]
+        except Exception:
+            continue
+    return None
 
 
 def get_subscription_status(email=None):
+    cached = st.session_state.get("subscription_status")
+    if cached:
+        return str(cached).strip().lower()
     profile = get_user_profile(email=email)
     if not profile:
         return FREE_STATUS
-    return str(profile.get("subscription_status") or FREE_STATUS).strip().lower()
+    status = str(profile.get("subscription_status") or FREE_STATUS).strip().lower()
+    st.session_state["subscription_status"] = status
+    return status
 
 
-def is_paid_user(email=None):
-    return get_subscription_status(email=email) in PAID_STATUS_VALUES
-
-
-def is_admin_email(email=None):
+def is_admin_user(email=None):
     email = (email or get_current_user_email() or "").strip().lower()
     admins = get_admin_emails()
     return bool(email and admins and email in admins)
 
 
+def is_admin_email(email=None):
+    """Backward-compatible alias."""
+    return is_admin_user(email=email)
+
+
 def is_admin_unlocked():
-    return bool(st.session_state.get(ADMIN_SESSION_KEY, False)) and is_admin_email()
+    return bool(st.session_state.get(ADMIN_SESSION_KEY, False)) and is_admin_user()
+
+
+def get_user_access_level(email=None) -> str:
+    email = email or get_current_user_email()
+    if not email:
+        return FREE_STATUS
+    if is_admin_unlocked():
+        return ADMIN_STATUS
+
+    status = get_subscription_status(email)
+    if status in PAID_STATUS_VALUES:
+        return PAID_STATUS
+    if status == TRIAL_STATUS and allow_trial_as_paid():
+        return PAID_STATUS
+    if status in EXPIRED_STATUS_VALUES or status == TRIAL_STATUS:
+        return EXPIRED_STATUS if status in EXPIRED_STATUS_VALUES else FREE_STATUS
+    return FREE_STATUS
+
+
+def is_paid_user(email=None):
+    return get_user_access_level(email) == PAID_STATUS
 
 
 def has_premium_access(email=None):
-    return is_paid_user(email=email) or is_admin_unlocked()
+    level = get_user_access_level(email)
+    return level in {PAID_STATUS, ADMIN_STATUS}
 
 
 def lock_admin():
@@ -207,7 +487,7 @@ def unlock_admin(password):
     email = get_current_user_email()
     if not email:
         return False, "Please log in on the Account page first."
-    if not is_admin_email(email):
+    if not is_admin_user(email):
         return False, "This account is not listed as an admin."
     expected = get_admin_password()
     if not expected:
@@ -219,16 +499,8 @@ def unlock_admin(password):
 
 
 def hide_default_streamlit_pages():
-    st.markdown(
-        """
-        <style>
-        [data-testid="stSidebarNav"] {display: none !important;}
-        section[data-testid="stSidebar"] nav {display: none !important;}
-        div[data-testid="stSidebarNav"] {display: none !important;}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    """No-op: default page nav is disabled via .streamlit/config.toml."""
+    return
 
 
 def safe_page_link(page, label, icon=None):
@@ -238,17 +510,48 @@ def safe_page_link(page, label, icon=None):
         st.sidebar.write(f"{icon or ''} {label}")
 
 
+def render_top_navigation():
+    """Main-area navigation so links stay visible even if the sidebar collapses."""
+    cols = st.columns(7)
+    links = [
+        ("app.py", "Free Preview", "📝"),
+        ("pages/Account.py", "Account", "👤"),
+        ("pages/Support.py", "Support", "💬"),
+        ("pages/Practice_By_Category.py", "Practice", "📚"),
+        ("pages/Weak_Areas_Practice.py", "Weak Areas", "🎯"),
+        ("pages/My_Progress.py", "My Progress", "📈"),
+        ("pages/Admin.py", "Admin", "🔐"),
+    ]
+    for col, (page, label, icon) in zip(cols, links):
+        with col:
+            try:
+                st.page_link(page, label=label, icon=icon)
+            except Exception:
+                st.write(f"{icon or ''} {label}")
+    st.divider()
+
+
+def render_app_chrome(current_page=None):
+    """Sidebar + always-visible top navigation."""
+    ensure_browser_auth_ready()
+    render_sidebar_navigation(current_page=current_page)
+    render_top_navigation()
+
+
 def render_sidebar_navigation(current_page=None):
-    """Custom sidebar. Admin pages show only after Admin is unlocked."""
     hide_default_streamlit_pages()
     st.sidebar.markdown("### Salesforce Prep")
 
     email = get_current_user_email()
     if email:
-        status = get_subscription_status(email)
+        level = get_user_access_level(email)
         st.sidebar.caption(f"Signed in: {email}")
-        if has_premium_access(email):
+        if level == ADMIN_STATUS:
+            st.sidebar.success("Admin access")
+        elif level == PAID_STATUS:
             st.sidebar.success("Premium access")
+        elif level == EXPIRED_STATUS:
+            st.sidebar.warning("Subscription expired")
         else:
             st.sidebar.info("Free Preview")
     else:
@@ -281,15 +584,16 @@ def render_sidebar_navigation(current_page=None):
 
 
 def require_login():
+    ensure_browser_auth_ready()
     email = get_current_user_email()
     if not email:
-        render_sidebar_navigation()
+        render_app_chrome()
         st.warning("Please log in from the Account page first.")
         st.stop()
     return email
 
 
-def render_upgrade_card(feature_name="this premium feature"):
+def show_locked_premium_message(feature_name="this premium feature"):
     st.warning(f"{feature_name} is available with Premium Access.")
     st.markdown(
         f"""
@@ -310,6 +614,11 @@ def render_upgrade_card(feature_name="this premium feature"):
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_upgrade_card(feature_name="this premium feature"):
+    """Backward-compatible alias."""
+    show_locked_premium_message(feature_name)
 
 
 def render_locked_premium_previews():
@@ -335,19 +644,25 @@ def render_locked_premium_previews():
 def require_premium_access(feature_name="This feature"):
     email = require_login()
     if not has_premium_access(email):
-        render_upgrade_card(feature_name)
+        render_app_chrome()
+        show_locked_premium_message(feature_name)
         st.stop()
-    return True
+    return email
 
 
 def require_admin():
-    if is_admin_unlocked():
-        render_sidebar_navigation()
-        return True
-    render_sidebar_navigation()
-    st.error("Admin access required.")
-    st.info("Click Admin in the sidebar and unlock admin mode with the admin password.")
-    st.stop()
+    require_login()
+    if not is_admin_user():
+        render_app_chrome()
+        st.error("This account is not authorized as an admin.")
+        st.stop()
+    if not is_admin_unlocked():
+        render_app_chrome()
+        st.error("Admin access required.")
+        st.info("Click Admin in the sidebar and unlock admin mode with the admin password.")
+        st.stop()
+    render_app_chrome()
+    return True
 
 
 def require_admin_access():
@@ -358,10 +673,20 @@ def require_admin_access():
 def fetch_active_certifications():
     try:
         result = (
-            get_supabase_client()
+            get_supabase_public_client()
             .table("certifications")
             .select("exam_name, display_name, certification_code, passing_score, time_limit_minutes, question_count, is_active")
             .eq("is_active", True)
+            .order("display_name")
+            .execute()
+        )
+        rows = result.data or []
+        if rows:
+            return rows
+        result = (
+            get_supabase_public_client()
+            .table("certifications")
+            .select("exam_name, display_name, certification_code, passing_score, time_limit_minutes, question_count, is_active")
             .order("display_name")
             .execute()
         )
@@ -370,8 +695,16 @@ def fetch_active_certifications():
         return []
 
 
+def get_available_certifications():
+    """Active certifications from Supabase, or Admin + Business Analyst defaults."""
+    rows = fetch_active_certifications()
+    if rows:
+        return rows
+    return [dict(cert) for cert in FALLBACK_CERTIFICATIONS]
+
+
 def render_admin_login_page():
-    render_sidebar_navigation("Admin")
+    render_app_chrome("Admin")
     st.title("Admin")
     st.caption("Unlock admin pages for this browser session.")
 
@@ -381,7 +714,7 @@ def render_admin_login_page():
         safe_page_link("pages/Account.py", "Go to Account", "👤")
         st.stop()
 
-    if not is_admin_email(email):
+    if not is_admin_user(email):
         st.error("This account is not authorized as an admin.")
         st.info("Add this email to ADMIN_EMAILS in Streamlit Secrets if it should be an admin.")
         st.stop()
@@ -402,3 +735,88 @@ def render_admin_login_page():
             st.rerun()
         else:
             st.error(error)
+
+
+def extract_auth_session(response):
+    """Return the Supabase session object from an auth response when present."""
+    if response is None:
+        return None
+    session = getattr(response, "session", None)
+    if session is not None:
+        return session
+    if isinstance(response, dict):
+        return response.get("session")
+    return None
+
+
+def default_free_profile(email: str) -> dict:
+    return {
+        "email": str(email).strip().lower(),
+        "full_name": "",
+        "preferred_language_code": "en",
+        "subscription_status": FREE_STATUS,
+    }
+
+
+def save_logged_in_user(
+    email: str,
+    auth_user_id: str | None = None,
+    profile: dict | None = None,
+    session=None,
+    write_browser_cookies: bool | None = None,
+):
+    """Centralized post-login session persistence."""
+    email = str(email).strip().lower()
+    st.session_state["user_email"] = email
+    st.session_state["account_email"] = email
+    st.session_state["auth_user_id"] = auth_user_id or ""
+
+    refresh_token = st.session_state.get(REFRESH_TOKEN_KEY, "")
+    if session is not None:
+        access_token = getattr(session, "access_token", None)
+        refresh_token = getattr(session, "refresh_token", None)
+        if isinstance(session, dict):
+            access_token = access_token or session.get("access_token")
+            refresh_token = refresh_token or session.get("refresh_token")
+        save_auth_session(access_token or "", refresh_token or "")
+
+    subscription_status = FREE_STATUS
+    if profile:
+        subscription_status = str(profile.get("subscription_status") or FREE_STATUS).strip().lower()
+
+    should_write_cookies = write_browser_cookies if write_browser_cookies is not None else session is not None
+    if should_write_cookies:
+        save_browser_login_session(
+            email,
+            auth_user_id or "",
+            refresh_token,
+            subscription_status,
+        )
+
+    if profile:
+        st.session_state["full_name"] = profile.get("full_name") or ""
+        st.session_state["preferred_language_code"] = profile.get("preferred_language_code") or "en"
+        st.session_state["subscription_status"] = profile.get("subscription_status") or FREE_STATUS
+    else:
+        st.session_state.setdefault("full_name", "")
+        st.session_state.setdefault("preferred_language_code", "en")
+        st.session_state.setdefault("subscription_status", FREE_STATUS)
+
+
+def clear_logged_in_user():
+    clear_auth_session()
+    clear_browser_login_session()
+    for key in [
+        "user_email",
+        "account_email",
+        "auth_user_id",
+        "full_name",
+        "preferred_language_code",
+        "subscription_status",
+        COOKIE_SYNCED_KEY,
+        BROWSER_COOKIES_CACHE_KEY,
+        BROWSER_COOKIES_FETCHED_RUN_KEY,
+        "_browser_cookie_manager",
+    ]:
+        st.session_state.pop(key, None)
+    lock_admin()

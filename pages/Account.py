@@ -1,53 +1,68 @@
 import streamlit as st
-from supabase import create_client
 
-# Ensure Streamlit Cloud can import project-level utilities from pages/.
 import sys
 from pathlib import Path
-ROOT_DIR = Path(__file__).resolve().parent
-if ROOT_DIR.name == "pages":
-    ROOT_DIR = ROOT_DIR.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
-from utils.access_control import render_sidebar_navigation, has_premium_access, render_locked_premium_previews, render_upgrade_card, get_subscription_status, fetch_active_certifications
+_file = Path(__file__).resolve()
+_root = _file.parent.parent if _file.parent.name == "pages" else _file.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
+import path_setup
+
+path_setup.ensure_project_root(__file__)
+
+from utils.access_control import (
+    render_app_chrome,
+    has_premium_access,
+    render_locked_premium_previews,
+    render_upgrade_card,
+    get_subscription_status,
+    get_available_certifications,
+    get_supabase_client,
+    get_supabase_public_client,
+    get_supabase_auth_client,
+    save_logged_in_user,
+    clear_logged_in_user,
+    get_current_user_email,
+    extract_auth_session,
+    default_free_profile,
+    FREE_STATUS,
+    ADMIN_EXAM_NAME,
+    BA_EXAM_NAME,
+)
 from utils.readiness import calculate_readiness, readiness_methodology_text
-APP_VERSION = "ACCOUNT_V6_PREMIUM_PREVIEW_READINESS"
+APP_VERSION = "ACCOUNT_V7_BOTH_CERT_READINESS"
 
 st.set_page_config(page_title="Account", layout="wide")
-render_sidebar_navigation()
-
-
-def get_secret(name: str, default: str = "") -> str:
-    try:
-        return str(st.secrets.get(name, default)).strip()
-    except Exception:
-        return default
+render_app_chrome()
 
 
 def get_auth_client():
-    url = get_secret("SUPABASE_URL")
-    anon_key = get_secret("SUPABASE_ANON_KEY")
-    if not url or not anon_key:
-        st.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY in Streamlit secrets.")
-        st.stop()
-    return create_client(url, anon_key)
+    return get_supabase_auth_client()
 
 
-def get_admin_client():
-    url = get_secret("SUPABASE_URL")
-    service_key = get_secret("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not service_key:
-        st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
-        st.stop()
-    return create_client(url, service_key)
+def get_existing_profile(email: str):
+    try:
+        result = (
+            get_supabase_client()
+            .table("app_users")
+            .select("*")
+            .eq("email", email)
+            .limit(1)
+            .execute()
+        )
+        data = result.data or []
+        return data[0] if data else None
+    except Exception:
+        return None
 
 
 @st.cache_data(ttl=300)
 def load_languages():
-    admin = get_admin_client()
     result = (
-        admin.table("languages")
+        get_supabase_public_client()
+        .table("languages")
         .select("language_code, language_name, native_name, is_active, display_order")
         .eq("is_active", True)
         .order("display_order")
@@ -68,19 +83,6 @@ def language_label(row: dict) -> str:
     if native == name:
         return f"{name} ({code})"
     return f"{name} / {native} ({code})"
-
-
-def get_existing_profile(email: str):
-    admin = get_admin_client()
-    result = (
-        admin.table("app_users")
-        .select("*")
-        .eq("email", email)
-        .limit(1)
-        .execute()
-    )
-    data = result.data or []
-    return data[0] if data else None
 
 
 def upsert_profile(email: str, full_name: str, language_code: str, auth_user_id: str | None = None):
@@ -112,55 +114,118 @@ def upsert_profile(email: str, full_name: str, language_code: str, auth_user_id:
     if stripe_customer_id:
         payload["stripe_customer_id"] = stripe_customer_id
 
-    admin = get_admin_client()
-    result = admin.table("app_users").upsert(payload, on_conflict="email").execute()
+    result = get_supabase_client().table("app_users").upsert(payload, on_conflict="email").execute()
     return (result.data or [payload])[0]
 
 
-def save_logged_in_user_to_session(email: str, auth_user_id: str | None, profile: dict | None = None):
-    email = str(email).strip().lower()
-    st.session_state["user_email"] = email
-    st.session_state["auth_user_id"] = auth_user_id or ""
-
-    if profile:
-        st.session_state["full_name"] = profile.get("full_name") or ""
-        st.session_state["preferred_language_code"] = profile.get("preferred_language_code") or "en"
-        st.session_state["subscription_status"] = profile.get("subscription_status") or "free"
+def try_upsert_profile(email: str, full_name: str, language_code: str, auth_user_id: str | None = None):
+    try:
+        return upsert_profile(email, full_name, language_code, auth_user_id)
+    except Exception:
+        return default_free_profile(email)
 
 
-def clear_login_session():
-    for key in [
-        "user_email",
-        "auth_user_id",
-        "full_name",
-        "preferred_language_code",
-        "subscription_status",
-    ]:
-        st.session_state.pop(key, None)
+def complete_login(
+    email: str,
+    auth_user_id: str | None,
+    auth_session=None,
+    full_name: str = "",
+    language_code: str = "en",
+):
+    """Save auth session first, then best-effort profile sync without blocking login."""
+    save_logged_in_user(email, auth_user_id, profile=None, session=auth_session)
+
+    profile = get_existing_profile(email)
+    if not profile:
+        profile = try_upsert_profile(email, full_name, language_code, auth_user_id)
+    elif auth_user_id and not profile.get("auth_user_id"):
+        updated = try_upsert_profile(
+            email,
+            profile.get("full_name") or full_name,
+            profile.get("preferred_language_code") or language_code,
+            auth_user_id,
+        )
+        profile = updated or profile
+
+    save_logged_in_user(email, auth_user_id, profile=profile or default_free_profile(email))
+    return profile or default_free_profile(email)
 
 
+def normalize_email(email: str) -> str:
+    return str(email or "").strip().lower()
 
 
 @st.cache_data(ttl=60)
-def load_attempts_for_readiness(email, exam_name, language_code):
-    if not email or not exam_name:
+def load_all_attempts_for_readiness(email):
+    normalized_email = normalize_email(email)
+    if not normalized_email:
         return []
     result = (
-        get_admin_client().table("exam_attempts")
-        .select("id,user_email,mode,category,score,correct_answers,total_questions,domain_breakdown,completed_at,exam_name,language_code")
-        .eq("user_email", email)
-        .eq("exam_name", exam_name)
-        .eq("language_code", language_code)
+        get_supabase_client()
+        .table("exam_attempts")
+        .select(
+            "id,user_email,mode,category,score,correct_answers,total_questions,"
+            "domain_breakdown,completed_at,exam_name,language_code"
+        )
+        .ilike("user_email", normalized_email)
         .order("id", desc=True)
         .execute()
     )
-    return result.data or []
+    rows = result.data or []
+    return [
+        row
+        for row in rows
+        if normalize_email(row.get("user_email")) == normalized_email
+    ]
+
+
+def attempts_for_cert(all_attempts: list, exam_name: str) -> list:
+    matched = [row for row in all_attempts if row.get("exam_name") == exam_name]
+    if exam_name == ADMIN_EXAM_NAME:
+        legacy = [row for row in all_attempts if not row.get("exam_name")]
+        matched = matched + legacy
+    return matched
+
+
+def passing_score_for_cert(cert: dict) -> float:
+    exam_name = cert.get("exam_name")
+    if cert.get("passing_score") is not None:
+        return float(cert["passing_score"])
+    if exam_name == BA_EXAM_NAME:
+        return 72.0
+    if exam_name == ADMIN_EXAM_NAME:
+        return 65.0
+    return 65.0
+
+
+def render_cert_readiness_snapshot(cert: dict, attempts: list):
+    display_name = cert.get("display_name") or cert.get("exam_name") or "Certification"
+    exam_name = cert.get("exam_name")
+    st.markdown(f"**{display_name}**")
+
+    if not attempts:
+        st.caption("No mock exams or practice attempts saved yet for this certification.")
+        return
+
+    readiness = calculate_readiness(
+        attempts=attempts,
+        passing_score=passing_score_for_cert(cert),
+        domain_weights=fetch_domain_weights(exam_name),
+        expected_question_count=int(cert.get("question_count") or 60),
+        question_bank_total=None,
+    )
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Readiness", f"{readiness['score']}%")
+    c2.metric("Status", readiness["label"])
+    c3.metric("Attempts", len(attempts))
+    st.progress(max(0, min(float(readiness["score"]) / 100, 1)))
+    st.caption(readiness["recommendation"])
 
 
 @st.cache_data(ttl=60)
 def fetch_domain_weights(exam_name):
     result = (
-        get_admin_client().table("certification_domains")
+        get_supabase_public_client().table("certification_domains")
         .select("domain_name, weight")
         .eq("exam_name", exam_name)
         .eq("is_active", True)
@@ -197,17 +262,21 @@ languages = load_languages()
 language_codes = [row["language_code"] for row in languages]
 label_by_code = {row["language_code"]: language_label(row) for row in languages}
 
-current_email = str(st.session_state.get("user_email", "")).strip().lower()
+current_email = get_current_user_email() or ""
 current_auth_user_id = str(st.session_state.get("auth_user_id", "")).strip()
 
 if current_email:
-    profile = get_existing_profile(current_email)
-    if profile:
-        save_logged_in_user_to_session(current_email, profile.get("auth_user_id") or current_auth_user_id, profile)
+    profile = get_existing_profile(current_email) or default_free_profile(current_email)
+    save_logged_in_user(
+        current_email,
+        current_auth_user_id or profile.get("auth_user_id"),
+        profile,
+        write_browser_cookies=False,
+    )
 
     st.success(f"Signed in as {current_email}")
 
-    profile = get_existing_profile(current_email) or {}
+    profile = get_existing_profile(current_email) or default_free_profile(current_email)
     saved_language = profile.get("preferred_language_code") or st.session_state.get("preferred_language_code", "en")
     if saved_language not in language_codes:
         saved_language = "en" if "en" in language_codes else language_codes[0]
@@ -230,7 +299,12 @@ if current_email:
                 language_code=selected_language,
                 auth_user_id=current_auth_user_id or profile.get("auth_user_id"),
             )
-            save_logged_in_user_to_session(current_email, updated.get("auth_user_id"), updated)
+            save_logged_in_user(
+                current_email,
+                updated.get("auth_user_id"),
+                updated,
+                write_browser_cookies=False,
+            )
             st.success("Profile saved ✅")
             st.rerun()
 
@@ -240,7 +314,7 @@ if current_email:
                 get_auth_client().auth.sign_out()
             except Exception:
                 pass
-            clear_login_session()
+            clear_logged_in_user()
             st.success("Logged out.")
             st.rerun()
 
@@ -254,33 +328,21 @@ if current_email:
     if has_premium_access(current_email):
         st.subheader("Overall Readiness Snapshot")
         st.caption("Readiness is an estimate based on saved mock exam history. It is not a guarantee of passing.")
-        certs = fetch_active_certifications()
+        certs = get_available_certifications()
         if certs:
-            cert_names = [c.get("exam_name") for c in certs if c.get("exam_name")]
-            display_by_exam = {c.get("exam_name"): c.get("display_name") or c.get("exam_name") for c in certs}
-            selected_readiness_exam = st.selectbox(
-                "Readiness certification",
-                cert_names,
-                format_func=lambda x: display_by_exam.get(x, x),
-                key="account_readiness_exam",
-            )
-            attempts = load_attempts_for_readiness(current_email, selected_readiness_exam, st.session_state.get('preferred_language_code', 'en'))
-            cert = next((c for c in certs if c.get("exam_name") == selected_readiness_exam), {})
-            readiness = calculate_readiness(
-                attempts=attempts,
-                passing_score=float(cert.get("passing_score") or 65),
-                domain_weights=fetch_domain_weights(selected_readiness_exam),
-                expected_question_count=int(cert.get("question_count") or 60),
-                question_bank_total=None,
-            )
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Readiness", f"{readiness['score']}%")
-            c2.metric("Status", readiness["label"])
-            c3.metric("Confidence", readiness["confidence"])
-            st.progress(max(0, min(float(readiness['score']) / 100, 1)))
-            st.info(readiness["recommendation"])
+            all_attempts = load_all_attempts_for_readiness(current_email)
+            cert_cols = st.columns(len(certs))
+            for col, cert in zip(cert_cols, certs):
+                exam_name = cert.get("exam_name")
+                if not exam_name:
+                    continue
+                cert_attempts = attempts_for_cert(all_attempts, exam_name)
+                with col:
+                    render_cert_readiness_snapshot(cert, cert_attempts)
+            st.caption("Open My Progress for full charts, domain breakdown, and attempt history.")
+            st.page_link("pages/My_Progress.py", label="View full progress", icon="📈")
         else:
-            st.info("No active certifications found yet.")
+            st.info("No certifications are configured yet.")
     else:
         render_premium_offer_box()
         render_locked_premium_previews()
@@ -309,17 +371,7 @@ else:
                     if not user:
                         st.error("Login failed. Please check your email and password.")
                     else:
-                        profile = get_existing_profile(login_email)
-                        if not profile:
-                            profile = upsert_profile(login_email, "", "en", user.id)
-                        elif not profile.get("auth_user_id"):
-                            profile = upsert_profile(
-                                login_email,
-                                profile.get("full_name") or "",
-                                profile.get("preferred_language_code") or "en",
-                                user.id,
-                            )
-                        save_logged_in_user_to_session(login_email, user.id, profile)
+                        complete_login(login_email, user.id, extract_auth_session(response))
                         st.success("Logged in ✅")
                         st.rerun()
                 except Exception as exc:
@@ -359,8 +411,13 @@ else:
                     })
                     user = response.user
                     auth_user_id = user.id if user else None
-                    profile = upsert_profile(signup_email, full_name, selected_language, auth_user_id)
-                    save_logged_in_user_to_session(signup_email, auth_user_id, profile)
+                    complete_login(
+                        signup_email,
+                        auth_user_id,
+                        extract_auth_session(response),
+                        full_name=full_name.strip(),
+                        language_code=selected_language,
+                    )
                     st.success("Account created ✅")
                     st.info("If email confirmation is enabled in Supabase, check your inbox to confirm your account.")
                     st.rerun()
