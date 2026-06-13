@@ -230,6 +230,36 @@ def fetch_user_certifications(user_email):
     return cert_result.data or []
 
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_active_certifications():
+    """Return all active certifications.
+
+    Free Preview should not require user_certification_access enrollment.
+    Premium launch access currently includes all active certifications.
+    """
+    supabase = get_supabase_client()
+    try:
+        result = (
+            supabase.table("certifications")
+            .select("exam_name, display_name, certification_code, is_active")
+            .eq("is_active", True)
+            .order("display_name")
+            .execute()
+        )
+        rows = result.data or []
+        if rows:
+            return rows
+    except Exception:
+        pass
+    return [{
+        "exam_name": DEFAULT_EXAM_NAME,
+        "display_name": DEFAULT_EXAM_NAME,
+        "certification_code": None,
+        "is_active": True,
+    }]
+
+
 def get_user_preferred_language_code(email):
     """Use the user profile language everywhere. Do not let exam pages override it."""
     session_lang = str(st.session_state.get("preferred_language_code", "") or "").strip().lower()
@@ -268,7 +298,7 @@ def fetch_question_bank(exam_name, language_code):
 
     questions_query = (
         supabase.table("questions")
-        .select("id, exam_name, language_code, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status, free_mock_exam")
+        .select("id, exam_name, language_code, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status, free_mock_exam, free_sample_order")
         .eq("exam_name", exam_name)
         .eq("language_code", language_code)
         .eq("is_active", True)
@@ -340,6 +370,7 @@ def fetch_question_bank(exam_name, language_code):
             "answers": answers,
             "explanation": q.get("explanation") or "",
             "free_mock_exam": bool(q.get("free_mock_exam")),
+            "free_sample_order": q.get("free_sample_order"),
         })
 
     meta = {
@@ -451,17 +482,31 @@ def generate_paid_exam_questions(bank, category_counts):
     return selected
 
 
-def generate_free_mock_questions(bank, category_counts):
-    selected = [q for q in bank if q.get("free_mock_exam") is True]
-    required_total = sum(category_counts.values())
+def generate_free_mock_questions(bank, category_counts=None):
+    """Generate the logged-in Free Preview.
 
-    if len(selected) != required_total:
-        st.error(f"Free mock exam setup error: expected {required_total} free questions, found {len(selected)}.")
-        st.info("In Supabase, verify questions.free_mock_exam = true for the selected certification/language.")
+    Free Preview is intentionally NOT tied to paid enrollment and NOT tied to
+    the 60-question paid exam distribution. It must use exactly 10 fixed
+    approved sample questions flagged in the database.
+    """
+    selected = [q for q in bank if q.get("free_mock_exam") is True]
+
+    if len(selected) != 10:
+        st.error("Free Preview setup error: expected exactly 10 approved sample questions for this certification/language.")
+        st.info("In Supabase, verify exactly 10 rows have free_mock_exam = true for the selected certification/language. Use free_sample_order = 1 through 10 to control display order.")
+        with st.expander("Setup details"):
+            st.write(f"Found {len(selected)} free sample questions for this certification/language.")
         st.stop()
 
-    category_order = list(category_counts.keys())
-    selected.sort(key=lambda q: (category_order.index(q["category"]) if q["category"] in category_order else 999, q["id"]))
+    def sample_sort_key(q):
+        order = q.get("free_sample_order")
+        try:
+            order = int(order) if order is not None else 9999
+        except Exception:
+            order = 9999
+        return (order, int(q.get("id") or 0))
+
+    selected.sort(key=sample_sort_key)
     return selected
 
 
@@ -533,10 +578,22 @@ if not user_email_for_language:
 SELECTED_LANGUAGE_CODE = get_user_preferred_language_code(user_email_for_language)
 LANGUAGE_LABEL = fetch_language_label(SELECTED_LANGUAGE_CODE)
 
-AVAILABLE_CERTIFICATIONS = fetch_user_certifications(user_email_for_language)
+# Free Preview must not require an active certification enrollment.
+# Paid/admin users also get all active certifications for the launch bundle unless
+# explicit enrollment rows exist and you later choose to enforce per-cert access.
+subscription_status_for_cert_picker = get_user_subscription_status(user_email_for_language)
+has_paid_access_for_cert_picker = is_paid_subscription(subscription_status_for_cert_picker)
+user_enrolled_certs = fetch_user_certifications(user_email_for_language)
+all_active_certs = fetch_active_certifications()
+
+if has_paid_access_for_cert_picker and user_enrolled_certs:
+    AVAILABLE_CERTIFICATIONS = user_enrolled_certs
+else:
+    AVAILABLE_CERTIFICATIONS = all_active_certs
+
 if not AVAILABLE_CERTIFICATIONS:
-    st.error("No active certification enrollment found for this account.")
-    st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
+    st.error("No active certifications are configured.")
+    st.info("Admin setup required: add active rows in the certifications table.")
     st.stop()
 
 CERT_DISPLAY_BY_NAME = {
