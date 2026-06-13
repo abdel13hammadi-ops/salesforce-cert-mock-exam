@@ -29,7 +29,6 @@ except Exception:
 FR_COOKIE_USER_EMAIL = "fr_user_email"
 FR_COOKIE_AUTH_USER_ID = "fr_auth_user_id"
 FR_COOKIE_REFRESH_TOKEN = "fr_refresh_token"
-FR_COOKIE_ACCESS_TOKEN = "fr_access_token"
 FR_COOKIE_SUBSCRIPTION_STATUS = "fr_subscription_status"
 FR_LOCAL_STORAGE_KEY = "fr_auth_session_v1"
 
@@ -67,7 +66,7 @@ FALLBACK_CERTIFICATIONS = [
     {
         "exam_name": ADMIN_EXAM_NAME,
         "display_name": ADMIN_EXAM_NAME,
-        "passing_score": 68,
+        "passing_score": 65,
         "time_limit_minutes": 105,
         "question_count": 60,
     },
@@ -129,7 +128,6 @@ def _map_browser_cookies(parsed: dict) -> dict:
         "user_email": str(parsed.get(FR_COOKIE_USER_EMAIL) or "").strip().lower(),
         "auth_user_id": str(parsed.get(FR_COOKIE_AUTH_USER_ID) or "").strip(),
         "supabase_refresh_token": str(parsed.get(FR_COOKIE_REFRESH_TOKEN) or "").strip(),
-        "supabase_access_token": str(parsed.get(FR_COOKIE_ACCESS_TOKEN) or "").strip(),
         "subscription_status": str(parsed.get(FR_COOKIE_SUBSCRIPTION_STATUS) or "").strip().lower(),
     }
 
@@ -148,7 +146,6 @@ def _map_local_storage_session(raw_payload) -> dict:
         "user_email": str(payload.get("user_email") or "").strip().lower(),
         "auth_user_id": str(payload.get("auth_user_id") or "").strip(),
         "supabase_refresh_token": str(payload.get("supabase_refresh_token") or payload.get("refresh_token") or "").strip(),
-        "supabase_access_token": str(payload.get("supabase_access_token") or payload.get("access_token") or "").strip(),
         "subscription_status": str(payload.get("subscription_status") or FREE_STATUS).strip().lower(),
     }
 
@@ -156,9 +153,11 @@ def _map_local_storage_session(raw_payload) -> dict:
 def get_browser_cookies_once():
     """Read persisted browser login once per Streamlit script run.
 
-    This intentionally does NOT use extra_streamlit_components.CookieManager.get_all(),
-    because that caused StreamlitDuplicateElementKey errors. It prefers localStorage
-    and falls back to document.cookie for older sessions.
+    Primary path: Streamlit request cookies via st.context.cookies.
+    Fallback path: streamlit-js-eval reads localStorage/document.cookie.
+
+    Do not use extra_streamlit_components.CookieManager.get_all(); it caused
+    StreamlitDuplicateElementKey crashes.
     """
     st.session_state.pop("_browser_cookie_manager", None)
 
@@ -172,7 +171,22 @@ def get_browser_cookies_once():
     st.session_state["_browser_restore_attempted"] = True
     restored = {}
 
-    if HAS_JS_EVAL:
+    # Most reliable on deployed Streamlit: cookies that came with the request.
+    try:
+        context_cookies = getattr(getattr(st, "context", None), "cookies", None)
+        if context_cookies:
+            parsed = {
+                FR_COOKIE_USER_EMAIL: context_cookies.get(FR_COOKIE_USER_EMAIL, ""),
+                FR_COOKIE_AUTH_USER_ID: context_cookies.get(FR_COOKIE_AUTH_USER_ID, ""),
+                FR_COOKIE_REFRESH_TOKEN: context_cookies.get(FR_COOKIE_REFRESH_TOKEN, ""),
+                FR_COOKIE_SUBSCRIPTION_STATUS: context_cookies.get(FR_COOKIE_SUBSCRIPTION_STATUS, ""),
+            }
+            restored = _map_browser_cookies(parsed)
+    except Exception:
+        restored = {}
+
+    # Fallback: browser JS. This may need one rerun before value is available.
+    if not restored.get("user_email") and HAS_JS_EVAL:
         try:
             raw = streamlit_js_eval(
                 js_expressions=f"""
@@ -181,9 +195,8 @@ def get_browser_cookies_once():
                     cookies: document.cookie || ''
                 }})
                 """,
-                key="forceready_read_browser_auth_v2",
+                key="forceready_read_browser_auth_v3",
                 want_output=True,
-                do_restore=True,
             )
             if raw:
                 data = json.loads(raw) if isinstance(raw, str) else raw
@@ -199,14 +212,12 @@ def get_browser_cookies_once():
     st.session_state["_browser_restore_success"] = bool((restored or {}).get("user_email"))
     return st.session_state[BROWSER_COOKIES_CACHE_KEY]
 
-
 def save_browser_login_session(
     email: str,
     auth_user_id: str = "",
     refresh_token: str = "",
     subscription_status: str = "",
     auto_reload: bool = False,
-    access_token: str = "",
 ):
     """Persist login in browser localStorage + legacy cookies.
 
@@ -223,41 +234,9 @@ def save_browser_login_session(
         "user_email": email,
         "auth_user_id": str(auth_user_id or ""),
         "supabase_refresh_token": str(refresh_token or ""),
-        "supabase_access_token": str(access_token or ""),
         "subscription_status": str(subscription_status or FREE_STATUS).strip().lower(),
     }
     payload_json = json.dumps(payload).replace("</", "<\\/")
-
-
-    # Primary persistence path for Streamlit Cloud. streamlit-js-eval writes
-    # in the same browser context it later reads from. components.html is kept
-    # below only as a fallback because iframe writes can be unreliable on Cloud.
-    if HAS_JS_EVAL:
-        try:
-            js_payload = json.dumps(payload_json)
-            streamlit_js_eval(
-                js_expressions=f"""
-                (function() {{
-                    const raw = {js_payload};
-                    try {{ window.localStorage.setItem('{FR_LOCAL_STORAGE_KEY}', raw); }} catch(e) {{}}
-                    try {{
-                        const payload = JSON.parse(raw);
-                        const opts = 'path=/; max-age=' + String(30*24*60*60) + '; SameSite=Lax';
-                        document.cookie = '{FR_COOKIE_USER_EMAIL}=' + encodeURIComponent(payload.user_email || '') + '; ' + opts;
-                        document.cookie = '{FR_COOKIE_AUTH_USER_ID}=' + encodeURIComponent(payload.auth_user_id || '') + '; ' + opts;
-                        document.cookie = '{FR_COOKIE_REFRESH_TOKEN}=' + encodeURIComponent(payload.supabase_refresh_token || '') + '; ' + opts;
-                        document.cookie = '{FR_COOKIE_ACCESS_TOKEN}=' + encodeURIComponent(payload.supabase_access_token || '') + '; ' + opts;
-                        document.cookie = '{FR_COOKIE_SUBSCRIPTION_STATUS}=' + encodeURIComponent(payload.subscription_status || '') + '; ' + opts;
-                    }} catch(e2) {{}}
-                    return 'ok';
-                }})()
-                """,
-                key=f"forceready_js_persist_auth_{int(st.session_state.get('_browser_auth_write_counter', 0)) + 1}",
-                want_output=False,
-                do_restore=True,
-            )
-        except Exception:
-            pass
     max_age = 30 * 24 * 60 * 60
     reload_js = "setTimeout(function(){ try { window.parent.location.reload(); } catch(e) { window.location.reload(); } }, 250);" if auto_reload else ""
     html = f"""
@@ -274,7 +253,6 @@ def save_browser_login_session(
             document.cookie = "{FR_COOKIE_USER_EMAIL}={_cookie_js_escape(email)}; " + opts;
             document.cookie = "{FR_COOKIE_AUTH_USER_ID}={_cookie_js_escape(auth_user_id)}; " + opts;
             document.cookie = "{FR_COOKIE_REFRESH_TOKEN}={_cookie_js_escape(refresh_token)}; " + opts;
-            document.cookie = "{FR_COOKIE_ACCESS_TOKEN}={_cookie_js_escape(access_token)}; " + opts;
             document.cookie = "{FR_COOKIE_SUBSCRIPTION_STATUS}={_cookie_js_escape(subscription_status)}; " + opts;
         }} catch(e3) {{}}
         {reload_js}
@@ -291,26 +269,6 @@ def save_browser_login_session(
 
 
 def clear_browser_login_session(auto_reload: bool = False):
-    if HAS_JS_EVAL:
-        try:
-            streamlit_js_eval(
-                js_expressions=f"""
-                (function() {{
-                    try {{ window.localStorage.removeItem('{FR_LOCAL_STORAGE_KEY}'); }} catch(e) {{}}
-                    try {{
-                        ['{FR_COOKIE_USER_EMAIL}','{FR_COOKIE_AUTH_USER_ID}','{FR_COOKIE_REFRESH_TOKEN}','{FR_COOKIE_ACCESS_TOKEN}','{FR_COOKIE_SUBSCRIPTION_STATUS}'].forEach(function(name) {{
-                            document.cookie = name + '=; path=/; max-age=0; SameSite=Lax';
-                        }});
-                    }} catch(e2) {{}}
-                    return 'cleared';
-                }})()
-                """,
-                key=f"forceready_js_clear_auth_{int(st.session_state.get('_browser_auth_clear_counter', 0)) + 1}",
-                want_output=False,
-                do_restore=True,
-            )
-        except Exception:
-            pass
     reload_js = "setTimeout(function(){ try { window.parent.location.reload(); } catch(e) { window.location.reload(); } }, 250);" if auto_reload else ""
     html = f"""
     <script>
@@ -323,7 +281,6 @@ def clear_browser_login_session(auto_reload: bool = False):
                 "{FR_COOKIE_USER_EMAIL}",
                 "{FR_COOKIE_AUTH_USER_ID}",
                 "{FR_COOKIE_REFRESH_TOKEN}",
-                "{FR_COOKIE_ACCESS_TOKEN}",
                 "{FR_COOKIE_SUBSCRIPTION_STATUS}",
             ];
             names.forEach((name) => {{
@@ -355,10 +312,9 @@ def try_restore_login_from_browser(cookies=None) -> bool:
 
     auth_user_id = str(cookies.get("auth_user_id") or "").strip()
     refresh_token = str(cookies.get("supabase_refresh_token") or "").strip()
-    access_token = str(cookies.get("supabase_access_token") or "").strip()
     saved_status = str(cookies.get("subscription_status") or "").strip().lower()
 
-    _apply_restored_login(email, auth_user_id, refresh_token, access_token)
+    _apply_restored_login(email, auth_user_id, refresh_token)
     if saved_status:
         st.session_state["subscription_status"] = saved_status
     return True
@@ -467,10 +423,7 @@ def get_admin_emails():
     return {item.strip().lower() for item in raw.split(",") if item.strip()}
 
 
-def _apply_restored_login(email, auth_user_id, refresh_token, access_token=""):
-    if access_token or refresh_token:
-        save_auth_session(access_token or "", refresh_token or "")
-
+def _apply_restored_login(email, auth_user_id, refresh_token):
     if refresh_token and not st.session_state.get(ACCESS_TOKEN_KEY):
         if _restore_auth_from_refresh_token(refresh_token):
             st.session_state.pop(COOKIE_SYNCED_KEY, None)
@@ -635,17 +588,25 @@ def safe_page_link(page, label, icon=None):
 
 
 def render_top_navigation():
-    """Main-area navigation so links stay visible even if the sidebar collapses."""
-    cols = st.columns(7)
+    """Main-area navigation filtered by current access state."""
+    email = get_current_user_email()
     links = [
         ("app.py", "Free Preview", "📝"),
         ("pages/Account.py", "Account", "👤"),
         ("pages/Support.py", "Support", "💬"),
-        ("pages/Practice_By_Category.py", "Practice", "📚"),
-        ("pages/Weak_Areas_Practice.py", "Weak Areas", "🎯"),
-        ("pages/My_Progress.py", "My Progress", "📈"),
-        ("pages/Admin.py", "Admin", "🔐"),
     ]
+
+    if has_premium_access(email):
+        links.extend([
+            ("pages/Practice_By_Category.py", "Practice", "📚"),
+            ("pages/Weak_Areas_Practice.py", "Weak Areas", "🎯"),
+            ("pages/My_Progress.py", "My Progress", "📈"),
+        ])
+
+    if email and is_admin_user(email):
+        links.append(("pages/Admin.py", "Admin", "🔐"))
+
+    cols = st.columns(max(1, len(links)))
     for col, (page, label, icon) in zip(cols, links):
         with col:
             try:
@@ -653,7 +614,6 @@ def render_top_navigation():
             except Exception:
                 st.write(f"{icon or ''} {label}")
     st.divider()
-
 
 def render_app_chrome(current_page=None):
     """Sidebar + always-visible top navigation."""
@@ -686,26 +646,26 @@ def render_sidebar_navigation(current_page=None):
     safe_page_link("pages/Account.py", "Account", "👤")
     safe_page_link("pages/Support.py", "Support", "💬")
 
-    st.sidebar.markdown("#### Premium")
-    safe_page_link("pages/Practice_By_Category.py", "Practice by Category", "📚")
-    safe_page_link("pages/Weak_Areas_Practice.py", "Weak Areas Practice", "🎯")
-    safe_page_link("pages/My_Progress.py", "My Progress & Readiness", "📈")
+    if has_premium_access(email):
+        st.sidebar.markdown("#### Premium")
+        safe_page_link("pages/Practice_By_Category.py", "Practice by Category", "📚")
+        safe_page_link("pages/Weak_Areas_Practice.py", "Weak Areas Practice", "🎯")
+        safe_page_link("pages/My_Progress.py", "My Progress & Readiness", "📈")
 
-    st.sidebar.divider()
-    st.sidebar.markdown("#### Admin")
-    safe_page_link("pages/Admin.py", "Admin", "🔐")
-
-    if is_admin_unlocked():
-        st.sidebar.success("Admin unlocked")
-        safe_page_link("pages/Admin_Import.py", "Admin Import", "⬆️")
-        safe_page_link("pages/Admin_Question_Review.py", "Admin Question Review", "✅")
-        safe_page_link("pages/Admin_Support_Tickets.py", "Admin Support Tickets", "🎫")
-        if st.sidebar.button("Lock Admin", key="lock_admin_sidebar"):
-            lock_admin()
-            st.rerun()
-    else:
-        st.sidebar.caption("Admin pages are hidden until admin is unlocked.")
-
+    if email and is_admin_user(email):
+        st.sidebar.divider()
+        st.sidebar.markdown("#### Admin")
+        safe_page_link("pages/Admin.py", "Admin", "🔐")
+        if is_admin_unlocked():
+            st.sidebar.success("Admin unlocked")
+            safe_page_link("pages/Admin_Import.py", "Admin Import", "⬆️")
+            safe_page_link("pages/Admin_Question_Review.py", "Admin Question Review", "✅")
+            safe_page_link("pages/Admin_Support_Tickets.py", "Admin Support Tickets", "🎫")
+            if st.sidebar.button("Lock Admin", key="lock_admin_sidebar"):
+                lock_admin()
+                st.rerun()
+        else:
+            st.sidebar.caption("Unlock admin mode from the Admin page.")
 
 def require_login():
     ensure_browser_auth_ready()
@@ -897,7 +857,6 @@ def save_logged_in_user(
     st.session_state["auth_user_id"] = auth_user_id or ""
 
     refresh_token = st.session_state.get(REFRESH_TOKEN_KEY, "")
-    access_token = st.session_state.get(ACCESS_TOKEN_KEY, "")
     if session is not None:
         access_token = getattr(session, "access_token", None)
         refresh_token = getattr(session, "refresh_token", None)
@@ -918,7 +877,6 @@ def save_logged_in_user(
             refresh_token,
             subscription_status,
             auto_reload=auto_reload_browser,
-            access_token=access_token,
         )
 
     if profile:
