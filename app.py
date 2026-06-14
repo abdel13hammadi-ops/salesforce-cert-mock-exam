@@ -10,29 +10,6 @@ from supabase import create_client
 from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code
 import streamlit.components.v1 as components
 
-components.html(
-    """
-    <script>
-    (function () {
-        const hash = window.location.hash || "";
-        const path = window.location.pathname || "";
-
-        const hasRecoveryToken =
-            hash.includes("access_token=") ||
-            hash.includes("refresh_token=") ||
-            hash.includes("type=recovery");
-
-        const alreadyOnResetPage =
-            path.toLowerCase().includes("reset_password");
-
-        if (hasRecoveryToken && !alreadyOnResetPage) {
-            window.location.href = "/Reset_Password" + hash;
-        }
-    })();
-    </script>
-    """,
-    height=0,
-)
 
 APP_VERSION = "SUPABASE_DB_V12_ENROLLED_CERT_ACCESS"
 CONFIG_FILE = "exam_config.json"
@@ -71,6 +48,50 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+def redirect_supabase_recovery_hash_to_reset_page():
+    """
+    Supabase password reset links may land at the root URL with tokens in the
+    browser hash. Streamlit/Python cannot read URL hashes, so this must run in
+    the browser and must read the parent window, not the Streamlit component
+    iframe URL.
+    """
+    components.html(
+        """
+        <script>
+        (function () {
+            function getRealLocation() {
+                try {
+                    if (window.parent && window.parent.location) {
+                        return window.parent.location;
+                    }
+                } catch (e) {}
+                return window.location;
+            }
+
+            const loc = getRealLocation();
+            const hash = loc.hash || "";
+            const path = (loc.pathname || "").toLowerCase();
+
+            const hasRecoveryToken =
+                hash.includes("access_token=") ||
+                hash.includes("refresh_token=") ||
+                hash.includes("type=recovery");
+
+            const alreadyOnResetPage = path.includes("reset_password");
+
+            if (hasRecoveryToken && !alreadyOnResetPage) {
+                loc.href = "/Reset_Password" + hash;
+            }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+redirect_supabase_recovery_hash_to_reset_page()
 
 render_app_chrome()
 

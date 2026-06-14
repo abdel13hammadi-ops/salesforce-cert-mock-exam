@@ -6,11 +6,11 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-from utils.access_control import get_supabase_admin_client, get_supabase_auth_client, require_admin, render_sidebar_navigation
+from utils.access_control import get_supabase_admin_client, get_supabase_auth_client, require_admin, render_app_chrome
 
 
 st.set_page_config(page_title="Admin Users", page_icon="👥", layout="wide")
-render_sidebar_navigation()
+render_app_chrome()
 require_admin()
 
 supabase = get_supabase_admin_client()

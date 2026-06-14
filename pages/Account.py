@@ -16,7 +16,7 @@ from utils.access_control import (
     unlock_admin,
 )
 
-APP_VERSION = "ACCOUNT_RESET_RENDER_BASE_URL_V5"
+APP_VERSION = "ACCOUNT_REFRESH_PERSISTENCE_V7"
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -201,6 +201,7 @@ if current_email:
         save_logged_in_user(merged, persist=True)
 
     st.success(f"Signed in as {current_email}")
+    st.caption("Login persistence enabled: refresh should keep you signed in on this browser.")
     status = get_subscription_status(current_email)
     st.write(f"Subscription status: **{status}**")
 
