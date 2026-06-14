@@ -51,6 +51,178 @@ st.set_page_config(
 render_app_chrome()
 
 
+def inject_exam_layout_css():
+    """Centralized exam-page layout CSS.
+
+    Keep this early in the file so top widgets like the certification selector
+    do not render before spacing rules load on Streamlit Cloud.
+    """
+    st.markdown(
+        """
+        <style>
+        /* Global page spacing */
+        .block-container {
+            max-width: 1180px;
+            padding-top: 2.75rem !important;
+            padding-left: 2rem !important;
+            padding-right: 2rem !important;
+            padding-bottom: 3rem !important;
+        }
+        header[data-testid="stHeader"] { height: 0px; }
+
+        /* Hide Streamlit's native multipage nav; app renders its own sidebar */
+        [data-testid="stSidebarNav"] { display: none !important; }
+        section[data-testid="stSidebar"] > div:first-child { padding-top: 0.75rem; }
+        section[data-testid="stSidebar"] div.stButton > button {
+            width: 100%;
+            padding: 0.35rem 0.5rem;
+            font-size: 14px;
+        }
+        div.stButton > button { border-radius: 8px; font-weight: 650; }
+
+        /* Top certification selector */
+        .exam-shell-top {
+            border: 1px solid #d8dde6;
+            border-radius: 14px;
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+            padding: 18px 20px 16px 20px;
+            margin: 10px 0 18px 0;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+        }
+        .exam-kicker {
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #54698d;
+            margin-bottom: 4px;
+        }
+        .exam-page-title {
+            font-size: 28px;
+            line-height: 1.15;
+            font-weight: 800;
+            color: #16325c;
+            margin-bottom: 4px;
+        }
+        .exam-page-subtitle {
+            color: #5f6368;
+            font-size: 14px;
+            margin-bottom: 0;
+        }
+
+        /* Exam banner/status */
+        .exam-banner {
+            background: #16325c;
+            color: white;
+            padding: 18px 22px;
+            border-radius: 12px 12px 0 0;
+            font-size: 27px;
+            font-weight: 800;
+            line-height: 1.25;
+            margin-top: 10px;
+        }
+        .exam-sub-banner {
+            background: #f4f6f9;
+            border: 1px solid #d8dde6;
+            border-top: none;
+            padding: 12px 20px;
+            border-radius: 0 0 12px 12px;
+            margin-bottom: 26px;
+            color: #16325c;
+            font-size: 15px;
+        }
+        .exam-card {
+            border: 1px solid #d8dde6;
+            border-radius: 12px;
+            padding: 18px 20px;
+            background: #ffffff;
+            margin-bottom: 18px;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        }
+        .question-card {
+            border: 1px solid #d8dde6;
+            border-radius: 14px;
+            padding: 24px;
+            background: #ffffff;
+            margin-top: 12px;
+            margin-bottom: 18px;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+        }
+        .status-strip {
+            background: #f8f9fb;
+            border: 1px solid #d8dde6;
+            border-radius: 12px;
+            padding: 12px 16px;
+            margin-bottom: 15px;
+        }
+
+        /* Production-style floating exam timer */
+        .exam-floating-timer {
+            position: fixed;
+            top: 68px;
+            right: 30px;
+            z-index: 1001;
+            min-width: 170px;
+            background: #fff4d6;
+            border: 1px solid #e0b84f;
+            border-radius: 12px;
+            padding: 10px 14px;
+            box-shadow: 0 6px 20px rgba(15, 23, 42, 0.16);
+            text-align: center;
+        }
+        .exam-floating-timer-label {
+            font-size: 12px;
+            font-weight: 800;
+            color: #5f4b00;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 3px;
+        }
+        .exam-floating-timer-value {
+            font-size: 28px;
+            font-weight: 900;
+            color: #1f2937;
+            letter-spacing: 0.04em;
+            line-height: 1;
+        }
+        .question-nav-title {
+            font-weight: 800;
+            font-size: 16px;
+            margin-top: 10px;
+            margin-bottom: 8px;
+            color: #1f2937;
+        }
+        .small-help {
+            color: #5f6368;
+            font-size: 13px;
+            margin-bottom: 8px;
+        }
+        .exam-question-meta {
+            color: #54698d;
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        @media (max-width: 900px) {
+            .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
+            .exam-floating-timer {
+                position: sticky;
+                top: 0;
+                right: auto;
+                width: 100%;
+                margin-bottom: 12px;
+                min-width: 0;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+inject_exam_layout_css()
+
+
 def load_config():
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as file:
@@ -291,117 +463,45 @@ def get_user_preferred_language_code(email):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_question_bank(exam_name, language_code, free_only=False):
-    """Load questions safely.
-
-    Free Preview must not fetch the full paid bank. It only fetches rows flagged
-    free_mock_exam = true. If the database is missing free-preview columns or RLS
-    blocks the query, return a clean setup error instead of a red traceback.
-    """
+def fetch_question_bank(exam_name, language_code):
     supabase = get_supabase_client()
     exam_name = exam_name or DEFAULT_EXAM_NAME
     language_code = language_code or DEFAULT_LANGUAGE_CODE
 
-    base_columns = (
-        "id, exam_name, language_code, category, difficulty, question_text, "
-        "question_type, select_count, explanation, is_active, is_exam_eligible, quality_status"
+    questions_query = (
+        supabase.table("questions")
+        .select("id, exam_name, language_code, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status, free_mock_exam, free_sample_order")
+        .eq("exam_name", exam_name)
+        .eq("language_code", language_code)
+        .eq("is_active", True)
+        .eq("is_exam_eligible", True)
+        .eq("quality_status", "approved")
     )
-    extended_columns = base_columns + ", free_mock_exam, free_sample_order"
 
-    def build_query(columns):
-        query = (
-            supabase.table("questions")
-            .select(columns)
-            .eq("exam_name", exam_name)
-            .eq("language_code", language_code)
-            .eq("is_active", True)
-            .eq("is_exam_eligible", True)
-            .eq("quality_status", "approved")
-        )
-        if free_only:
-            query = query.eq("free_mock_exam", True).order("free_sample_order").order("id")
-        return query
-
-    meta = {
-        "exam_name": exam_name,
-        "language_code": language_code,
-        "free_only": free_only,
-        "used_free_preview_columns": True,
-    }
-
-    try:
-        questions_result = build_query(extended_columns).execute()
-        raw_questions = questions_result.data or []
-    except Exception as exc:
-        if free_only:
-            return [], {
-                **meta,
-                "error": (
-                    "Free Preview question setup failed. The app could not query "
-                    "free_mock_exam/free_sample_order. Confirm those columns exist and RLS allows authenticated users "
-                    "to read approved free sample questions."
-                ),
-                "details": str(exc),
-            }
-
-        # Paid/full bank can still run even if older databases do not yet have
-        # free-preview columns. Do not crash paid paths just because those setup
-        # columns are missing.
-        try:
-            questions_result = build_query(base_columns).execute()
-            raw_questions = questions_result.data or []
-            meta["used_free_preview_columns"] = False
-        except Exception as fallback_exc:
-            return [], {
-                **meta,
-                "error": (
-                    f"Question bank query failed for {exam_name} / language {language_code}. "
-                    "Check Supabase RLS policies and table columns."
-                ),
-                "details": str(fallback_exc),
-            }
-
+    questions_result = questions_query.execute()
+    raw_questions = questions_result.data or []
     if not raw_questions:
-        if free_only:
-            return [], {
-                **meta,
-                "error": (
-                    "Free Preview setup error: found 0 approved sample questions. "
-                    "Expected exactly 10 rows with free_mock_exam = true for this certification/language."
-                ),
-            }
         return [], {
-            **meta,
             "error": f"No approved active exam-eligible questions found for {exam_name} / language {language_code}.",
+            "exam_name": exam_name,
+            "language_code": language_code,
         }
-
-    # Normalize missing free-preview fields when the paid path used base columns.
-    for q in raw_questions:
-        q.setdefault("free_mock_exam", False)
-        q.setdefault("free_sample_order", None)
 
     question_ids = [q["id"] for q in raw_questions]
     options_by_question = defaultdict(list)
 
     chunk_size = 100
-    try:
-        for i in range(0, len(question_ids), chunk_size):
-            chunk = question_ids[i:i + chunk_size]
-            options_result = (
-                supabase.table("answer_options")
-                .select("id, question_id, option_label, option_text, is_correct, display_order")
-                .in_("question_id", chunk)
-                .order("display_order")
-                .execute()
-            )
-            for opt in options_result.data or []:
-                options_by_question[opt["question_id"]].append(opt)
-    except Exception as exc:
-        return [], {
-            **meta,
-            "error": "Answer option query failed. Check answer_options RLS policies for authenticated users.",
-            "details": str(exc),
-        }
+    for i in range(0, len(question_ids), chunk_size):
+        chunk = question_ids[i:i + chunk_size]
+        options_result = (
+            supabase.table("answer_options")
+            .select("id, question_id, option_label, option_text, is_correct, display_order")
+            .in_("question_id", chunk)
+            .order("display_order")
+            .execute()
+        )
+        for opt in options_result.data or []:
+            options_by_question[opt["question_id"]].append(opt)
 
     normalized = []
     skipped_no_options = 0
@@ -445,14 +545,14 @@ def fetch_question_bank(exam_name, language_code, free_only=False):
             "free_sample_order": q.get("free_sample_order"),
         })
 
-    meta.update({
+    meta = {
         "total_bank_questions": len(normalized),
         "skipped_no_options_or_answers": skipped_no_options,
         "exam_name": exam_name,
         "language_code": language_code,
         "bank_category_counts": dict(Counter(q["category"] for q in normalized)),
         "bank_difficulty_counts": dict(Counter(q["difficulty"] for q in normalized)),
-    })
+    }
     return normalized, meta
 
 
@@ -561,11 +661,7 @@ def generate_free_mock_questions(bank, category_counts=None):
     the 60-question paid exam distribution. It must use exactly 10 fixed
     approved sample questions flagged in the database.
     """
-    meta = st.session_state.get("bank_meta", {}) or {}
-    if meta.get("free_only"):
-        selected = list(bank)
-    else:
-        selected = [q for q in bank if q.get("free_mock_exam") is True]
+    selected = [q for q in bank if q.get("free_mock_exam") is True]
 
     if len(selected) != 10:
         st.error("Free Preview setup error: expected exactly 10 approved sample questions for this certification/language.")
@@ -587,19 +683,12 @@ def generate_free_mock_questions(bank, category_counts=None):
 
 
 def ensure_exam_generated(exam_access_type, exam_name, language_code, category_counts):
-    free_only = exam_access_type != "paid"
-    bank, meta = fetch_question_bank(exam_name, language_code, free_only=free_only)
+    bank, meta = fetch_question_bank(exam_name, language_code)
     st.session_state.bank_meta = meta
 
     if meta.get("error"):
         st.error(meta["error"])
-        if meta.get("details"):
-            with st.expander("Technical details for admin"):
-                st.code(meta.get("details"))
-        if exam_access_type == "paid":
-            st.info("Choose a certification on this page. Language comes from your Account profile. Make sure that certification has questions imported for your preferred language.")
-        else:
-            st.info("Free Preview needs exactly 10 approved sample questions for the selected certification/language. It does not require premium enrollment.")
+        st.info("Choose a certification on this page. Language comes from your Account profile. Make sure that certification has questions imported for your preferred language.")
         st.stop()
 
     exam_key = f"{exam_access_type}|{exam_name}|{language_code}"
@@ -692,13 +781,30 @@ if current_exam not in CERT_NAMES:
     st.session_state.selected_exam_name = current_exam
 
 if not st.session_state.get("started", False):
-    selected_exam = st.selectbox(
-        "Choose Certification",
-        options=CERT_NAMES,
-        index=CERT_NAMES.index(current_exam),
-        format_func=lambda name: CERT_DISPLAY_BY_NAME.get(name, name),
-        key="mock_exam_certification_selector",
+    st.markdown(
+        """
+        <div class="exam-shell-top">
+            <div class="exam-kicker">Certification Practice Exam</div>
+            <div class="exam-page-title">Choose your mock exam</div>
+            <div class="exam-page-subtitle">Pick a certification, then start the free preview or full mock exam based on your access.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
+
+    selector_col, access_col = st.columns([2.2, 1])
+    with selector_col:
+        selected_exam = st.selectbox(
+            "Choose Certification",
+            options=CERT_NAMES,
+            index=CERT_NAMES.index(current_exam),
+            format_func=lambda name: CERT_DISPLAY_BY_NAME.get(name, name),
+            key="mock_exam_certification_selector",
+        )
+    with access_col:
+        st.caption("Current access")
+        st.write("Premium" if is_paid_subscription(get_user_subscription_status(user_email_for_language)) else "Free Preview")
+
     if selected_exam != st.session_state.get("selected_exam_name"):
         st.session_state.selected_exam_name = selected_exam
         st.session_state.all_questions = []
@@ -811,28 +917,7 @@ def reset_exam():
     st.rerun()
 
 
-st.markdown(
-    """
-    <style>
-    .block-container { max-width: 1120px; padding-top: 2rem !important; padding-bottom: 2rem !important; }
-    header[data-testid="stHeader"] { height: 0px; }
-    .exam-banner { background: #16325c; color: white; padding: 18px 22px; border-radius: 8px 8px 0 0; font-size: 27px; font-weight: 700; line-height: 1.25; margin-top: 10px; }
-    .exam-sub-banner { background: #f4f6f9; border: 1px solid #d8dde6; border-top: none; padding: 12px 20px; border-radius: 0 0 8px 8px; margin-bottom: 30px; color: #16325c; font-size: 15px; }
-    .exam-card { border: 1px solid #d8dde6; border-radius: 8px; padding: 18px 20px; background: #ffffff; margin-bottom: 18px; }
-    .question-card { border: 1px solid #d8dde6; border-radius: 8px; padding: 22px; background: #ffffff; margin-top: 12px; margin-bottom: 18px; }
-    .status-strip { background: #f8f9fb; border: 1px solid #d8dde6; border-radius: 8px; padding: 12px 16px; margin-bottom: 15px; }
-    section[data-testid="stSidebar"] > div:first-child { padding-top: 0.75rem; }
-    .timer-sticky { position: sticky; top: 0; z-index: 999; background: #ffffff; padding-top: 4px; padding-bottom: 14px; border-bottom: 1px solid #d8dde6; margin-bottom: 14px; }
-    .timer-label { font-weight: 700; font-size: 16px; margin-bottom: 7px; color: #1f2937; }
-    .timer-box { background: #fff4d6; border: 1px solid #e0b84f; border-radius: 8px; padding: 12px; text-align: center; font-size: 27px; font-weight: 800; color: #1f2937; letter-spacing: 1px; }
-    .question-nav-title { font-weight: 700; font-size: 16px; margin-top: 10px; margin-bottom: 8px; color: #1f2937; }
-    .small-help { color: #5f6368; font-size: 13px; margin-bottom: 8px; }
-    section[data-testid="stSidebar"] div.stButton > button { width: 100%; padding: 0.35rem 0.5rem; font-size: 14px; }
-    div.stButton > button { border-radius: 6px; font-weight: 600; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# Layout CSS is injected near the top of the file before widgets render.
 
 st.markdown(
     f"""
@@ -928,12 +1013,18 @@ elif not st.session_state.submitted:
     mins = int(remaining // 60)
     secs = int(remaining % 60)
 
-    st.sidebar.markdown(
+    st.markdown(
         f"""
-        <div class="timer-sticky">
-            <div class="timer-label">Time Remaining</div>
-            <div class="timer-box">{mins:02d}:{secs:02d}</div>
+        <div class="exam-floating-timer">
+            <div class="exam-floating-timer-label">Time Remaining</div>
+            <div class="exam-floating-timer-value">{mins:02d}:{secs:02d}</div>
         </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.sidebar.markdown(
+        """
         <div class="question-nav-title">Question Navigator</div>
         <div class="small-help">✓ answered &nbsp;&nbsp; 🚩 marked</div>
         """,
@@ -1007,7 +1098,10 @@ elif not st.session_state.submitted:
 
         st.progress((q_index + 1) / len(questions))
         st.markdown('<div class="question-card">', unsafe_allow_html=True)
-        st.caption(f"Domain: {q.get('category', 'Uncategorized')} | Difficulty: {format_diff(q.get('difficulty', 'medium'))}")
+        st.markdown(
+            f"<div class='exam-question-meta'>Domain: {q.get('category', 'Uncategorized')} &nbsp; | &nbsp; Difficulty: {format_diff(q.get('difficulty', 'medium'))}</div>",
+            unsafe_allow_html=True,
+        )
         st.subheader(q["question"])
 
         question_type = q.get("type", "single")
@@ -1039,11 +1133,11 @@ elif not st.session_state.submitted:
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            if st.button("Previous") and q_index > 0:
+            if st.button("← Previous") and q_index > 0:
                 st.session_state.current_question -= 1
                 st.rerun()
         with col2:
-            if st.button("Next") and q_index < len(questions) - 1:
+            if st.button("Next →") and q_index < len(questions) - 1:
                 st.session_state.current_question += 1
                 st.rerun()
         with col3:
