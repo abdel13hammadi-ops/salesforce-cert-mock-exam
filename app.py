@@ -291,45 +291,117 @@ def get_user_preferred_language_code(email):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_question_bank(exam_name, language_code):
+def fetch_question_bank(exam_name, language_code, free_only=False):
+    """Load questions safely.
+
+    Free Preview must not fetch the full paid bank. It only fetches rows flagged
+    free_mock_exam = true. If the database is missing free-preview columns or RLS
+    blocks the query, return a clean setup error instead of a red traceback.
+    """
     supabase = get_supabase_client()
     exam_name = exam_name or DEFAULT_EXAM_NAME
     language_code = language_code or DEFAULT_LANGUAGE_CODE
 
-    questions_query = (
-        supabase.table("questions")
-        .select("id, exam_name, language_code, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status, free_mock_exam, free_sample_order")
-        .eq("exam_name", exam_name)
-        .eq("language_code", language_code)
-        .eq("is_active", True)
-        .eq("is_exam_eligible", True)
-        .eq("quality_status", "approved")
+    base_columns = (
+        "id, exam_name, language_code, category, difficulty, question_text, "
+        "question_type, select_count, explanation, is_active, is_exam_eligible, quality_status"
     )
+    extended_columns = base_columns + ", free_mock_exam, free_sample_order"
 
-    questions_result = questions_query.execute()
-    raw_questions = questions_result.data or []
+    def build_query(columns):
+        query = (
+            supabase.table("questions")
+            .select(columns)
+            .eq("exam_name", exam_name)
+            .eq("language_code", language_code)
+            .eq("is_active", True)
+            .eq("is_exam_eligible", True)
+            .eq("quality_status", "approved")
+        )
+        if free_only:
+            query = query.eq("free_mock_exam", True).order("free_sample_order").order("id")
+        return query
+
+    meta = {
+        "exam_name": exam_name,
+        "language_code": language_code,
+        "free_only": free_only,
+        "used_free_preview_columns": True,
+    }
+
+    try:
+        questions_result = build_query(extended_columns).execute()
+        raw_questions = questions_result.data or []
+    except Exception as exc:
+        if free_only:
+            return [], {
+                **meta,
+                "error": (
+                    "Free Preview question setup failed. The app could not query "
+                    "free_mock_exam/free_sample_order. Confirm those columns exist and RLS allows authenticated users "
+                    "to read approved free sample questions."
+                ),
+                "details": str(exc),
+            }
+
+        # Paid/full bank can still run even if older databases do not yet have
+        # free-preview columns. Do not crash paid paths just because those setup
+        # columns are missing.
+        try:
+            questions_result = build_query(base_columns).execute()
+            raw_questions = questions_result.data or []
+            meta["used_free_preview_columns"] = False
+        except Exception as fallback_exc:
+            return [], {
+                **meta,
+                "error": (
+                    f"Question bank query failed for {exam_name} / language {language_code}. "
+                    "Check Supabase RLS policies and table columns."
+                ),
+                "details": str(fallback_exc),
+            }
+
     if not raw_questions:
+        if free_only:
+            return [], {
+                **meta,
+                "error": (
+                    "Free Preview setup error: found 0 approved sample questions. "
+                    "Expected exactly 10 rows with free_mock_exam = true for this certification/language."
+                ),
+            }
         return [], {
+            **meta,
             "error": f"No approved active exam-eligible questions found for {exam_name} / language {language_code}.",
-            "exam_name": exam_name,
-            "language_code": language_code,
         }
+
+    # Normalize missing free-preview fields when the paid path used base columns.
+    for q in raw_questions:
+        q.setdefault("free_mock_exam", False)
+        q.setdefault("free_sample_order", None)
 
     question_ids = [q["id"] for q in raw_questions]
     options_by_question = defaultdict(list)
 
     chunk_size = 100
-    for i in range(0, len(question_ids), chunk_size):
-        chunk = question_ids[i:i + chunk_size]
-        options_result = (
-            supabase.table("answer_options")
-            .select("id, question_id, option_label, option_text, is_correct, display_order")
-            .in_("question_id", chunk)
-            .order("display_order")
-            .execute()
-        )
-        for opt in options_result.data or []:
-            options_by_question[opt["question_id"]].append(opt)
+    try:
+        for i in range(0, len(question_ids), chunk_size):
+            chunk = question_ids[i:i + chunk_size]
+            options_result = (
+                supabase.table("answer_options")
+                .select("id, question_id, option_label, option_text, is_correct, display_order")
+                .in_("question_id", chunk)
+                .order("display_order")
+                .execute()
+            )
+            for opt in options_result.data or []:
+                options_by_question[opt["question_id"]].append(opt)
+    except Exception as exc:
+        return [], {
+            **meta,
+            "error": "Answer option query failed. Check answer_options RLS policies for authenticated users.",
+            "details": str(exc),
+        }
 
     normalized = []
     skipped_no_options = 0
@@ -373,14 +445,14 @@ def fetch_question_bank(exam_name, language_code):
             "free_sample_order": q.get("free_sample_order"),
         })
 
-    meta = {
+    meta.update({
         "total_bank_questions": len(normalized),
         "skipped_no_options_or_answers": skipped_no_options,
         "exam_name": exam_name,
         "language_code": language_code,
         "bank_category_counts": dict(Counter(q["category"] for q in normalized)),
         "bank_difficulty_counts": dict(Counter(q["difficulty"] for q in normalized)),
-    }
+    })
     return normalized, meta
 
 
@@ -489,7 +561,11 @@ def generate_free_mock_questions(bank, category_counts=None):
     the 60-question paid exam distribution. It must use exactly 10 fixed
     approved sample questions flagged in the database.
     """
-    selected = [q for q in bank if q.get("free_mock_exam") is True]
+    meta = st.session_state.get("bank_meta", {}) or {}
+    if meta.get("free_only"):
+        selected = list(bank)
+    else:
+        selected = [q for q in bank if q.get("free_mock_exam") is True]
 
     if len(selected) != 10:
         st.error("Free Preview setup error: expected exactly 10 approved sample questions for this certification/language.")
@@ -511,12 +587,19 @@ def generate_free_mock_questions(bank, category_counts=None):
 
 
 def ensure_exam_generated(exam_access_type, exam_name, language_code, category_counts):
-    bank, meta = fetch_question_bank(exam_name, language_code)
+    free_only = exam_access_type != "paid"
+    bank, meta = fetch_question_bank(exam_name, language_code, free_only=free_only)
     st.session_state.bank_meta = meta
 
     if meta.get("error"):
         st.error(meta["error"])
-        st.info("Choose a certification on this page. Language comes from your Account profile. Make sure that certification has questions imported for your preferred language.")
+        if meta.get("details"):
+            with st.expander("Technical details for admin"):
+                st.code(meta.get("details"))
+        if exam_access_type == "paid":
+            st.info("Choose a certification on this page. Language comes from your Account profile. Make sure that certification has questions imported for your preferred language.")
+        else:
+            st.info("Free Preview needs exactly 10 approved sample questions for the selected certification/language. It does not require premium enrollment.")
         st.stop()
 
     exam_key = f"{exam_access_type}|{exam_name}|{language_code}"
