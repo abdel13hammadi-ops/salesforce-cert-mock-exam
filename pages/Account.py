@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import os
 
 import streamlit as st
 
@@ -15,7 +16,7 @@ from utils.access_control import (
     unlock_admin,
 )
 
-APP_VERSION = "ACCOUNT_STABLE_AUTH_V1"
+APP_VERSION = "ACCOUNT_RESET_RENDER_BASE_URL_V5"
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -90,13 +91,19 @@ def language_label(row: dict) -> str:
 def get_app_base_url() -> str:
     """Return deployed app base URL for auth redirects.
 
-    Set APP_BASE_URL in Streamlit Secrets for reliable password reset redirects.
-    Example: https://your-app.streamlit.app
+    On Render, APP_BASE_URL is normally an environment variable.
+    In Streamlit Cloud/local dev, it may live in st.secrets.
+    Required value for current Render deploy:
+    https://salesforce-cert-mock-exam.onrender.com
     """
-    try:
-        base = str(st.secrets.get("APP_BASE_URL", "") or "").strip()
-    except Exception:
-        base = ""
+    base = str(os.environ.get("APP_BASE_URL", "") or "").strip()
+
+    if not base:
+        try:
+            base = str(st.secrets.get("APP_BASE_URL", "") or "").strip()
+        except Exception:
+            base = ""
+
     return base.rstrip("/")
 
 
@@ -115,8 +122,8 @@ def is_auth_email_rate_limit_error(exc: Exception) -> bool:
 def format_password_reset_error(exc: Exception) -> str:
     if is_auth_email_rate_limit_error(exc):
         return (
-            "Password reset email limit reached. Wait 30–60 minutes before sending another reset email. "
-            "Do not keep clicking the button; Supabase will keep blocking repeated email sends."
+            "Supabase is blocking password reset emails right now because the Auth email send limit was reached. "
+            "This limit is project-wide, not just this user. Wait, or configure Custom SMTP in Supabase for production."
         )
     return "Could not send password reset email. Check Supabase Auth settings and the user email."
 
@@ -344,7 +351,7 @@ else:
                     mark_password_reset_sent(reset_email)
                     st.success("If this email exists, a password reset link has been sent.")
                     if not get_app_base_url():
-                        st.info("Admin note: set APP_BASE_URL in Streamlit Secrets so reset links return to the Reset Password page.")
+                        st.info("Admin note: set APP_BASE_URL in Render Environment so reset links return to the Reset Password page.")
                 except Exception as exc:
                     st.error(format_password_reset_error(exc))
                     if not is_auth_email_rate_limit_error(exc):
