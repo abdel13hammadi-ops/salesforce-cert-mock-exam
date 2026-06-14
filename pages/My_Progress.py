@@ -1,128 +1,44 @@
 import json
+from datetime import datetime
+from typing import Any, Dict, List
 
 import pandas as pd
 import streamlit as st
-from supabase import create_client
-from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, require_paid_access
 
-APP_VERSION = "MY_PROGRESS_V6_ENROLLED_CERT_ACCESS"
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
+from utils.access_control import (
+    render_app_chrome,
+    get_current_user_email,
+    require_paid_access,
+    get_supabase_client,
+)
+from utils.readiness import calculate_readiness, readiness_methodology_text
+
+APP_VERSION = "MY_PROGRESS_V7_READINESS_RESTORED"
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
 require_paid_access("My Progress")
 
 
-def get_supabase_client():
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        st.error("Supabase secrets are missing. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
-        st.stop()
-    return create_client(url, key)
+def _safe_lower(value: Any, default: str = "") -> str:
+    return str(value or default).strip().lower()
 
 
-def get_current_user_email():
-    return shared_get_current_user_email()
-
-
-@st.cache_data(ttl=60)
-def fetch_user_profile(email):
-    if not email:
-        return {}
-    supabase = get_supabase_client()
-    result = (
-        supabase.table("app_users")
-        .select("email,full_name,subscription_status,preferred_language_code")
-        .eq("email", email)
-        .limit(1)
-        .execute()
-    )
-    return (result.data or [{}])[0]
-
-
-@st.cache_data(ttl=60)
-def fetch_languages():
-    supabase = get_supabase_client()
+def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        result = (
-            supabase.table("languages")
-            .select("language_code,language_name,native_name,is_active,display_order")
-            .eq("is_active", True)
-            .order("display_order")
-            .execute()
-        )
-        return result.data or []
+        return float(value)
     except Exception:
-        return [{"language_code": "en", "language_name": "English", "native_name": "English"}]
+        return default
 
 
-@st.cache_data(ttl=60)
-def fetch_user_certifications(user_email):
-    user_email = str(user_email or "").strip().lower()
-    if not user_email:
-        return []
-
-    supabase = get_supabase_client()
-    access_result = (
-        supabase.table("user_certification_access")
-        .select("exam_name, access_status")
-        .eq("user_email", user_email)
-        .eq("access_status", "active")
-        .execute()
-    )
-    access_rows = access_result.data or []
-    allowed_exam_names = [row.get("exam_name") for row in access_rows if row.get("exam_name")]
-
-    if allowed_exam_names:
-        result = (
-            supabase.table("certifications")
-            .select("exam_name,display_name,certification_code,passing_score,time_limit_minutes,question_count,is_active")
-            .in_("exam_name", allowed_exam_names)
-            .eq("is_active", True)
-            .order("display_name")
-            .execute()
-        )
-        return result.data or []
-
-    # Fallback for paid users before certification-access rows are configured.
-    # Without this, an active/premium user can be blocked from progress even when attempts exist.
-    result = (
-        supabase.table("certifications")
-        .select("exam_name,display_name,certification_code,passing_score,time_limit_minutes,question_count,is_active")
-        .eq("is_active", True)
-        .order("display_name")
-        .execute()
-    )
-    return result.data or []
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
 
 
-def language_label(language_code):
-    languages = fetch_languages()
-    for lang in languages:
-        if lang.get("language_code") == language_code:
-            native = lang.get("native_name") or lang.get("language_name") or language_code
-            return f"{native} ({language_code})"
-    return language_code
-
-
-@st.cache_data(ttl=60)
-def load_attempts(user_email, exam_name, language_code):
-    if not user_email or not exam_name:
-        return []
-    supabase = get_supabase_client()
-    query = (
-        supabase.table("exam_attempts")
-        .select("id,user_email,mode,category,score,correct_answers,correct_count,total_questions,domain_breakdown,completed_at,started_at,exam_name,language_code")
-        .eq("user_email", user_email)
-        .eq("exam_name", exam_name)
-    )
-    # Do not filter by language here. Older attempts may have null/blank/different language_code.
-    result = query.order("id", desc=True).execute()
-    return result.data or []
-
-
-def normalize_breakdown(value):
+def normalize_breakdown(value: Any) -> Dict[str, Any]:
     if value is None:
         return {}
     if isinstance(value, dict):
@@ -136,17 +52,156 @@ def normalize_breakdown(value):
     return {}
 
 
-def make_domain_table(attempts):
-    totals = {}
+def _parse_dt(value: Any) -> datetime:
+    if not value:
+        return datetime.min
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00").replace("+00:00", ""))
+    except Exception:
+        return datetime.min
+
+
+def sort_attempts(attempts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # Your exam_attempts table has completed_at/started_at, not created_at.
+    return sorted(
+        attempts or [],
+        key=lambda a: (
+            _parse_dt(a.get("completed_at")),
+            _parse_dt(a.get("started_at")),
+            _safe_int(a.get("id"), 0),
+        ),
+        reverse=True,
+    )
+
+
+@st.cache_data(ttl=60)
+def fetch_user_profile(email: str) -> Dict[str, Any]:
+    if not email:
+        return {}
+    try:
+        result = (
+            get_supabase_client()
+            .table("app_users")
+            .select("email,full_name,subscription_status,preferred_language_code")
+            .eq("email", email)
+            .limit(1)
+            .execute()
+        )
+        return (result.data or [{}])[0]
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=60)
+def fetch_certifications() -> List[Dict[str, Any]]:
+    try:
+        result = (
+            get_supabase_client()
+            .table("certifications")
+            .select("exam_name,display_name,certification_code,passing_score,time_limit_minutes,question_count,is_active")
+            .eq("is_active", True)
+            .order("display_name")
+            .execute()
+        )
+        rows = result.data or []
+    except Exception:
+        rows = []
+
+    if rows:
+        return rows
+
+    # Safe fallback so progress/readiness still renders if certification metadata is temporarily unavailable.
+    return [
+        {
+            "exam_name": "Salesforce Certified Platform Administrator",
+            "display_name": "Salesforce Certified Platform Administrator",
+            "passing_score": 68,
+            "question_count": 60,
+            "is_active": True,
+        },
+        {
+            "exam_name": "Salesforce Certified Business Analyst",
+            "display_name": "Salesforce Certified Business Analyst",
+            "passing_score": 72,
+            "question_count": 60,
+            "is_active": True,
+        },
+    ]
+
+
+@st.cache_data(ttl=60)
+def fetch_domain_weights(exam_name: str) -> Dict[str, float]:
+    if not exam_name:
+        return {}
+    try:
+        result = (
+            get_supabase_client()
+            .table("certification_domains")
+            .select("domain_name,weight")
+            .eq("exam_name", exam_name)
+            .eq("is_active", True)
+            .execute()
+        )
+        weights = {}
+        for row in result.data or []:
+            name = row.get("domain_name")
+            if name:
+                weights[str(name)] = _safe_float(row.get("weight"), 0.0)
+        return weights
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=60)
+def load_attempts(user_email: str, exam_name: str | None = None) -> Dict[str, Any]:
+    """Load attempts for the logged-in email.
+
+    Important schema reality:
+    - exam_attempts has completed_at and started_at
+    - exam_attempts does NOT have created_at
+    - historical attempts are keyed by user_email, not auth_user_id
+    """
+    if not user_email:
+        return {"rows": [], "error": "Missing user email."}
+
+    try:
+        query = (
+            get_supabase_client()
+            .table("exam_attempts")
+            .select(
+                "id,user_email,mode,category,score,total_questions,correct_count,correct_answers,"
+                "started_at,completed_at,domain_breakdown,difficulty_breakdown,exam_name,language_code"
+            )
+            .ilike("user_email", user_email)
+        )
+        if exam_name:
+            query = query.eq("exam_name", exam_name)
+        result = query.execute()
+        return {"rows": sort_attempts(result.data or []), "error": None}
+    except Exception as exc:
+        return {"rows": [], "error": str(exc)}
+
+
+def get_correct_count(attempt: Dict[str, Any]) -> int:
+    # Your table has correct_count NULL on old rows; correct_answers is the reliable value.
+    if attempt.get("correct_answers") is not None:
+        return _safe_int(attempt.get("correct_answers"), 0)
+    return _safe_int(attempt.get("correct_count"), 0)
+
+
+def build_domain_table(attempts: List[Dict[str, Any]]) -> pd.DataFrame:
+    totals: Dict[str, Dict[str, float]] = {}
     for attempt in attempts:
         breakdown = normalize_breakdown(attempt.get("domain_breakdown"))
         for name, data in breakdown.items():
             if not isinstance(data, dict):
                 continue
-            correct = int(data.get("correct", 0) or 0)
-            total = int(data.get("total", 0) or 0)
+            correct = _safe_float(data.get("correct"), 0.0)
+            total = _safe_float(data.get("total"), 0.0)
+            if total <= 0:
+                continue
             if name not in totals:
-                totals[name] = {"correct": 0, "total": 0}
+                totals[name] = {"correct": 0.0, "total": 0.0}
             totals[name]["correct"] += correct
             totals[name]["total"] += total
 
@@ -154,9 +209,54 @@ def make_domain_table(attempts):
     for name, data in totals.items():
         total = data["total"]
         correct = data["correct"]
-        percent = round((correct / total) * 100, 2) if total else 0
-        rows.append({"Domain": name, "Correct": correct, "Total": total, "Accuracy %": percent})
-    return pd.DataFrame(rows).sort_values("Accuracy %") if rows else pd.DataFrame()
+        accuracy = round((correct / total) * 100, 2) if total else 0.0
+        rows.append({"Domain": name, "Correct": int(correct), "Total": int(total), "Accuracy %": accuracy})
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values("Accuracy %", ascending=True)
+    return df
+
+
+def render_readiness_card(readiness: Dict[str, Any], passing_score: float, selected_exam: str) -> None:
+    st.header("Overall Readiness")
+    st.caption("This is a study-planning estimate, not a pass guarantee.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Readiness Score", f"{round(_safe_float(readiness.get('score')), 2)}%")
+    c2.metric("Status", readiness.get("label", "Not Enough Data"))
+    c3.metric("Confidence", readiness.get("confidence", "No Data"))
+    c4.metric("Questions Practiced", _safe_int(readiness.get("total_attempted"), 0))
+
+    st.info(readiness_methodology_text())
+    st.warning("Readiness is not a guarantee of passing. It combines recent mock performance, weighted domain performance, consistency, and practice volume.")
+
+    st.subheader("Readiness Components")
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("Recent Mock", f"{readiness.get('recent_mock_score', 0)}%")
+    r2.metric("Domain Readiness", f"{readiness.get('weighted_domain_score', 0)}%")
+    r3.metric("Consistency", f"{readiness.get('consistency_score', 0)}%")
+    r4.metric("Practice Volume", f"{readiness.get('practice_volume_score', 0)}%")
+
+    st.write(readiness.get("recommendation", "Complete more attempts to improve the readiness signal."))
+
+    weak = readiness.get("weak_domains") or []
+    strong = readiness.get("strong_domains") or []
+    cols = st.columns(2)
+    with cols[0]:
+        st.subheader("Highest-Risk Areas")
+        if weak:
+            for item in weak:
+                st.write(f"- {item}")
+        else:
+            st.write("No domain-risk signal yet.")
+    with cols[1]:
+        st.subheader("Strongest Areas")
+        if strong:
+            for item in strong:
+                st.write(f"- {item}")
+        else:
+            st.write("No strength signal yet.")
 
 
 st.title("My Progress")
@@ -168,19 +268,20 @@ if not user_email:
     st.stop()
 
 profile = fetch_user_profile(user_email)
-require_paid_access("My Progress")
+preferred_language = _safe_lower(profile.get("preferred_language_code"), "en") or "en"
+subscription_status = _safe_lower(profile.get("subscription_status") or st.session_state.get("subscription_status"), "free")
 
-preferred_language = str(profile.get("preferred_language_code") or "en").strip().lower()
-st.info(f"Account: {user_email} | Preferred language: {language_label(preferred_language)}")
+st.info(f"Account: {user_email} | Access: {subscription_status} | Preferred language: {preferred_language}")
 
-certifications = fetch_user_certifications(user_email)
-if not certifications:
-    st.error("No certification enrollment found for this account.")
-    st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
+certifications = fetch_certifications()
+exam_names = [c.get("exam_name") for c in certifications if c.get("exam_name")]
+display_by_exam = {c.get("exam_name"): c.get("display_name") or c.get("exam_name") for c in certifications}
+cert_by_exam = {c.get("exam_name"): c for c in certifications if c.get("exam_name")}
+
+if not exam_names:
+    st.error("No active certifications are configured.")
     st.stop()
 
-exam_names = [c["exam_name"] for c in certifications]
-display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications}
 selected_exam = st.selectbox(
     "Choose certification for progress",
     exam_names,
@@ -188,31 +289,77 @@ selected_exam = st.selectbox(
     key="my_progress_exam_name",
 )
 
-attempts = load_attempts(user_email, selected_exam, preferred_language)
+attempt_result = load_attempts(user_email, selected_exam)
+attempts = attempt_result.get("rows", [])
+query_error = attempt_result.get("error")
 
-if not attempts:
-    st.info("No attempts found for this certification and language yet. Complete a mock exam or practice set first.")
+with st.expander("Progress query diagnostics", expanded=False):
+    st.write(f"Current user email: `{user_email}`")
+    st.write(f"Selected exam: `{selected_exam}`")
+    st.write(f"Attempts returned: `{len(attempts)}`")
+    if query_error:
+        st.error(query_error)
+
+if query_error:
+    st.error("Progress could not be loaded because the database query failed. This is a setup/code issue, not 'no attempts'.")
     st.stop()
 
-scores = [float(a.get("score") or 0) for a in attempts]
-latest_score = float(attempts[0].get("score") or 0)
-average_score = round(sum(scores) / len(scores), 2) if scores else 0
-best_score = round(max(scores), 2) if scores else 0
-attempt_count = len(attempts)
+if not attempts:
+    st.info("No exam attempts found for this certification yet. Complete a mock exam first.")
+    st.header("Overall Readiness")
+    st.warning("No readiness score yet. Complete at least one full mock exam to generate a readiness estimate.")
+    st.info(readiness_methodology_text())
+    st.stop()
+
+cert = cert_by_exam.get(selected_exam, {})
+passing_score = _safe_float(cert.get("passing_score"), 72 if "Business Analyst" in selected_exam else 68)
+expected_question_count = _safe_int(cert.get("question_count"), 60) or 60
+domain_weights = fetch_domain_weights(selected_exam)
+
+readiness = calculate_readiness(
+    attempts=attempts,
+    passing_score=passing_score,
+    domain_weights=domain_weights,
+    expected_question_count=expected_question_count,
+    question_bank_total=None,
+)
+
+render_readiness_card(readiness, passing_score, selected_exam)
+
+st.divider()
+st.header("Score Summary")
+scores = [_safe_float(a.get("score"), 0.0) for a in attempts]
+latest_score = scores[0] if scores else 0.0
+average_score = round(sum(scores) / len(scores), 2) if scores else 0.0
+best_score = round(max(scores), 2) if scores else 0.0
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Latest Score", f"{latest_score}%")
 c2.metric("Average Score", f"{average_score}%")
 c3.metric("Best Score", f"{best_score}%")
-c4.metric("Attempts", attempt_count)
+c4.metric("Attempts", len(attempts))
+
+trend_rows = []
+for attempt in reversed(attempts):
+    trend_rows.append(
+        {
+            "Completed": attempt.get("completed_at") or attempt.get("started_at") or f"Attempt {attempt.get('id')}",
+            "Score": _safe_float(attempt.get("score"), 0.0),
+        }
+    )
+if trend_rows:
+    st.subheader("Score Trend")
+    trend_df = pd.DataFrame(trend_rows)
+    st.line_chart(trend_df.set_index("Completed"))
 
 st.divider()
 st.header("Weak Areas by Domain")
-domain_df = make_domain_table(attempts)
+domain_df = build_domain_table(attempts)
 if domain_df.empty:
-    st.warning("No domain breakdown data saved yet.")
+    st.warning("No domain breakdown data saved yet. Future exam attempts should save domain_breakdown for stronger readiness scoring.")
 else:
     st.dataframe(domain_df, use_container_width=True, hide_index=True)
+    st.bar_chart(domain_df.set_index("Domain")["Accuracy %"])
     weakest = domain_df.iloc[0]
     st.info(f"Weakest domain: {weakest['Domain']} ({weakest['Accuracy %']}%)")
 
@@ -220,21 +367,17 @@ st.divider()
 st.header("Attempt History")
 history_rows = []
 for attempt in attempts:
-    history_rows.append({
-        "Attempt ID": attempt.get("id"),
-        "Completed At": attempt.get("completed_at") or "Not recorded",
-        "Mode": attempt.get("mode"),
-        "Category": attempt.get("category"),
-        "Score %": attempt.get("score"),
-        "Correct": attempt.get("correct_answers"),
-        "Total": attempt.get("total_questions"),
-    })
+    history_rows.append(
+        {
+            "Attempt ID": attempt.get("id"),
+            "Completed At": attempt.get("completed_at") or "Not recorded",
+            "Started At": attempt.get("started_at") or "Not recorded",
+            "Mode": attempt.get("mode"),
+            "Category": attempt.get("category"),
+            "Score %": attempt.get("score"),
+            "Correct": get_correct_count(attempt),
+            "Total": attempt.get("total_questions"),
+            "Language": attempt.get("language_code"),
+        }
+    )
 st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)
-
-st.divider()
-st.header("Recommendation")
-if not domain_df.empty:
-    weakest = domain_df.iloc[0]
-    st.write(f"Focus next on **{weakest['Domain']}** for **{display_by_exam.get(selected_exam, selected_exam)}**.")
-else:
-    st.write("Complete more attempts to generate recommendations.")
