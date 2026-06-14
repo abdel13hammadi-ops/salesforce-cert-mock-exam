@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-from utils.access_control import get_supabase_admin_client, require_admin, render_sidebar_navigation
+from utils.access_control import get_supabase_admin_client, get_supabase_auth_client, require_admin, render_sidebar_navigation
 
 
 st.set_page_config(page_title="Admin Users", page_icon="👥", layout="wide")
@@ -82,6 +82,27 @@ def upsert_app_user(email: str, status: str) -> None:
 def delete_app_profile(email: str) -> None:
     supabase.table("user_certification_access").delete().eq("user_email", email).execute()
     supabase.table("app_users").delete().eq("email", email).execute()
+
+
+def send_password_reset_email(email: str) -> None:
+    """Send a Supabase password recovery email. Admin never sees or sets passwords."""
+    auth_client = get_supabase_auth_client()
+    auth_api = auth_client.auth
+
+    # supabase-py method name differs by version. Try the modern method first,
+    # then fallback to older versions.
+    if hasattr(auth_api, "reset_password_for_email"):
+        auth_api.reset_password_for_email(email)
+        return
+
+    if hasattr(auth_api, "reset_password_email"):
+        auth_api.reset_password_email(email)
+        return
+
+    raise RuntimeError(
+        "This installed Supabase Python client does not expose a password-reset method. "
+        "Upgrade supabase-py or send the reset from Supabase Dashboard → Authentication → Users."
+    )
 
 
 with st.container(border=True):
@@ -174,6 +195,22 @@ with col3:
         except Exception as exc:
             st.error("Failed to mark user expired.")
             st.exception(exc)
+
+st.divider()
+st.subheader("Password Reset")
+st.caption(
+    "Sends a secure Supabase password recovery email. "
+    "The admin never sees or sets the user's password."
+)
+
+if st.button("🔐 Send Password Reset Email", use_container_width=False):
+    try:
+        send_password_reset_email(email)
+        st.success(f"Password reset email sent to {email}.")
+        st.info("If the user does not receive it, check Supabase Auth email settings and redirect URLs.")
+    except Exception as exc:
+        st.error("Could not send password reset email.")
+        st.caption(str(exc))
 
 st.divider()
 st.subheader("Certification Access Rows")
