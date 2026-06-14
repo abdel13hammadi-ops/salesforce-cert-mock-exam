@@ -98,6 +98,49 @@ def get_app_base_url() -> str:
     return base.rstrip("/")
 
 
+def is_auth_email_rate_limit_error(exc: Exception) -> bool:
+    """Detect Supabase Auth email-rate-limit errors without exposing internals."""
+    msg = str(exc or "").lower()
+    return (
+        "email rate limit" in msg
+        or "rate limit exceeded" in msg
+        or "for security purposes" in msg
+        or "too many requests" in msg
+        or "429" in msg
+    )
+
+
+def format_password_reset_error(exc: Exception) -> str:
+    if is_auth_email_rate_limit_error(exc):
+        return (
+            "Password reset email limit reached. Wait 30–60 minutes before sending another reset email. "
+            "Do not keep clicking the button; Supabase will keep blocking repeated email sends."
+        )
+    return "Could not send password reset email. Check Supabase Auth settings and the user email."
+
+
+def password_reset_cooldown_key(email: str) -> str:
+    return f"password_reset_sent_at::{str(email or '').strip().lower()}"
+
+
+def reset_on_cooldown(email: str, cooldown_seconds: int = 300) -> tuple[bool, int]:
+    """Return (is_on_cooldown, remaining_seconds). Prevents repeated clicks from hammering Supabase."""
+    key = password_reset_cooldown_key(email)
+    last_sent = st.session_state.get(key)
+    if not last_sent:
+        return False, 0
+    try:
+        elapsed = (datetime.now(timezone.utc) - last_sent).total_seconds()
+    except Exception:
+        return False, 0
+    remaining = int(cooldown_seconds - elapsed)
+    return remaining > 0, max(remaining, 0)
+
+
+def mark_password_reset_sent(email: str) -> None:
+    st.session_state[password_reset_cooldown_key(email)] = datetime.now(timezone.utc)
+
+
 def send_password_reset_email(email: str) -> None:
     email = str(email or "").strip().lower()
     if not email or "@" not in email:
@@ -131,7 +174,6 @@ def send_password_reset_email(email: str) -> None:
             last_error = exc
             raise
     raise RuntimeError(f"Password reset is not supported by the installed Supabase client: {last_error}")
-
 
 st.title("Account")
 st.caption(f"App version: {APP_VERSION}")
@@ -287,18 +329,24 @@ else:
         st.subheader("Reset Password")
         st.caption("Enter your account email. If the email exists, Supabase will send a secure password reset link.")
         reset_email = st.text_input("Email", key="reset_email").strip().lower()
-        if st.button("Send Password Reset Email", type="primary"):
+        on_cooldown, remaining = reset_on_cooldown(reset_email)
+        if on_cooldown:
+            st.info(f"A reset email was recently requested. Wait about {remaining} seconds before trying again.")
+
+        if st.button("Send Password Reset Email", type="primary", disabled=on_cooldown):
             if not reset_email or "@" not in reset_email:
                 st.warning("Enter a valid email address.")
             else:
                 try:
                     send_password_reset_email(reset_email)
+                    mark_password_reset_sent(reset_email)
                     st.success("If this email exists, a password reset link has been sent.")
                     if not get_app_base_url():
                         st.info("Admin note: set APP_BASE_URL in Streamlit Secrets so reset links return to the Reset Password page.")
                 except Exception as exc:
-                    st.error("Could not send password reset email.")
-                    st.caption(str(exc))
+                    st.error(format_password_reset_error(exc))
+                    if not is_auth_email_rate_limit_error(exc):
+                        st.caption(str(exc))
 
 
 st.divider()
