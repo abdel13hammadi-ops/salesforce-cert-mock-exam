@@ -85,6 +85,54 @@ def language_label(row: dict) -> str:
     return f"{name} ({code})" if native == name else f"{name} / {native} ({code})"
 
 
+def get_app_base_url() -> str:
+    """Return deployed app base URL for auth redirects.
+
+    Set APP_BASE_URL in Streamlit Secrets for reliable password reset redirects.
+    Example: https://your-app.streamlit.app
+    """
+    try:
+        base = str(st.secrets.get("APP_BASE_URL", "") or "").strip()
+    except Exception:
+        base = ""
+    return base.rstrip("/")
+
+
+def send_password_reset_email(email: str) -> None:
+    email = str(email or "").strip().lower()
+    if not email or "@" not in email:
+        raise ValueError("Enter a valid email address.")
+
+    auth_client = get_supabase_auth_client()
+    base = get_app_base_url()
+    redirect_to = f"{base}/Reset_Password" if base else None
+
+    # Supabase Python versions differ. Try the v2 method with redirect first,
+    # then fall back to method names/signatures used by older clients.
+    last_error = None
+    for call_style in ("v2_with_redirect", "v2_no_redirect", "legacy"):
+        try:
+            if call_style == "v2_with_redirect" and redirect_to:
+                auth_client.auth.reset_password_for_email(email, {"redirect_to": redirect_to})
+                return
+            if call_style == "v2_no_redirect":
+                auth_client.auth.reset_password_for_email(email)
+                return
+            if call_style == "legacy":
+                auth_client.auth.reset_password_email(email)
+                return
+        except AttributeError as exc:
+            last_error = exc
+            continue
+        except TypeError as exc:
+            last_error = exc
+            continue
+        except Exception as exc:
+            last_error = exc
+            raise
+    raise RuntimeError(f"Password reset is not supported by the installed Supabase client: {last_error}")
+
+
 st.title("Account")
 st.caption(f"App version: {APP_VERSION}")
 
@@ -152,7 +200,7 @@ if current_email:
 
 else:
     st.info("Create an account or log in to access the platform.")
-    sign_in_tab, sign_up_tab = st.tabs(["Log In", "Create Account"])
+    sign_in_tab, sign_up_tab, reset_tab = st.tabs(["Log In", "Create Account", "Forgot Password"])
 
     with sign_in_tab:
         st.subheader("Log In")
@@ -233,6 +281,25 @@ else:
                 except Exception as exc:
                     st.error("Account creation failed. The email may already be registered.")
                     st.caption(str(exc))
+
+
+    with reset_tab:
+        st.subheader("Reset Password")
+        st.caption("Enter your account email. If the email exists, Supabase will send a secure password reset link.")
+        reset_email = st.text_input("Email", key="reset_email").strip().lower()
+        if st.button("Send Password Reset Email", type="primary"):
+            if not reset_email or "@" not in reset_email:
+                st.warning("Enter a valid email address.")
+            else:
+                try:
+                    send_password_reset_email(reset_email)
+                    st.success("If this email exists, a password reset link has been sent.")
+                    if not get_app_base_url():
+                        st.info("Admin note: set APP_BASE_URL in Streamlit Secrets so reset links return to the Reset Password page.")
+                except Exception as exc:
+                    st.error("Could not send password reset email.")
+                    st.caption(str(exc))
+
 
 st.divider()
 st.caption("Independent exam-prep platform. Not affiliated with Salesforce.")
