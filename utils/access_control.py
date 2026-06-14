@@ -371,6 +371,7 @@ def render_sidebar_navigation() -> None:
             st.divider()
             st.page_link("pages/Account.py", label="Admin Unlock", icon="🔐")
             if is_admin_unlocked():
+                st.page_link("pages/Admin_Users.py", label="Admin Users", icon="👥")
                 st.page_link("pages/Admin_Import.py", label="Admin Import", icon="⬆️")
                 st.page_link("pages/Admin_Question_Review.py", label="Admin Question Review", icon="✅")
                 st.page_link("pages/Admin_Support_Tickets.py", label="Admin Support Tickets", icon="🎫")
