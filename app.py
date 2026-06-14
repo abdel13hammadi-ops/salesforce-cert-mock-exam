@@ -8,7 +8,31 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code
+import streamlit.components.v1 as components
 
+components.html(
+    """
+    <script>
+    (function () {
+        const hash = window.location.hash || "";
+        const path = window.location.pathname || "";
+
+        const hasRecoveryToken =
+            hash.includes("access_token=") ||
+            hash.includes("refresh_token=") ||
+            hash.includes("type=recovery");
+
+        const alreadyOnResetPage =
+            path.toLowerCase().includes("reset_password");
+
+        if (hasRecoveryToken && !alreadyOnResetPage) {
+            window.location.href = "/Reset_Password" + hash;
+        }
+    })();
+    </script>
+    """,
+    height=0,
+)
 
 APP_VERSION = "SUPABASE_DB_V12_ENROLLED_CERT_ACCESS"
 CONFIG_FILE = "exam_config.json"
