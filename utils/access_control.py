@@ -1,14 +1,14 @@
 """Centralized auth, access control, and navigation helpers for the Streamlit app.
 
-Streamlit wipes ``st.session_state`` on a hard browser refresh, so login cannot
-live only in session_state. This module persists a short HMAC-signed session
-bearer token in both places:
+Streamlit wipes `st.session_state` on a hard browser refresh, so login cannot live
+only in session_state. This module persists a short HMAC-signed session token in
+both:
 
-1. URL query parameter ``fr_session`` so Python can read it immediately; and
-2. browser localStorage so page navigation/refresh can restore the URL parameter.
+1. the URL query parameter `fr_session`, so Python can read it; and
+2. browser localStorage, so refresh/navigation can restore the query parameter.
 
 The token contains no password and no Supabase service key. It is still a bearer
-session token, so set COOKIE_PASSWORD to a long random secret in Render.
+session token, so COOKIE_PASSWORD must be strong in production.
 """
 
 from __future__ import annotations
@@ -16,19 +16,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import html
 import json
 import os
 import time
-from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
 
 import streamlit as st
 import streamlit.components.v1 as components
 from supabase import create_client
 
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
+PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
 EXPIRED_STATUS_VALUES = {"expired", "cancelled", "canceled", "past_due", "unpaid"}
 FREE_STATUS = "free"
 SESSION_PARAM = "fr_session"
@@ -49,8 +46,8 @@ def _secret(name: str, default: str = "") -> str:
 
 
 def _signing_secret() -> str:
-    # COOKIE_PASSWORD is the intended signing secret. SUPABASE_SERVICE_ROLE_KEY is
-    # only a fallback to keep older deploys working. Set COOKIE_PASSWORD in Render.
+    # COOKIE_PASSWORD is the intended signing secret. SUPABASE_SERVICE_ROLE_KEY is a fallback
+    # so existing Render deploys keep working, but set COOKIE_PASSWORD explicitly before launch.
     return _secret("COOKIE_PASSWORD") or _secret("SUPABASE_SERVICE_ROLE_KEY") or "dev-only-unsafe-secret"
 
 
@@ -153,8 +150,6 @@ def _current_signed_session_token() -> str:
 
 
 def _persist_token_to_url(token: str) -> None:
-    if not token:
-        return
     st.session_state["signed_session_token"] = token
     if _get_query_param(SESSION_PARAM) != token:
         _set_query_param(SESSION_PARAM, token)
@@ -192,11 +187,10 @@ def _render_browser_session_clearer() -> None:
 
 
 def _render_browser_session_bridge() -> None:
-    """Sync the signed session token between URL query params and browser localStorage.
+    """Bridge signed session token between URL query params and browser localStorage.
 
-    Python can read query params but cannot read localStorage directly. The browser
-    script restores the query param after hard refreshes or page navigation. This
-    must run even on admin pages that call render_sidebar_navigation() directly.
+    Python can read query params but not localStorage. JavaScript can read localStorage
+    and restore the query param after a browser refresh or Streamlit multipage navigation.
     """
     if st.session_state.pop("clear_browser_session_storage", False):
         _render_browser_session_clearer()
@@ -277,6 +271,8 @@ def persist_login_to_signed_url(profile: Dict[str, Any]) -> None:
     if not email:
         return
 
+    # Reuse the existing signed token if the user/session payload is unchanged and
+    # the token is not close to expiring. This prevents query-param churn on every rerun.
     existing_token = _current_signed_session_token()
     existing_payload = verify_signed_session(existing_token) if existing_token else None
     if existing_payload and _session_payloads_match(existing_payload, payload):
@@ -311,7 +307,6 @@ def save_logged_in_user(profile: Dict[str, Any], persist: bool = True) -> None:
 def clear_login_state() -> None:
     for key in [
         "user_email",
-        "account_email",
         "auth_user_id",
         "full_name",
         "preferred_language_code",
@@ -324,16 +319,11 @@ def clear_login_state() -> None:
     clear_persisted_login()
 
 
-# Backward-compatible alias for older pages if any remain.
-def clear_logged_in_user() -> None:
-    clear_login_state()
-
-
 def get_supabase_auth_client():
     url = _secret("SUPABASE_URL")
     anon_key = _secret("SUPABASE_ANON_KEY")
     if not url or not anon_key:
-        st.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY in Render Environment Variables or Streamlit secrets.")
+        st.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY in Streamlit secrets.")
         st.stop()
     return create_client(url, anon_key)
 
@@ -343,19 +333,14 @@ def get_supabase_admin_client():
     url = _secret("SUPABASE_URL")
     key = _secret("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
-        st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in Render Environment Variables or Streamlit secrets.")
+        st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
         st.stop()
     return create_client(url, key)
 
 
-# Compatibility names used across older pages. This is server-side Streamlit;
-# service-role access is kept centralized here.
+# Compatibility name used across older pages. This is server-side Streamlit; service role is kept centralized.
 def get_supabase_client():
     return get_supabase_admin_client()
-
-
-def get_supabase_public_client():
-    return get_supabase_auth_client()
 
 
 def get_current_user_email() -> Optional[str]:
@@ -449,7 +434,7 @@ def require_login() -> str:
     email = get_current_user_email()
     if not email:
         st.warning("Please log in from the Account page before continuing.")
-        _inline_page_link("pages/Account.py", "Go to Account", "👤")
+        st.page_link("pages/Account.py", label="Go to Account", icon="👤")
         st.stop()
     return email
 
@@ -495,7 +480,7 @@ def require_admin() -> bool:
         st.stop()
     if not is_admin_unlocked():
         st.warning("Admin password required before accessing this page.")
-        _inline_page_link("pages/Account.py", "Go to Account / Admin Unlock", "👤")
+        st.page_link("pages/Account.py", label="Go to Account / Admin Unlock", icon="👤")
         st.stop()
     return True
 
@@ -506,61 +491,17 @@ def _hide_native_sidebar_nav_css() -> None:
         <style>
         [data-testid="stSidebarNav"] {display: none !important;}
         section[data-testid="stSidebar"] nav {display: none !important;}
-        .sf-sidebar-link {
-            display: block;
-            padding: 0.35rem 0.25rem;
-            text-decoration: none !important;
-            color: inherit !important;
-            font-weight: 600;
-            border-radius: 0.35rem;
-        }
-        .sf-sidebar-link:hover {
-            background: rgba(49, 51, 63, 0.08);
-            text-decoration: none !important;
-        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def _page_path(page_file: str) -> str:
-    page_file = str(page_file or "").strip()
-    if page_file == "app.py" or page_file.endswith("/app.py"):
-        return "/"
-    name = Path(page_file).stem
-    return f"/{name}" if name else "/"
-
-
-def _url_for_page(page_file: str) -> str:
-    path = _page_path(page_file)
-    token = _current_signed_session_token()
-    if token:
-        return f"{path}?{urlencode({SESSION_PARAM: token})}"
-    return path
-
-
-def _inline_page_link(page_file: str, label: str, icon: str = "") -> None:
-    url = html.escape(_url_for_page(page_file), quote=True)
-    text = html.escape(f"{icon} {label}".strip())
-    st.markdown(f'<a class="sf-sidebar-link" href="{url}" target="_self">{text}</a>', unsafe_allow_html=True)
-
-
-def _sidebar_page_link(page_file: str, label: str, icon: str = "") -> None:
-    _inline_page_link(page_file, label, icon)
-
-
 def render_sidebar_navigation() -> None:
     restore_login_from_signed_url()
-    _render_browser_session_bridge()
     _hide_native_sidebar_nav_css()
     email = get_current_user_email()
     level = get_user_access_level(email) if email else "logged_out"
-
-    # If we have a live session but no token in URL, mint one so sidebar links
-    # preserve auth across Streamlit multipage navigation and hard refreshes.
-    if email and not _current_signed_session_token():
-        persist_login_to_signed_url(_current_session_profile_for_persistence())
 
     with st.sidebar:
         st.markdown("### Certification Prep")
@@ -570,49 +511,30 @@ def render_sidebar_navigation() -> None:
         else:
             st.caption("Not signed in")
 
-        _sidebar_page_link("app.py", "Mock Exam / Free Preview", "📝")
-        _sidebar_page_link("pages/Account.py", "Account", "👤")
-        _sidebar_page_link("pages/Support.py", "Support", "🛟")
+        st.page_link("pages/Dashboard.py", label="Dashboard", icon="🏠")
+        st.page_link("app.py", label="Mock Exam / Free Preview", icon="📝")
+        st.page_link("pages/Account.py", label="Account", icon="👤")
+        st.page_link("pages/Support.py", label="Support", icon="🛟")
 
         st.divider()
         st.markdown("### Premium")
-        _sidebar_page_link("pages/Practice_By_Category.py", "Practice By Category", "📚")
-        _sidebar_page_link("pages/Weak_Areas_Practice.py", "Weak Areas Practice", "🎯")
-        _sidebar_page_link("pages/My_Progress.py", "My Progress", "📈")
+        st.page_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
+        st.page_link("pages/Weak_Areas_Practice.py", label="Weak Areas Practice", icon="🎯")
+        st.page_link("pages/My_Progress.py", label="My Progress", icon="📈")
         if level not in {"paid", "admin"}:
             st.caption("Premium access required")
 
         if email and is_admin_user(email):
             st.divider()
-            _sidebar_page_link("pages/Account.py", "Admin Unlock", "🔐")
+            st.page_link("pages/Account.py", label="Admin Unlock", icon="🔐")
             if is_admin_unlocked():
-                _sidebar_page_link("pages/Admin_Users.py", "Admin Users", "👥")
-                _sidebar_page_link("pages/Admin_Import.py", "Admin Import", "⬆️")
-                _sidebar_page_link("pages/Admin_Question_Review.py", "Admin Question Review", "✅")
-                _sidebar_page_link("pages/Admin_Support_Tickets.py", "Admin Support Tickets", "🎫")
+                st.page_link("pages/Admin_Users.py", label="Admin Users", icon="👥")
+                st.page_link("pages/Admin_Import.py", label="Admin Import", icon="⬆️")
+                st.page_link("pages/Admin_Question_Review.py", label="Admin Question Review", icon="✅")
+                st.page_link("pages/Admin_Support_Tickets.py", label="Admin Support Tickets", icon="🎫")
 
 
 def render_app_chrome() -> None:
     restore_login_from_signed_url()
+    _render_browser_session_bridge()
     render_sidebar_navigation()
-
-
-def render_admin_login_page() -> None:
-    """Compatibility page for old pages/Admin.py."""
-    render_app_chrome()
-    email = require_login()
-    st.title("Admin")
-    if not is_admin_user(email):
-        st.error("Admin access required.")
-        return
-    if is_admin_unlocked():
-        st.success("Admin unlocked.")
-        st.write("Use the admin links in the sidebar.")
-        return
-    admin_password = st.text_input("Admin password", type="password")
-    if st.button("Unlock Admin", type="primary"):
-        if unlock_admin(admin_password):
-            st.success("Admin unlocked ✅")
-            st.rerun()
-        else:
-            st.error("Invalid admin password or email is not allowed.")
