@@ -11,7 +11,7 @@ import streamlit as st
 from utils.access_control import get_supabase_admin_client, get_supabase_auth_client, require_admin, render_app_chrome
 
 
-APP_VERSION = "ADMIN_USERS_CREATE_MISSING_USER_V3"
+APP_VERSION = "ADMIN_USERS_CREATE_MISSING_USER_SPLIT_NAME_V4"
 
 st.set_page_config(page_title="Admin Users", page_icon="👥", layout="wide")
 render_app_chrome()
@@ -384,8 +384,14 @@ if not user:
     with st.form("admin_create_missing_user_form", clear_on_submit=False):
         st.markdown("### Create New User")
         st.caption("This creates the app profile. It can also create the Supabase Auth login and send the user a reset link.")
+        st.caption("First and last name are captured separately in the admin UI, then stored as app_users.full_name for backward compatibility.")
 
-        full_name = st.text_input("Full name", key="admin_create_full_name")
+        name_col1, name_col2 = st.columns(2)
+        with name_col1:
+            first_name = st.text_input("First name", key="admin_create_first_name")
+        with name_col2:
+            last_name = st.text_input("Last name", key="admin_create_last_name")
+
         preferred_language = st.selectbox(
             "Preferred language",
             options=language_codes,
@@ -431,8 +437,12 @@ if not user:
         submitted = st.form_submit_button("Create User", type="primary", use_container_width=True)
 
     if submitted:
-        if not full_name.strip():
-            st.error("Full name is required.")
+        first_name = str(first_name or "").strip()
+        last_name = str(last_name or "").strip()
+        full_name = f"{first_name} {last_name}".strip()
+
+        if not first_name or not last_name:
+            st.error("First name and last name are required.")
             st.stop()
 
         try:

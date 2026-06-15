@@ -16,7 +16,7 @@ from utils.access_control import (
     unlock_admin,
 )
 
-APP_VERSION = "ACCOUNT_REFRESH_PERSISTENCE_V7"
+APP_VERSION = "ACCOUNT_SPLIT_NAME_SIGNUP_V7"
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -295,7 +295,14 @@ else:
 
     with sign_up_tab:
         st.subheader("Create Account")
-        full_name = st.text_input("Full name", key="signup_full_name")
+        name_col1, name_col2 = st.columns(2)
+        with name_col1:
+            first_name = st.text_input("First name", key="signup_first_name").strip()
+        with name_col2:
+            last_name = st.text_input("Last name", key="signup_last_name").strip()
+
+        full_name = " ".join(part for part in [first_name, last_name] if part).strip()
+
         signup_email = st.text_input("Email", key="signup_email").strip().lower()
         signup_password = st.text_input("Password", type="password", key="signup_password")
         confirm_password = st.text_input("Confirm password", type="password", key="confirm_password")
@@ -308,8 +315,10 @@ else:
         )
 
         if st.button("Create Account", type="primary"):
-            if not full_name.strip():
-                st.warning("Enter your full name.")
+            if not first_name:
+                st.warning("Enter your first name.")
+            elif not last_name:
+                st.warning("Enter your last name.")
             elif not signup_email or "@" not in signup_email:
                 st.warning("Enter a valid email address.")
             elif len(signup_password) < 8:
@@ -321,7 +330,7 @@ else:
                     response = get_supabase_auth_client().auth.sign_up({
                         "email": signup_email,
                         "password": signup_password,
-                        "options": {"data": {"full_name": full_name.strip()}},
+                        "options": {"data": {"full_name": full_name}},
                     })
                     user = response.user
                     auth_user_id = user.id if user else None
