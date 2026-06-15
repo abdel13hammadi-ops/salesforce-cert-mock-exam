@@ -3,10 +3,14 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 import streamlit as st
-from supabase import create_client
-from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, require_paid_access
+from utils.access_control import (
+    get_supabase_admin_client,
+    render_app_chrome,
+    get_current_user_email as shared_get_current_user_email,
+    require_paid_access,
+)
 
-APP_VERSION = "PRACTICE_BY_CATEGORY_V4_ENROLLED_CERT_ACCESS"
+APP_VERSION = "PRACTICE_BY_CATEGORY_V5_PAID_ACTIVE_CERT_ACCESS"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
@@ -16,12 +20,8 @@ require_paid_access("Practice by Category")
 
 @st.cache_resource
 def get_supabase_client():
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        st.error("Supabase secrets are missing. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
-        st.stop()
-    return create_client(url, key)
+    """Use the centralized admin client so Render env vars and Streamlit secrets both work."""
+    return get_supabase_admin_client()
 
 
 def get_current_user_email():
@@ -91,6 +91,19 @@ def fetch_user_certifications(user_email):
         supabase.table("certifications")
         .select("exam_name,display_name,certification_code,is_active")
         .in_("exam_name", allowed_exam_names)
+        .eq("is_active", True)
+        .order("display_name")
+        .execute()
+    )
+    return result.data or []
+
+
+@st.cache_data(ttl=60)
+def fetch_active_certifications():
+    """Paid/admin users can access every active certification when no per-cert rows exist."""
+    result = (
+        get_supabase_client().table("certifications")
+        .select("exam_name,display_name,certification_code,is_active")
         .eq("is_active", True)
         .order("display_name")
         .execute()
@@ -238,11 +251,15 @@ st.success(f"Account: {user_email} ✅ | Preferred language: {language_label(lan
 
 certifications = fetch_user_certifications(user_email)
 if not certifications:
-    st.error("No certification enrollment found for this account.")
-    st.info("Ask an admin to enroll this email in a certification, or purchase access when payments are enabled.")
+    certifications = fetch_active_certifications()
+
+if not certifications:
+    st.error("No active certifications are configured.")
+    st.info("Admin setup required: add active rows in the certifications table.")
     st.stop()
-exam_names = [c["exam_name"] for c in certifications]
-display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications}
+
+exam_names = [c["exam_name"] for c in certifications if c.get("exam_name")]
+display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications if c.get("exam_name")}
 
 if not st.session_state.get("practice_started", False):
     selected_exam = st.selectbox(

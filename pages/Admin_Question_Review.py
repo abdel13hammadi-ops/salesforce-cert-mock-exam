@@ -4,16 +4,15 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
-from supabase import create_client
-from utils.access_control import render_app_chrome, require_admin
+from utils.access_control import get_supabase_admin_client, render_app_chrome, require_admin
 
-APP_VERSION = "ADMIN_QUESTION_REVIEW_V3_ID_LABELS"
+APP_VERSION = "ADMIN_QUESTION_REVIEW_V4_EXAM_SELECTOR"
 
 st.set_page_config(page_title="Admin Question Review", layout="wide")
 render_app_chrome()
 require_admin()
 
-CATEGORIES = [
+FALLBACK_CATEGORIES = [
     "Configuration and Setup",
     "Object Manager and Lightning App Builder",
     "Data and Analytics Management",
@@ -30,26 +29,89 @@ QUESTION_TYPES = ["single", "multiple"]
 
 
 def get_supabase_client():
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
-
-    if not url or not key:
-        st.error("Missing Supabase secrets. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
-        st.stop()
-
-    return create_client(url, key)
+    """Use centralized service-role client so Render env vars and Streamlit secrets both work."""
+    return get_supabase_admin_client()
 
 
 @st.cache_data(ttl=60)
-def load_questions():
+def load_active_certifications():
+    try:
+        result = (
+            get_supabase_client().table("certifications")
+            .select("exam_name,display_name,certification_code,is_active")
+            .eq("is_active", True)
+            .order("display_name")
+            .execute()
+        )
+        return result.data or []
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=60)
+def load_exam_names_from_questions():
+    result = (
+        get_supabase_client().table("questions")
+        .select("exam_name")
+        .order("exam_name")
+        .execute()
+    )
+    names = []
+    seen = set()
+    for row in result.data or []:
+        name = row.get("exam_name")
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+def build_exam_options():
+    certifications = load_active_certifications()
+    display_by_exam = {
+        row.get("exam_name"): row.get("display_name") or row.get("exam_name")
+        for row in certifications
+        if row.get("exam_name")
+    }
+    ordered_names = [row.get("exam_name") for row in certifications if row.get("exam_name")]
+
+    for exam_name in load_exam_names_from_questions():
+        if exam_name not in display_by_exam:
+            display_by_exam[exam_name] = exam_name
+            ordered_names.append(exam_name)
+
+    return ordered_names, display_by_exam
+
+
+@st.cache_data(ttl=60)
+def load_domains_for_exam(exam_name):
+    if not exam_name:
+        return []
+    try:
+        result = (
+            get_supabase_client().table("certification_domains")
+            .select("domain_name,display_order,is_active")
+            .eq("exam_name", exam_name)
+            .eq("is_active", True)
+            .order("display_order")
+            .execute()
+        )
+        return [row.get("domain_name") for row in (result.data or []) if row.get("domain_name")]
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=60)
+def load_questions(exam_name):
     supabase = get_supabase_client()
     result = (
         supabase.table("questions")
         .select(
-            "id, exam_name, category, difficulty, question_text, question_type, "
+            "id, exam_name, language_code, category, difficulty, question_text, question_type, "
             "select_count, explanation, is_active, is_exam_eligible, quality_status, "
             "review_notes, source_batch, source_file, created_at, updated_at"
         )
+        .eq("exam_name", exam_name)
         .order("created_at", desc=True)
         .execute()
     )
@@ -114,12 +176,30 @@ st.title("Admin Question Review")
 st.caption(f"App version: {APP_VERSION}")
 st.info("Admin-only page for reviewing and editing questions, answers, explanations, categories, difficulty, and eligibility.")
 
-questions = load_questions()
+exam_names, display_by_exam = build_exam_options()
+if not exam_names:
+    st.warning("No certifications or question exam names found in Supabase.")
+    st.stop()
+
+selected_exam_name = st.selectbox(
+    "Choose certification/question bank to review",
+    exam_names,
+    format_func=lambda name: display_by_exam.get(name, name),
+    key="admin_question_review_exam_name",
+)
+
+questions = load_questions(selected_exam_name)
 option_counts = load_answer_option_counts()
 
 if not questions:
-    st.warning("No questions found in Supabase.")
+    st.warning(f"No questions found for {display_by_exam.get(selected_exam_name, selected_exam_name)}.")
     st.stop()
+
+domain_categories = load_domains_for_exam(selected_exam_name)
+question_categories = sorted({q.get("category") for q in questions if q.get("category")})
+CATEGORIES = domain_categories + [c for c in question_categories if c not in domain_categories]
+if not CATEGORIES:
+    CATEGORIES = FALLBACK_CATEGORIES.copy()
 
 for q in questions:
     qid = q.get("id")
@@ -203,13 +283,15 @@ for q in questions:
         continue
     filtered.append(q)
 
-st.write(f"Showing **{len(filtered)}** of **{len(questions)}** questions.")
+st.write(f"Showing **{len(filtered)}** of **{len(questions)}** questions for **{display_by_exam.get(selected_exam_name, selected_exam_name)}**.")
 
 table_rows = []
 for q in filtered:
     table_rows.append(
         {
             "id": q.get("id"),
+            "exam_name": q.get("exam_name"),
+            "language": q.get("language_code"),
             "category": q.get("category"),
             "difficulty": q.get("difficulty"),
             "type": q.get("question_type"),
@@ -233,7 +315,7 @@ if not filtered:
     st.stop()
 
 question_labels = [
-    f"ID: {str(q.get('id'))[:8]} | {q.get('category', 'Uncategorized')} | {q.get('difficulty', 'N/A')} | {q.get('question_preview', '')}"
+    f"ID: {str(q.get('id'))[:8]} | {q.get('exam_name', selected_exam_name)} | {q.get('category', 'Uncategorized')} | {q.get('difficulty', 'N/A')} | {q.get('question_preview', '')}"
     for q in filtered
 ]
 
@@ -248,7 +330,7 @@ qid = q.get("id")
 answer_options = load_answer_options(qid)
 
 st.subheader("Current Question Preview")
-st.caption(f"Question ID: {qid}")
+st.caption(f"Question ID: {qid} | Exam: {q.get('exam_name', selected_exam_name)} | Language: {q.get('language_code') or 'not set'}")
 st.code(str(qid), language="text")
 st.write(q.get("question_text", ""))
 

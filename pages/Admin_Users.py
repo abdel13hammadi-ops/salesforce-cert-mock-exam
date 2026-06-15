@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -16,7 +17,7 @@ require_admin()
 supabase = get_supabase_admin_client()
 
 st.title("👥 Admin Users")
-st.caption("Search users, grant/revoke premium access, view attempts, and remove app-level profiles.")
+st.caption("Search users, grant/revoke premium access, send reset links, view attempts, and remove app-level profiles. Version: ADMIN_USERS_RESET_REDIRECT_ENV_V2")
 
 
 def normalize_email(value: str) -> str:
@@ -28,10 +29,13 @@ def utc_now_iso() -> str:
 
 
 def get_app_base_url() -> str:
-    try:
-        base = str(st.secrets.get("APP_BASE_URL", "") or "").strip()
-    except Exception:
-        base = ""
+    """Read the production base URL from Render env first, then Streamlit secrets fallback."""
+    base = str(os.environ.get("APP_BASE_URL", "") or "").strip()
+    if not base:
+        try:
+            base = str(st.secrets.get("APP_BASE_URL", "") or "").strip()
+        except Exception:
+            base = ""
     return base.rstrip("/")
 
 
@@ -235,7 +239,7 @@ if st.button("🔐 Send Password Reset Email", use_container_width=True, disable
         mark_password_reset_sent(email)
         st.success(f"Password reset email sent to {email} if the Auth account exists.")
         if not get_app_base_url():
-            st.info("Admin note: set APP_BASE_URL in Streamlit Secrets so reset links return to the Reset Password page.")
+            st.info("Admin note: set APP_BASE_URL in Render Environment so reset links return to the Reset Password page.")
     except Exception as exc:
         st.error(format_password_reset_error(exc))
         if not is_auth_email_rate_limit_error(exc):
