@@ -11,7 +11,7 @@ from utils.access_control import render_app_chrome, get_current_user_email as sh
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "SUPABASE_DB_V12_ENROLLED_CERT_ACCESS"
+APP_VERSION = "SUPABASE_DB_V13_FREE_RESULTS_CLEANUP"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -1252,13 +1252,14 @@ else:
         percent = round((data["correct"] / data["total"]) * 100, 2)
         st.write(f"**{domain}:** {data['correct']} / {data['total']} correct ({percent}%)")
 
-    st.subheader("By Difficulty")
-    for difficulty in ["easy", "medium", "hard"]:
-        data = difficulty_stats.get(difficulty, {"correct": 0, "total": 0})
-        if data["total"] == 0:
-            continue
-        percent = round((data["correct"] / data["total"]) * 100, 2)
-        st.write(f"**{format_diff(difficulty)}:** {data['correct']} / {data['total']} correct ({percent}%)")
+    if st.session_state.get("exam_access_type") == "paid":
+        st.subheader("By Difficulty")
+        for difficulty in ["easy", "medium", "hard"]:
+            data = difficulty_stats.get(difficulty, {"correct": 0, "total": 0})
+            if data["total"] == 0:
+                continue
+            percent = round((data["correct"] / data["total"]) * 100, 2)
+            st.write(f"**{format_diff(difficulty)}:** {data['correct']} / {data['total']} correct ({percent}%)")
 
     st.divider()
     st.header("Answer Review")
