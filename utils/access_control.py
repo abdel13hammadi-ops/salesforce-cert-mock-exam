@@ -133,13 +133,14 @@ def _session_payload_from_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
         "auth_user_id": str(profile.get("auth_user_id") or ""),
         "full_name": str(profile.get("full_name") or ""),
         "preferred_language_code": str(profile.get("preferred_language_code") or "en").strip().lower() or "en",
+        "preferred_timezone": str(profile.get("preferred_timezone") or "UTC").strip() or "UTC",
         "subscription_status": str(profile.get("subscription_status") or "free").strip().lower(),
         "admin_unlocked": admin_unlocked,
     }
 
 
 def _session_payloads_match(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
-    keys = ["user_email", "auth_user_id", "full_name", "preferred_language_code", "subscription_status", "admin_unlocked"]
+    keys = ["user_email", "auth_user_id", "full_name", "preferred_language_code", "preferred_timezone", "subscription_status", "admin_unlocked"]
     for key in keys:
         if str(left.get(key, "")).strip().lower() != str(right.get(key, "")).strip().lower():
             return False
@@ -268,6 +269,7 @@ def restore_login_from_signed_url() -> bool:
     st.session_state["auth_user_id"] = str(payload.get("auth_user_id") or "")
     st.session_state["full_name"] = str(payload.get("full_name") or "")
     st.session_state["preferred_language_code"] = str(payload.get("preferred_language_code") or "en").strip().lower() or "en"
+    st.session_state["preferred_timezone"] = str(payload.get("preferred_timezone") or "UTC").strip() or "UTC"
     st.session_state["subscription_status"] = str(payload.get("subscription_status") or "free").strip().lower()
     st.session_state["signed_session_token"] = token
     if bool(payload.get("admin_unlocked")) and _email_is_configured_admin(email):
@@ -310,6 +312,7 @@ def save_logged_in_user(profile: Dict[str, Any], persist: bool = True) -> None:
     st.session_state["auth_user_id"] = str(profile.get("auth_user_id") or "")
     st.session_state["full_name"] = str(profile.get("full_name") or "")
     st.session_state["preferred_language_code"] = str(profile.get("preferred_language_code") or "en").strip().lower() or "en"
+    st.session_state["preferred_timezone"] = str(profile.get("preferred_timezone") or "UTC").strip() or "UTC"
     st.session_state["subscription_status"] = str(profile.get("subscription_status") or "free").strip().lower()
     if persist:
         persist_login_to_signed_url(profile)
@@ -321,6 +324,7 @@ def clear_login_state() -> None:
         "auth_user_id",
         "full_name",
         "preferred_language_code",
+        "preferred_timezone",
         "subscription_status",
         "admin_unlocked",
         "auth_restored_from_url",
@@ -441,6 +445,13 @@ def get_preferred_language_code(email: Optional[str] = None) -> str:
     return str(st.session_state.get("preferred_language_code") or "en").strip().lower() or "en"
 
 
+def get_preferred_timezone(email: Optional[str] = None) -> str:
+    profile = get_user_profile(email)
+    if profile:
+        return str(profile.get("preferred_timezone") or "UTC").strip() or "UTC"
+    return str(st.session_state.get("preferred_timezone") or "UTC").strip() or "UTC"
+
+
 def require_login() -> str:
     email = get_current_user_email()
     if not email:
@@ -469,6 +480,7 @@ def _current_session_profile_for_persistence() -> Dict[str, Any]:
         "auth_user_id": str(st.session_state.get("auth_user_id") or ""),
         "full_name": str(st.session_state.get("full_name") or ""),
         "preferred_language_code": str(st.session_state.get("preferred_language_code") or "en").strip().lower() or "en",
+        "preferred_timezone": str(st.session_state.get("preferred_timezone") or "UTC").strip() or "UTC",
         "subscription_status": str(st.session_state.get("subscription_status") or "free").strip().lower(),
     }
 
