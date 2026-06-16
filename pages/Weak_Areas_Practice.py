@@ -13,7 +13,7 @@ from utils.access_control import (
     require_paid_access,
 )
 
-APP_VERSION = "WEAK_AREAS_PRACTICE_V8_PAID_ACTIVE_CERT_ACCESS"
+APP_VERSION = "WEAK_AREAS_PRACTICE_V9_DISPLAY_FIX"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
@@ -436,7 +436,10 @@ elif not st.session_state.get("weak_submitted", False):
 
     if st.session_state.get("weak_feedback_shown", False):
         user_ids = st.session_state.weak_answers.get(q_index, [])
-        st.success("Correct") if is_correct(user_ids, q["correct_ids"]) else st.error("Incorrect")
+        if is_correct(user_ids, q["correct_ids"]):
+            st.success("Correct")
+        else:
+            st.error("Incorrect")
         correct_texts = [opt["text"] for opt in q["options"] if opt["id"] in q["correct_ids"]]
         selected_texts = [opt["text"] for opt in q["options"] if opt["id"] in user_ids]
         st.write("Your answer: " + (", ".join(selected_texts) if selected_texts else "No answer selected"))
@@ -478,7 +481,10 @@ else:
     for i, q in enumerate(questions):
         user_ids = answers.get(i, [])
         result_correct = is_correct(user_ids, q["correct_ids"])
-        st.success(f"Question {i + 1} — Correct") if result_correct else st.error(f"Question {i + 1} — Incorrect")
+        if result_correct:
+            st.success(f"Question {i + 1} — Correct")
+        else:
+            st.error(f"Question {i + 1} — Incorrect")
         selected_texts = [opt["text"] for opt in q["options"] if opt["id"] in user_ids]
         correct_texts = [opt["text"] for opt in q["options"] if opt["id"] in q["correct_ids"]]
         st.caption(f"Domain: {q['category']} | Difficulty: {q['difficulty'].title()}")

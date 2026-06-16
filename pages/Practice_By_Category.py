@@ -378,7 +378,10 @@ elif not st.session_state.get("practice_submitted", False):
     if st.session_state.get("practice_feedback_shown", False):
         user_answer = st.session_state.practice_answers.get(index, [])
         correct_now = is_correct(user_answer, q["correct_ids"])
-        st.success("Correct ✅" if correct_now else "Incorrect") if correct_now else st.error("Incorrect")
+        if correct_now:
+            st.success("Correct ✅")
+        else:
+            st.error("Incorrect")
         correct_texts = [opt["text"] for opt in q["options"] if opt["id"] in q["correct_ids"]]
         selected_texts = [opt["text"] for opt in q["options"] if opt["id"] in user_answer]
         st.write("Your answer: " + (", ".join(selected_texts) if selected_texts else "No answer selected"))
@@ -416,7 +419,10 @@ else:
     for i, q in enumerate(questions):
         user_answer = answers.get(i, [])
         result_correct = is_correct(user_answer, q["correct_ids"])
-        st.success(f"Question {i + 1} — Correct") if result_correct else st.error(f"Question {i + 1} — Incorrect")
+        if result_correct:
+            st.success(f"Question {i + 1} — Correct")
+        else:
+            st.error(f"Question {i + 1} — Incorrect")
         selected_texts = [opt["text"] for opt in q["options"] if opt["id"] in user_answer]
         correct_texts = [opt["text"] for opt in q["options"] if opt["id"] in q["correct_ids"]]
         st.caption(f"Domain: {q['category']} | Difficulty: {q['difficulty'].title()}")
