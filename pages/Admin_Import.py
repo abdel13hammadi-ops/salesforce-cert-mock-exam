@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+import os
 
 import streamlit as st
 from supabase import create_client
@@ -14,11 +15,21 @@ st.title("Admin Import")
 st.caption(f"App version: {APP_VERSION}")
 
 
+def get_secret(name: str) -> str:
+    value = str(os.environ.get(name, "") or "").strip()
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name, "") or "").strip()
+    except Exception:
+        return ""
+
+
 def get_supabase_client():
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+    url = get_secret("SUPABASE_URL")
+    key = get_secret("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
-        st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
+        st.error("Missing Supabase environment variables: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.")
         st.stop()
     return create_client(url, key)
 
