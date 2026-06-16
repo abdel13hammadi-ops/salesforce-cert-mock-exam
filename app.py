@@ -1,4 +1,5 @@
 import json
+import base64
 import time
 import random
 from collections import defaultdict, Counter
@@ -12,7 +13,7 @@ from utils.access_control import render_app_chrome, get_current_user_email as sh
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "SUPABASE_DB_V13_FREE_RESULTS_CLEANUP"
+APP_VERSION = "SUPABASE_DB_V14_EXAM_REFRESH_PERSISTENCE"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -762,6 +763,10 @@ def ensure_exam_generated(exam_access_type, exam_name, language_code, category_c
         st.session_state.exam_access_type = exam_access_type
         st.session_state.exam_key = exam_key
 
+    restored_questions = apply_pending_exam_state_if_valid(bank, exam_key)
+    if restored_questions:
+        return restored_questions
+
     if "all_questions" not in st.session_state or not st.session_state.all_questions:
         if exam_access_type == "paid":
             st.session_state.all_questions = generate_paid_exam_questions(bank, category_counts)
@@ -795,6 +800,208 @@ defaults = {
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+
+
+EXAM_STATE_QUERY_KEY = "exam_state"
+
+
+def _query_param_value(name):
+    try:
+        value = st.query_params.get(name, "")
+        if isinstance(value, list):
+            return value[0] if value else ""
+        return value or ""
+    except Exception:
+        return ""
+
+
+def _decode_exam_state_from_query():
+    raw = _query_param_value(EXAM_STATE_QUERY_KEY)
+    if not raw:
+        return None
+    try:
+        padding = "=" * (-len(raw) % 4)
+        decoded = base64.urlsafe_b64decode((raw + padding).encode("utf-8")).decode("utf-8")
+        state = json.loads(decoded)
+        if not isinstance(state, dict) or state.get("v") != 1:
+            return None
+        return state
+    except Exception:
+        return None
+
+
+def _encode_exam_state_for_query(state):
+    payload = json.dumps(state, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("utf-8").rstrip("=")
+
+
+def _set_exam_state_query_value(value):
+    try:
+        current = _query_param_value(EXAM_STATE_QUERY_KEY)
+        if current != value:
+            st.query_params[EXAM_STATE_QUERY_KEY] = value
+    except Exception:
+        pass
+
+
+def clear_exam_state_query():
+    try:
+        if EXAM_STATE_QUERY_KEY in st.query_params:
+            del st.query_params[EXAM_STATE_QUERY_KEY]
+    except Exception:
+        pass
+
+
+def _option_index(question, option_text):
+    try:
+        return question.get("options", []).index(option_text)
+    except ValueError:
+        return None
+
+
+def persist_exam_state_to_query(questions=None):
+    """Persist active exam state into the URL so browser refresh does not reset the exam.
+
+    This is intentionally scoped to in-progress/submitted exams only. It preserves auth
+    query params such as fr_session because it only writes/removes exam_state.
+    """
+    questions = questions or st.session_state.get("all_questions") or []
+    if not questions:
+        return
+
+    if not st.session_state.get("started") and not st.session_state.get("submitted"):
+        clear_exam_state_query()
+        return
+
+    answers_as_indexes = {}
+    for idx, selected_options in (st.session_state.get("answers") or {}).items():
+        try:
+            q_index = int(idx)
+        except Exception:
+            q_index = idx
+        if not isinstance(q_index, int) or q_index < 0 or q_index >= len(questions):
+            continue
+        indexes = []
+        for option_text in selected_options or []:
+            option_idx = _option_index(questions[q_index], option_text)
+            if option_idx is not None:
+                indexes.append(option_idx)
+        if indexes:
+            answers_as_indexes[str(q_index)] = indexes
+
+    choice_orders_as_indexes = {}
+    for idx, ordered_options in (st.session_state.get("choice_orders") or {}).items():
+        try:
+            q_index = int(idx)
+        except Exception:
+            q_index = idx
+        if not isinstance(q_index, int) or q_index < 0 or q_index >= len(questions):
+            continue
+        indexes = []
+        for option_text in ordered_options or []:
+            option_idx = _option_index(questions[q_index], option_text)
+            if option_idx is not None:
+                indexes.append(option_idx)
+        if indexes:
+            choice_orders_as_indexes[str(q_index)] = indexes
+
+    state = {
+        "v": 1,
+        "started": bool(st.session_state.get("started")),
+        "submitted": bool(st.session_state.get("submitted")),
+        "review_mode": bool(st.session_state.get("review_mode")),
+        "current_question": int(st.session_state.get("current_question") or 0),
+        "start_time": float(st.session_state.get("start_time") or time.time()),
+        "randomize_choices": bool(st.session_state.get("randomize_choices", True)),
+        "exam_access_type": st.session_state.get("exam_access_type"),
+        "exam_name": st.session_state.get("selected_exam_name"),
+        "language_code": SELECTED_LANGUAGE_CODE if "SELECTED_LANGUAGE_CODE" in globals() else st.session_state.get("selected_language_code"),
+        "exam_key": st.session_state.get("exam_key"),
+        "question_ids": [str(q.get("id")) for q in questions if q.get("id") is not None],
+        "answers": answers_as_indexes,
+        "marked": sorted([int(i) for i in (st.session_state.get("marked") or set()) if isinstance(i, int)]),
+        "choice_orders": choice_orders_as_indexes,
+    }
+    _set_exam_state_query_value(_encode_exam_state_for_query(state))
+
+
+def _restore_indexed_answers(state, questions):
+    answers = {}
+    for raw_idx, selected_indexes in (state.get("answers") or {}).items():
+        try:
+            q_index = int(raw_idx)
+        except Exception:
+            continue
+        if q_index < 0 or q_index >= len(questions):
+            continue
+        q_options = questions[q_index].get("options", [])
+        restored = []
+        for option_idx in selected_indexes or []:
+            if isinstance(option_idx, int) and 0 <= option_idx < len(q_options):
+                restored.append(q_options[option_idx])
+        if restored:
+            answers[q_index] = restored
+    return answers
+
+
+def _restore_choice_orders(state, questions):
+    choice_orders = {}
+    for raw_idx, option_indexes in (state.get("choice_orders") or {}).items():
+        try:
+            q_index = int(raw_idx)
+        except Exception:
+            continue
+        if q_index < 0 or q_index >= len(questions):
+            continue
+        q_options = questions[q_index].get("options", [])
+        restored = []
+        for option_idx in option_indexes or []:
+            if isinstance(option_idx, int) and 0 <= option_idx < len(q_options):
+                restored.append(q_options[option_idx])
+        if restored:
+            choice_orders[q_index] = restored
+    return choice_orders
+
+
+def apply_pending_exam_state_if_valid(bank, exam_key):
+    state = st.session_state.get("_pending_exam_state")
+    if not state or state.get("exam_key") != exam_key:
+        return None
+
+    question_ids = [str(qid) for qid in (state.get("question_ids") or []) if qid is not None]
+    if not question_ids:
+        return None
+
+    bank_by_id = {str(q.get("id")): q for q in bank}
+    restored_questions = [bank_by_id.get(qid) for qid in question_ids]
+    if not restored_questions or any(q is None for q in restored_questions):
+        return None
+
+    st.session_state.started = bool(state.get("started"))
+    st.session_state.submitted = bool(state.get("submitted"))
+    st.session_state.review_mode = bool(state.get("review_mode"))
+    st.session_state.current_question = max(0, min(int(state.get("current_question") or 0), len(restored_questions) - 1))
+    st.session_state.start_time = float(state.get("start_time") or time.time())
+    st.session_state.randomize_choices = bool(state.get("randomize_choices", True))
+    st.session_state.exam_access_type = state.get("exam_access_type") or st.session_state.get("exam_access_type")
+    st.session_state.answers = _restore_indexed_answers(state, restored_questions)
+    st.session_state.marked = set(i for i in (state.get("marked") or []) if isinstance(i, int) and 0 <= i < len(restored_questions))
+    st.session_state.choice_orders = _restore_choice_orders(state, restored_questions)
+    st.session_state.all_questions = restored_questions
+    st.session_state["_exam_state_restored_once"] = True
+    st.session_state.pop("_pending_exam_state", None)
+    return restored_questions
+
+
+pending_exam_state = _decode_exam_state_from_query()
+if pending_exam_state and not st.session_state.get("_exam_state_restored_once"):
+    st.session_state["_pending_exam_state"] = pending_exam_state
+    if pending_exam_state.get("exam_name"):
+        st.session_state.selected_exam_name = pending_exam_state.get("exam_name")
+    if pending_exam_state.get("started") or pending_exam_state.get("submitted"):
+        st.session_state.started = bool(pending_exam_state.get("started"))
+        st.session_state.submitted = bool(pending_exam_state.get("submitted"))
 
 
 # Language comes from the user profile. Certification is selected directly on this page.
@@ -903,6 +1110,8 @@ def get_access_context():
 user_email, subscription_status, has_paid_access, exam_access_type = get_access_context()
 all_questions = ensure_exam_generated(exam_access_type, SELECTED_EXAM_NAME, SELECTED_LANGUAGE_CODE, CATEGORY_COUNTS)
 questions = all_questions
+if st.session_state.get("started") or st.session_state.get("submitted"):
+    persist_exam_state_to_query(questions)
 
 
 def get_options(q_index, q):
@@ -966,7 +1175,8 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
 
 
 def reset_exam():
-    for key in list(defaults.keys()) + ["all_questions", "bank_meta", "exam_key"]:
+    clear_exam_state_query()
+    for key in list(defaults.keys()) + ["all_questions", "bank_meta", "exam_key", "_pending_exam_state", "_exam_state_restored_once"]:
         if key in st.session_state:
             del st.session_state[key]
     fetch_question_bank.clear()
@@ -1051,6 +1261,7 @@ if not st.session_state.started:
             st.session_state.submitted = False
             st.session_state.attempt_saved = False
             st.session_state.attempt_save_checked = False
+            persist_exam_state_to_query(questions)
             st.rerun()
     with col_regen:
         if st.button("Start New Exam"):
@@ -1096,6 +1307,7 @@ elif not st.session_state.submitted:
         if st.sidebar.button(label, key=f"nav_{i}"):
             st.session_state.current_question = i
             st.session_state.review_mode = False
+            persist_exam_state_to_query(questions)
             st.rerun()
 
     if st.session_state.review_mode:
@@ -1123,10 +1335,12 @@ elif not st.session_state.submitted:
         with col1:
             if st.button("Return to Exam"):
                 st.session_state.review_mode = False
+                persist_exam_state_to_query(questions)
                 st.rerun()
         with col2:
             if st.button("Final Submit", type="primary"):
                 st.session_state.submitted = True
+                persist_exam_state_to_query(questions)
                 st.rerun()
 
     else:
@@ -1186,6 +1400,7 @@ elif not st.session_state.submitted:
                 st.session_state.answers[q_index] = [selected]
 
         st.markdown("</div>", unsafe_allow_html=True)
+        persist_exam_state_to_query(questions)
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
