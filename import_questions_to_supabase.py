@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import os
 
 import streamlit as st
 from sqlalchemy import create_engine, text
@@ -8,8 +9,21 @@ from sqlalchemy import create_engine, text
 QUESTION_FOLDER = Path("questions")
 
 
+def get_db_url():
+    value = str(os.environ.get("SUPABASE_DB_URL", "") or "").strip()
+    if value:
+        return value
+    try:
+        return str(st.secrets.get("SUPABASE_DB_URL", "") or "").strip()
+    except Exception:
+        return ""
+
+
 def get_engine():
-    return create_engine(st.secrets["SUPABASE_DB_URL"])
+    db_url = get_db_url()
+    if not db_url:
+        raise RuntimeError("Missing SUPABASE_DB_URL environment variable.")
+    return create_engine(db_url)
 
 
 def normalize_difficulty(value):
