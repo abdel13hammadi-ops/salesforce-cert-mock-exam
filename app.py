@@ -3,7 +3,7 @@ import base64
 import time
 import random
 from collections import defaultdict, Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
 
 import streamlit as st
@@ -13,7 +13,7 @@ from utils.access_control import render_app_chrome, get_current_user_email as sh
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "SUPABASE_DB_V14_EXAM_REFRESH_PERSISTENCE"
+APP_VERSION = "SUPABASE_DB_V15_ATTEMPT_DEDUPE"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -1153,9 +1153,44 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
     if not user_email:
         return False, "No account email saved. Open the Account page and save your email first."
 
+    supabase = get_supabase_client()
+    mode = "Paid Mock Exam" if st.session_state.get("exam_access_type") == "paid" else "Free Mock Exam"
+    completed_at = datetime.now(timezone.utc)
+
+    try:
+        started_at = datetime.fromtimestamp(float(st.session_state.get("start_time") or time.time()), tz=timezone.utc)
+    except Exception:
+        started_at = completed_at
+
+    # Streamlit can rerun the script during/after query-param updates. Without an
+    # idempotency guard, one final submission can create two exam_attempts rows.
+    # We do not have an attempt_uuid column yet, so use a short recent-match guard.
+    recent_cutoff = (completed_at - timedelta(seconds=45)).isoformat()
+
+    try:
+        existing = (
+            supabase.table("exam_attempts")
+            .select("id")
+            .eq("user_email", user_email)
+            .eq("exam_name", SELECTED_EXAM_NAME)
+            .eq("language_code", SELECTED_LANGUAGE_CODE)
+            .eq("mode", mode)
+            .eq("total_questions", int(total_questions))
+            .eq("correct_answers", int(correct))
+            .gte("completed_at", recent_cutoff)
+            .limit(1)
+            .execute()
+        )
+        if getattr(existing, "data", None):
+            return True, None
+    except Exception:
+        # Do not block saving if the duplicate check fails. The insert error handler below
+        # will still catch real write failures.
+        pass
+
     payload = {
         "user_email": user_email,
-        "mode": "Paid Mock Exam" if st.session_state.get("exam_access_type") == "paid" else "Free Mock Exam",
+        "mode": mode,
         "category": "All Domains",
         "score": float(score),
         "total_questions": int(total_questions),
@@ -1164,11 +1199,12 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
         "difficulty_breakdown": difficulty_breakdown,
         "exam_name": SELECTED_EXAM_NAME,
         "language_code": SELECTED_LANGUAGE_CODE,
-        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
     }
 
     try:
-        get_supabase_client().table("exam_attempts").insert(payload).execute()
+        supabase.table("exam_attempts").insert(payload).execute()
         return True, None
     except Exception as exc:
         return False, str(exc)
@@ -1439,6 +1475,9 @@ else:
     difficulty_breakdown_json = plain_breakdown(difficulty_stats)
 
     if not st.session_state.get("attempt_save_checked", False):
+        # Set this before the write. Query-param updates and Streamlit reruns can happen
+        # around result rendering; the flag must already be set before any insert attempt.
+        st.session_state.attempt_save_checked = True
         saved, save_error = save_exam_attempt(
             score=score,
             correct=correct,
@@ -1448,7 +1487,6 @@ else:
         )
         st.session_state.attempt_saved = saved
         st.session_state.attempt_save_error = save_error
-        st.session_state.attempt_save_checked = True
 
     st.header("Exam Results")
 
