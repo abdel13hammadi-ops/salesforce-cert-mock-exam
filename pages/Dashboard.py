@@ -14,6 +14,7 @@ from utils.access_control import (
     get_user_profile,
     has_premium_access,
     render_app_chrome,
+    render_session_page_link,
 )
 
 try:
@@ -262,15 +263,15 @@ def render_public_onboarding() -> None:
     with step1:
         st.markdown("**1. Create account**")
         st.write("Account is required so results can be saved and reset links work correctly.")
-        st.page_link("pages/Account.py", label="Create / Log In", icon="👤")
+        render_session_page_link("pages/Account.py", label="Create / Log In", icon="👤")
     with step2:
         st.markdown("**2. Pick certification**")
         st.write("Choose Salesforce Admin or Business Analyst when starting the mock exam.")
-        st.page_link("app.py", label="Open Mock Exam", icon="📝")
+        render_session_page_link("app.py", label="Open Mock Exam", icon="📝")
     with step3:
         st.markdown("**3. Review result**")
         st.write("Use score, answer review, and explanations to decide what to study next.")
-        st.page_link("pages/My_Progress.py", label="View Progress", icon="📈")
+        render_session_page_link("pages/My_Progress.py", label="View Progress", icon="📈")
 
     st.divider()
     st.subheader("Premium unlocks")
@@ -301,7 +302,7 @@ def render_locked_premium_cards() -> None:
             st.markdown(f"**{icon} {title}**")
             st.write(body)
             st.caption("Premium access required")
-            st.page_link(path, label="Preview / Open", icon=icon)
+            render_session_page_link(path, label="Preview / Open", icon=icon)
 
 
 def render_logged_in_dashboard(email: str) -> None:
@@ -354,15 +355,15 @@ def render_logged_in_dashboard(email: str) -> None:
             st.write("Run a full randomized mock exam for the selected certification.")
         else:
             st.write("Run the free fixed preview and review explanations.")
-        st.page_link("app.py", label="Open Mock Exam", icon="📝")
+        render_session_page_link("app.py", label="Open Mock Exam", icon="📝")
     with n2:
         st.markdown("**Practice targeted questions**")
         st.write("Use category or weak-area practice when premium is active.")
-        st.page_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
+        render_session_page_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
     with n3:
         st.markdown("**Review progress**")
         st.write("See score trend, weak domains, and attempt history.")
-        st.page_link("pages/My_Progress.py", label="My Progress", icon="📈")
+        render_session_page_link("pages/My_Progress.py", label="My Progress", icon="📈")
 
     st.divider()
     st.subheader("Current status")
