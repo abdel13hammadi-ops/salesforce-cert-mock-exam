@@ -20,6 +20,7 @@ import json
 import os
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -152,6 +153,16 @@ def _current_signed_session_token() -> str:
 def _persist_token_to_url(token: str) -> None:
     st.session_state["signed_session_token"] = token
     if _get_query_param(SESSION_PARAM) != token:
+        _set_query_param(SESSION_PARAM, token)
+
+def _sync_existing_session_token_to_url() -> None:
+    """If Streamlit kept session_state during multipage navigation, force the URL
+    to carry fr_session too so a hard browser refresh can restore login.
+    """
+    token = str(st.session_state.get("signed_session_token") or "").strip()
+    if not token:
+        return
+    if verify_signed_session(token) and _get_query_param(SESSION_PARAM) != token:
         _set_query_param(SESSION_PARAM, token)
 
 
@@ -497,6 +508,44 @@ def _hide_native_sidebar_nav_css() -> None:
     )
 
 
+def _streamlit_route_for_page(page_path: str) -> str:
+    """Return Streamlit multipage route path for a script path."""
+    page_path = str(page_path or "").strip()
+    if page_path == "app.py":
+        return "/"
+    if page_path.startswith("pages/") and page_path.endswith(".py"):
+        return "/" + page_path.rsplit("/", 1)[-1][:-3]
+    return "/"
+
+
+def _session_preserving_href(page_path: str) -> str:
+    """Build a navigation URL that keeps the signed session query parameter."""
+    route = _streamlit_route_for_page(page_path)
+    token = _current_signed_session_token()
+    if token:
+        return f"{route}?{SESSION_PARAM}={quote(token, safe='')}"
+    return route
+
+
+def _sidebar_nav_link(page_path: str, label: str, icon: str = "") -> None:
+    """Render a sidebar link that preserves fr_session across Streamlit pages."""
+    href = _session_preserving_href(page_path)
+    safe_label = str(label).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    safe_icon = str(icon).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    st.markdown(
+        f"""
+        <a href="{href}" target="_self" style="
+            display: block;
+            padding: 0.35rem 0.25rem;
+            text-decoration: none;
+            color: inherit;
+            border-radius: 0.35rem;
+        ">{safe_icon} {safe_label}</a>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_sidebar_navigation() -> None:
     restore_login_from_signed_url()
     _hide_native_sidebar_nav_css()
@@ -511,30 +560,31 @@ def render_sidebar_navigation() -> None:
         else:
             st.caption("Not signed in")
 
-        st.page_link("pages/Dashboard.py", label="Dashboard", icon="🏠")
-        st.page_link("app.py", label="Mock Exam / Free Preview", icon="📝")
-        st.page_link("pages/Account.py", label="Account", icon="👤")
-        st.page_link("pages/Support.py", label="Support", icon="🛟")
+        _sidebar_nav_link("pages/Dashboard.py", label="Dashboard", icon="🏠")
+        _sidebar_nav_link("app.py", label="Mock Exam / Free Preview", icon="📝")
+        _sidebar_nav_link("pages/Account.py", label="Account", icon="👤")
+        _sidebar_nav_link("pages/Support.py", label="Support", icon="🛟")
 
         st.divider()
         st.markdown("### Premium")
-        st.page_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
-        st.page_link("pages/Weak_Areas_Practice.py", label="Weak Areas Practice", icon="🎯")
-        st.page_link("pages/My_Progress.py", label="My Progress", icon="📈")
+        _sidebar_nav_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
+        _sidebar_nav_link("pages/Weak_Areas_Practice.py", label="Weak Areas Practice", icon="🎯")
+        _sidebar_nav_link("pages/My_Progress.py", label="My Progress", icon="📈")
         if level not in {"paid", "admin"}:
             st.caption("Premium access required")
 
         if email and is_admin_user(email):
             st.divider()
-            st.page_link("pages/Account.py", label="Admin Unlock", icon="🔐")
+            _sidebar_nav_link("pages/Account.py", label="Admin Unlock", icon="🔐")
             if is_admin_unlocked():
-                st.page_link("pages/Admin_Users.py", label="Admin Users", icon="👥")
-                st.page_link("pages/Admin_Import.py", label="Admin Import", icon="⬆️")
-                st.page_link("pages/Admin_Question_Review.py", label="Admin Question Review", icon="✅")
-                st.page_link("pages/Admin_Support_Tickets.py", label="Admin Support Tickets", icon="🎫")
+                _sidebar_nav_link("pages/Admin_Users.py", label="Admin Users", icon="👥")
+                _sidebar_nav_link("pages/Admin_Import.py", label="Admin Import", icon="⬆️")
+                _sidebar_nav_link("pages/Admin_Question_Review.py", label="Admin Question Review", icon="✅")
+                _sidebar_nav_link("pages/Admin_Support_Tickets.py", label="Admin Support Tickets", icon="🎫")
 
 
 def render_app_chrome() -> None:
     restore_login_from_signed_url()
+    _sync_existing_session_token_to_url()
     _render_browser_session_bridge()
     render_sidebar_navigation()
