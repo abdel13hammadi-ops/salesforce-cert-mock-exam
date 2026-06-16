@@ -546,6 +546,32 @@ def _sidebar_nav_link(page_path: str, label: str, icon: str = "") -> None:
     )
 
 
+
+
+def render_session_page_link(page_path: str, label: str, icon: str = "") -> None:
+    """Render a page link that preserves fr_session across hard refreshes.
+
+    Do not use st.page_link for authenticated navigation because it drops query
+    parameters. This anchor keeps the signed session token in the URL.
+    """
+    href = _session_preserving_href(page_path)
+    safe_label = str(label).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    safe_icon = str(icon).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    st.markdown(
+        f"""
+        <a href="{href}" target="_self" style="
+            display: inline-block;
+            padding: 0.45rem 0.70rem;
+            margin: 0.15rem 0;
+            text-decoration: none;
+            color: inherit;
+            border: 1px solid rgba(49, 51, 63, 0.20);
+            border-radius: 0.45rem;
+        ">{safe_icon} {safe_label}</a>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def render_sidebar_navigation() -> None:
     restore_login_from_signed_url()
     _hide_native_sidebar_nav_css()
