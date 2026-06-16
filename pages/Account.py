@@ -290,8 +290,8 @@ else:
                         st.info("If the page does not refresh automatically, click Account again in the sidebar.")
                         st.rerun()
                 except Exception as exc:
-                    st.error("Login failed. Please check your credentials or reset your password.")
-                    st.caption(str(exc))
+    st.error("Login failed. Please check your credentials or reset your password.")
+    st.code(f"{type(exc).__name__}: {repr(exc)}")
 
     with sign_up_tab:
         st.subheader("Create Account")
