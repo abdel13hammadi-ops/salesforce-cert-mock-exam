@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
 import os
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from utils.access_control import (
     clear_login_state,
@@ -16,7 +18,7 @@ from utils.access_control import (
     unlock_admin,
 )
 
-APP_VERSION = "ACCOUNT_SPLIT_NAME_SIGNUP_V7"
+APP_VERSION = "ACCOUNT_TZ_LANG_DETECT_V8"
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -40,16 +42,28 @@ def get_existing_profile(email: str):
         return None
 
 
-def upsert_profile(email: str, full_name: str = "", language_code: str = "en", auth_user_id: str | None = None):
+def upsert_profile(
+    email: str,
+    full_name: str = "",
+    language_code: str = "en",
+    auth_user_id: str | None = None,
+    preferred_timezone: str | None = None,
+):
     email = str(email or "").strip().lower()
     if not email:
-        return {"email": "", "subscription_status": "free", "preferred_language_code": "en"}
+        return {
+            "email": "",
+            "subscription_status": "free",
+            "preferred_language_code": "en",
+            "preferred_timezone": "UTC",
+        }
 
     existing = get_existing_profile(email) or {}
     payload = {
         "email": email,
         "full_name": str(full_name or existing.get("full_name") or "").strip(),
         "preferred_language_code": str(language_code or existing.get("preferred_language_code") or "en").strip().lower() or "en",
+        "preferred_timezone": normalize_timezone(preferred_timezone or existing.get("preferred_timezone") or "UTC"),
         "subscription_status": str(existing.get("subscription_status") or "free").strip().lower(),
     }
     if auth_user_id or existing.get("auth_user_id"):
@@ -63,6 +77,24 @@ def upsert_profile(email: str, full_name: str = "", language_code: str = "en", a
     except Exception:
         # Login must not fail just because profile sync failed.
         return payload
+
+
+def update_profile_timezone(email: str, preferred_timezone: str) -> dict:
+    email = str(email or "").strip().lower()
+    preferred_timezone = normalize_timezone(preferred_timezone)
+    if not email:
+        return {}
+    try:
+        result = (
+            get_supabase_admin_client()
+            .table("app_users")
+            .update({"preferred_timezone": preferred_timezone})
+            .eq("email", email)
+            .execute()
+        )
+        return (result.data or [{}])[0]
+    except Exception:
+        return {}
 
 
 def load_languages():
@@ -80,6 +112,118 @@ def load_languages():
     except Exception:
         return [{"language_code": "en", "language_name": "English", "native_name": "English"}]
 
+
+
+def get_query_param(name: str) -> str:
+    try:
+        value = st.query_params.get(name, "")
+        if isinstance(value, list):
+            return str(value[0] if value else "")
+        return str(value or "")
+    except Exception:
+        return ""
+
+
+def render_browser_locale_probe() -> None:
+    """Capture browser timezone/language by writing safe query params once.
+
+    Python cannot read navigator.language or Intl timezone directly. This tiny
+    client-side probe preserves existing query params, including fr_session.
+    """
+    components.html(
+        """
+        <script>
+        (function () {
+            function getLoc() {
+                try {
+                    if (window.parent && window.parent.location) return window.parent.location;
+                } catch (e) {}
+                return window.location;
+            }
+
+            const loc = getLoc();
+            const url = new URL(loc.href);
+            let changed = false;
+
+            if (!url.searchParams.get("cb_tz")) {
+                try {
+                    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                    if (tz) {
+                        url.searchParams.set("cb_tz", tz);
+                        changed = true;
+                    }
+                } catch (e) {}
+            }
+
+            if (!url.searchParams.get("cb_lang")) {
+                try {
+                    const lang = navigator.language || (navigator.languages && navigator.languages[0]) || "en";
+                    if (lang) {
+                        url.searchParams.set("cb_lang", lang);
+                        changed = true;
+                    }
+                } catch (e) {}
+            }
+
+            if (changed) {
+                loc.replace(url.toString());
+            }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def normalize_timezone(value: str | None) -> str:
+    value = str(value or "").strip()
+    if not value:
+        return "UTC"
+    try:
+        ZoneInfo(value)
+        return value
+    except ZoneInfoNotFoundError:
+        return "UTC"
+    except Exception:
+        return "UTC"
+
+
+def detected_browser_timezone() -> str:
+    return normalize_timezone(get_query_param("cb_tz") or "UTC")
+
+
+def normalize_browser_language(value: str | None) -> str:
+    value = str(value or "").strip().lower()
+    if not value:
+        return "en"
+    return value.replace("_", "-").split("-", 1)[0] or "en"
+
+
+def load_question_language_codes() -> set[str]:
+    try:
+        result = (
+            get_supabase_admin_client()
+            .table("questions")
+            .select("language_code")
+            .eq("is_active", True)
+            .execute()
+        )
+        return {str(row.get("language_code") or "").strip().lower() for row in (result.data or []) if row.get("language_code")}
+    except Exception:
+        return {"en"}
+
+
+def default_language_from_browser(language_codes: list[str], question_language_codes: set[str]) -> str:
+    detected = normalize_browser_language(get_query_param("cb_lang") or "en")
+    active = {str(code or "").strip().lower() for code in language_codes}
+    available = {str(code or "").strip().lower() for code in question_language_codes}
+    if detected in active and detected in available:
+        return detected
+    if "en" in active and "en" in available:
+        return "en"
+    if "en" in active:
+        return "en"
+    return language_codes[0] if language_codes else "en"
 
 def language_label(row: dict) -> str:
     native = row.get("native_name") or row.get("language_name") or row.get("language_code")
@@ -150,6 +294,9 @@ def mark_password_reset_sent(email: str) -> None:
     st.session_state[password_reset_cooldown_key(email)] = datetime.now(timezone.utc)
 
 
+render_browser_locale_probe()
+
+
 def send_password_reset_email(email: str) -> None:
     email = str(email or "").strip().lower()
     if not email or "@" not in email:
@@ -190,11 +337,17 @@ st.caption(f"App version: {APP_VERSION}")
 languages = load_languages()
 language_codes = [row["language_code"] for row in languages] or ["en"]
 label_by_code = {row["language_code"]: language_label(row) for row in languages}
+question_language_codes = load_question_language_codes()
+detected_timezone = detected_browser_timezone()
+detected_default_language = default_language_from_browser(language_codes, question_language_codes)
 
 current_email = get_current_user_email()
 
 if current_email:
     profile = get_existing_profile(current_email) or {}
+    if profile and detected_timezone and profile.get("preferred_timezone") != detected_timezone:
+        timezone_update = update_profile_timezone(current_email, detected_timezone)
+        profile = {**profile, **timezone_update, "preferred_timezone": detected_timezone}
     if profile:
         merged = dict(profile)
         merged["email"] = current_email
@@ -206,7 +359,7 @@ if current_email:
     st.write(f"Subscription status: **{status}**")
 
     st.subheader("Profile")
-    saved_language = profile.get("preferred_language_code") or st.session_state.get("preferred_language_code", "en")
+    saved_language = profile.get("preferred_language_code") or st.session_state.get("preferred_language_code", detected_default_language)
     if saved_language not in language_codes:
         saved_language = "en" if "en" in language_codes else language_codes[0]
 
@@ -217,6 +370,7 @@ if current_email:
         index=language_codes.index(saved_language),
         format_func=lambda code: label_by_code.get(code, code),
     )
+    st.caption(f"Timezone: {detected_timezone} — detected automatically from this browser.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -226,6 +380,7 @@ if current_email:
                 full_name=full_name,
                 language_code=selected_language,
                 auth_user_id=st.session_state.get("auth_user_id") or profile.get("auth_user_id"),
+                preferred_timezone=detected_timezone,
             )
             save_logged_in_user(updated, persist=True)
             st.success("Profile saved ✅")
@@ -274,15 +429,19 @@ else:
                     else:
                         profile = get_existing_profile(login_email)
                         if not profile:
-                            profile = upsert_profile(login_email, "", "en", user.id)
+                            profile = upsert_profile(login_email, "", detected_default_language, user.id, detected_timezone)
                         elif not profile.get("auth_user_id"):
                             profile = upsert_profile(
                                 login_email,
                                 profile.get("full_name") or "",
-                                profile.get("preferred_language_code") or "en",
+                                profile.get("preferred_language_code") or detected_default_language,
                                 user.id,
+                                detected_timezone,
                             )
-                        profile = profile or {"email": login_email, "auth_user_id": user.id, "subscription_status": "free", "preferred_language_code": "en"}
+                        profile = profile or {"email": login_email, "auth_user_id": user.id, "subscription_status": "free", "preferred_language_code": detected_default_language, "preferred_timezone": detected_timezone}
+                        if detected_timezone and profile.get("preferred_timezone") != detected_timezone:
+                            timezone_update = update_profile_timezone(login_email, detected_timezone)
+                            profile = {**profile, **timezone_update, "preferred_timezone": detected_timezone}
                         profile["email"] = login_email
                         profile["auth_user_id"] = profile.get("auth_user_id") or user.id
                         save_logged_in_user(profile, persist=True)
@@ -309,7 +468,7 @@ else:
         selected_language = st.selectbox(
             "Preferred language",
             language_codes,
-            index=language_codes.index("en") if "en" in language_codes else 0,
+            index=language_codes.index(detected_default_language) if detected_default_language in language_codes else 0,
             format_func=lambda code: label_by_code.get(code, code),
             key="signup_language",
         )
@@ -334,7 +493,7 @@ else:
                     })
                     user = response.user
                     auth_user_id = user.id if user else None
-                    profile = upsert_profile(signup_email, full_name, selected_language, auth_user_id)
+                    profile = upsert_profile(signup_email, full_name, selected_language, auth_user_id, detected_timezone)
                     save_logged_in_user(profile, persist=True)
                     st.success("Account created ✅")
                     st.info("If email confirmation is enabled in Supabase, check your inbox to confirm your account.")
