@@ -8,16 +8,15 @@ import streamlit as st
 from utils.access_control import (
     render_app_chrome,
     get_current_user_email,
-    require_paid_access,
+    has_premium_access,
     get_supabase_client,
 )
 from utils.readiness import calculate_readiness, readiness_methodology_text
 
-APP_VERSION = "MY_PROGRESS_V7_READINESS_RESTORED"
+APP_VERSION = "MY_PROGRESS_V8_FREE_PREVIEW"
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
-require_paid_access("My Progress")
 
 
 def _safe_lower(value: Any, default: str = "") -> str:
@@ -259,6 +258,53 @@ def render_readiness_card(readiness: Dict[str, Any], passing_score: float, selec
             st.write("No strength signal yet.")
 
 
+def render_locked_progress_preview(user_email: str, subscription_status: str) -> None:
+    st.info(f"Account: {user_email} | Access: {subscription_status}")
+
+    st.warning("My Progress is a premium feature. This preview shows the kind of tracking unlocked with full access.")
+    st.markdown(
+        """
+        Full progress tracking gives you a readiness score, weak-domain breakdown, score trend,
+        and attempt history across your mock exams and practice sessions. The preview below uses sample data only.
+        """
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Sample Readiness", "74%")
+    c2.metric("Sample Status", "Borderline Ready")
+    c3.metric("Sample Confidence", "Medium")
+    c4.metric("Sample Questions", "180")
+
+    st.subheader("Sample Readiness Components")
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("Recent Mock", "76%")
+    r2.metric("Domain Readiness", "71%")
+    r3.metric("Consistency", "68%")
+    r4.metric("Practice Volume", "82%")
+
+    st.subheader("Sample Weak Areas")
+    sample_domains = pd.DataFrame(
+        [
+            {"Domain": "Security and Access", "Accuracy %": 58, "Priority": "High"},
+            {"Domain": "Automation and Process", "Accuracy %": 63, "Priority": "High"},
+            {"Domain": "Data Management", "Accuracy %": 69, "Priority": "Medium"},
+        ]
+    )
+    st.dataframe(sample_domains, use_container_width=True, hide_index=True)
+
+    st.subheader("Sample Recent Attempts")
+    sample_attempts = pd.DataFrame(
+        [
+            {"Completed": "Sample Attempt 3", "Mode": "Timed Mock Exam", "Score %": 76, "Result": "Pass-range"},
+            {"Completed": "Sample Attempt 2", "Mode": "Practice by Category", "Score %": 70, "Result": "Needs review"},
+            {"Completed": "Sample Attempt 1", "Mode": "Free Mock Exam", "Score %": 64, "Result": "Below target"},
+        ]
+    )
+    st.dataframe(sample_attempts, use_container_width=True, hide_index=True)
+
+    st.info("Complete the Free Preview to sample the exam flow. Full progress tracking unlocks real attempt history, readiness scoring, and weak-area analysis.")
+
+
 st.title("My Progress")
 st.caption(f"App version: {APP_VERSION}")
 
@@ -270,6 +316,10 @@ if not user_email:
 profile = fetch_user_profile(user_email)
 preferred_language = _safe_lower(profile.get("preferred_language_code"), "en") or "en"
 subscription_status = _safe_lower(profile.get("subscription_status") or st.session_state.get("subscription_status"), "free")
+
+if not has_premium_access(user_email):
+    render_locked_progress_preview(user_email, subscription_status)
+    st.stop()
 
 st.info(f"Account: {user_email} | Access: {subscription_status} | Preferred language: {preferred_language}")
 
