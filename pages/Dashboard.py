@@ -22,7 +22,7 @@ try:
 except Exception:
     calculate_readiness = None
 
-APP_VERSION = "DASHBOARD_V2_PRODUCT_POLISH"
+APP_VERSION = "DASHBOARD_V3_READINESS_EMA"
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 
@@ -144,6 +144,29 @@ def fetch_user_attempts(user_email: str, exam_name: Optional[str] = None) -> Lis
         ),
         reverse=True,
     )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_user_question_attempts(user_email: str, exam_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    user_email = safe_lower(user_email)
+    if not user_email:
+        return []
+    try:
+        query = (
+            get_supabase_client()
+            .table("question_attempts")
+            .select(
+                "id,exam_attempt_id,question_id,user_email,exam_name,language_code,category,difficulty,"
+                "is_correct,time_spent_seconds,answered_at"
+            )
+            .ilike("user_email", user_email)
+        )
+        if exam_name:
+            query = query.eq("exam_name", exam_name)
+        result = query.order("answered_at", desc=True).execute()
+        return result.data or []
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -359,6 +382,7 @@ def render_logged_in_dashboard(email: str) -> None:
         st.metric("Passing Score", f"{safe_int(cert.get('passing_score'), 68)}%")
 
     attempts = fetch_user_attempts(email, selected_exam)
+    question_attempts = fetch_user_question_attempts(email, selected_exam)
     question_health = fetch_question_health_for_exam(selected_exam, preferred_language)
     premium = has_premium_access(email)
 
@@ -422,15 +446,27 @@ def render_logged_in_dashboard(email: str) -> None:
             passing_score=passing_score,
             domain_weights=domain_weights,
             expected_question_count=expected_question_count,
-            question_bank_total=None,
+            question_bank_total=safe_int(question_health.get("approved_questions"), 0),
+            question_attempts=question_attempts,
+            time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
         )
         r1, r2, r3, r4 = st.columns(4)
         r1.metric("Readiness", f"{round(safe_float(readiness.get('score')), 2)}%")
         r2.metric("Status", safe_str(readiness.get("label"), "Not Enough Data"))
         r3.metric("Confidence", safe_str(readiness.get("confidence"), "No Data"))
-        r4.metric("Questions Practiced", safe_int(readiness.get("total_attempted"), 0))
+        r4.metric("Unique Questions Seen", safe_int(readiness.get("unique_questions_seen"), 0))
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Recency Accuracy", f"{safe_float(readiness.get('accuracy_score'), 0):.2f}%")
+        c2.metric("Coverage", f"{safe_float(readiness.get('coverage_score'), 0):.2f}%")
+        c3.metric("Domain Balance", f"{safe_float(readiness.get('domain_balance_score'), 0):.2f}%")
+        c4.metric("Pacing", f"{safe_float(readiness.get('pacing_score'), 0):.2f}%")
+
         recommendation = safe_str(readiness.get("recommendation"), "Complete more attempts to improve the readiness signal.")
-        st.info(recommendation)
+        if readiness.get("guardrail_applied"):
+            st.warning(recommendation)
+        else:
+            st.info(recommendation)
 
     st.subheader("Weakest domains")
     if domain_df.empty:

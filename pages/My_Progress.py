@@ -14,7 +14,7 @@ from utils.access_control import (
 )
 from utils.readiness import calculate_readiness, readiness_methodology_text
 
-APP_VERSION = "MY_PROGRESS_V9_TZ_DISPLAY"
+APP_VERSION = "MY_PROGRESS_V10_READINESS_EMA"
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -206,6 +206,50 @@ def load_attempts(user_email: str, exam_name: str | None = None) -> Dict[str, An
         return {"rows": [], "error": str(exc)}
 
 
+@st.cache_data(ttl=60)
+def load_question_attempts(user_email: str, exam_name: str | None = None) -> Dict[str, Any]:
+    """Load question-level attempts for the new readiness formula."""
+    if not user_email:
+        return {"rows": [], "error": "Missing user email."}
+    try:
+        query = (
+            get_supabase_client()
+            .table("question_attempts")
+            .select(
+                "id,exam_attempt_id,question_id,user_email,exam_name,language_code,category,difficulty,"
+                "is_correct,time_spent_seconds,answered_at"
+            )
+            .ilike("user_email", user_email)
+        )
+        if exam_name:
+            query = query.eq("exam_name", exam_name)
+        result = query.order("answered_at", desc=True).execute()
+        return {"rows": result.data or [], "error": None}
+    except Exception as exc:
+        return {"rows": [], "error": str(exc)}
+
+
+@st.cache_data(ttl=60)
+def fetch_question_bank_total(exam_name: str, language_code: str) -> int:
+    if not exam_name:
+        return 0
+    try:
+        result = (
+            get_supabase_client()
+            .table("questions")
+            .select("id")
+            .eq("exam_name", exam_name)
+            .eq("language_code", language_code or "en")
+            .eq("is_active", True)
+            .eq("is_exam_eligible", True)
+            .eq("quality_status", "approved")
+            .execute()
+        )
+        return len(result.data or [])
+    except Exception:
+        return 0
+
+
 def get_correct_count(attempt: Dict[str, Any]) -> int:
     # Your table has correct_count NULL on old rows; correct_answers is the reliable value.
     if attempt.get("correct_answers") is not None:
@@ -253,14 +297,23 @@ def render_readiness_card(readiness: Dict[str, Any], passing_score: float, selec
     c4.metric("Questions Practiced", _safe_int(readiness.get("total_attempted"), 0))
 
     st.info(readiness_methodology_text())
-    st.warning("Readiness is not a guarantee of passing. It combines recent mock performance, weighted domain performance, consistency, and practice volume.")
+    if readiness.get("guardrail_applied"):
+        st.warning(f"Guardrail active: visible readiness is capped at {readiness.get('guardrail_cap', 65)} until 2 full-length mock exams are completed.")
+    else:
+        st.warning("Readiness is not a guarantee of passing. It is a study-planning signal based on accuracy, coverage, domain balance, and pacing.")
 
     st.subheader("Readiness Components")
     r1, r2, r3, r4 = st.columns(4)
-    r1.metric("Recent Mock", f"{readiness.get('recent_mock_score', 0)}%")
-    r2.metric("Domain Readiness", f"{readiness.get('weighted_domain_score', 0)}%")
-    r3.metric("Consistency", f"{readiness.get('consistency_score', 0)}%")
-    r4.metric("Practice Volume", f"{readiness.get('practice_volume_score', 0)}%")
+    r1.metric("Recency Accuracy", f"{readiness.get('accuracy_score', 0)}%")
+    r2.metric("Coverage", f"{readiness.get('coverage_score', 0)}%")
+    r3.metric("Domain Balance", f"{readiness.get('domain_balance_score', 0)}%")
+    r4.metric("Pacing Stability", f"{readiness.get('pacing_score', 0)}%")
+
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Unique Questions Seen", _safe_int(readiness.get("unique_questions_seen"), 0))
+    d2.metric("Full Mocks", _safe_int(readiness.get("full_mock_count"), 0))
+    d3.metric("Median Time/Q", f"{_safe_float(readiness.get('median_time_per_question'), 0):.1f}s")
+    d4.metric("Target Time/Q", f"{_safe_float(readiness.get('target_time_per_question'), 0):.1f}s")
 
     st.write(readiness.get("recommendation", "Complete more attempts to improve the readiness signal."))
 
@@ -302,10 +355,10 @@ def render_locked_progress_preview(user_email: str, subscription_status: str) ->
 
     st.subheader("Sample Readiness Components")
     r1, r2, r3, r4 = st.columns(4)
-    r1.metric("Recent Mock", "76%")
-    r2.metric("Domain Readiness", "71%")
-    r3.metric("Consistency", "68%")
-    r4.metric("Practice Volume", "82%")
+    r1.metric("Recency Accuracy", "76%")
+    r2.metric("Coverage", "71%")
+    r3.metric("Domain Balance", "68%")
+    r4.metric("Pacing Stability", "82%")
 
     st.subheader("Sample Weak Areas")
     sample_domains = pd.DataFrame(
@@ -369,15 +422,24 @@ attempt_result = load_attempts(user_email, selected_exam)
 attempts = attempt_result.get("rows", [])
 query_error = attempt_result.get("error")
 
+question_attempt_result = load_question_attempts(user_email, selected_exam)
+question_attempts = question_attempt_result.get("rows", [])
+question_attempt_error = question_attempt_result.get("error")
+question_bank_total = fetch_question_bank_total(selected_exam, preferred_language)
+
 with st.expander("Progress query diagnostics", expanded=False):
     st.write(f"Current user email: `{user_email}`")
     st.write(f"Selected exam: `{selected_exam}`")
     st.write(f"Attempts returned: `{len(attempts)}`")
+    st.write(f"Question attempts returned: `{len(question_attempts)}`")
+    st.write(f"Approved question bank size: `{question_bank_total}`")
     if query_error:
         st.error(query_error)
+    if question_attempt_error:
+        st.error(question_attempt_error)
 
-if query_error:
-    st.error("Progress could not be loaded because the database query failed. This is a setup/code issue, not 'no attempts'.")
+if query_error or question_attempt_error:
+    st.error("Progress could not be loaded because a database query failed. This is a setup/code issue, not 'no attempts'.")
     st.stop()
 
 if not attempts:
@@ -397,7 +459,9 @@ readiness = calculate_readiness(
     passing_score=passing_score,
     domain_weights=domain_weights,
     expected_question_count=expected_question_count,
-    question_bank_total=None,
+    question_bank_total=question_bank_total,
+    question_attempts=question_attempts,
+    time_limit_minutes=_safe_int(cert.get("time_limit_minutes"), 105),
 )
 
 render_readiness_card(readiness, passing_score, selected_exam)
