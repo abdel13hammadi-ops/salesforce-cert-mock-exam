@@ -12,7 +12,7 @@ from utils.access_control import (
     render_app_chrome,
 )
 
-APP_VERSION = "SUPPORT_V2_PRODUCT_POLISH"
+APP_VERSION = "SUPPORT_V3_TICKET_DETAILS"
 
 st.set_page_config(page_title="Support", layout="wide")
 render_app_chrome()
@@ -227,7 +227,7 @@ else:
     try:
         result = (
             supabase.table("support_tickets")
-            .select("id,user_email,issue_type,subject,status,created_at,related_question_id")
+            .select("id,user_email,issue_type,subject,message,status,created_at,related_question_id")
             .eq("user_email", email_for_lookup)
             .order("created_at", desc=True)
             .limit(10)
@@ -240,16 +240,24 @@ else:
         else:
             st.caption(f"Showing tickets for {email_for_lookup}. Times shown in {user_timezone or 'UTC'}.")
             for row in rows:
-                with st.container(border=True):
-                    top_left, top_right = st.columns([4, 1])
-                    top_left.markdown(f"**#{row.get('id')} — {safe_text(row.get('subject'), 'No subject')}**")
-                    top_right.markdown(f"**{status_label(row.get('status'))}**")
-                    st.write(
-                        f"Type: {safe_text(row.get('issue_type'), 'N/A')} | "
-                        f"Created: {format_for_user_timezone(row.get('created_at'), user_timezone)}"
-                    )
+                ticket_id = safe_text(row.get("id"), "N/A")
+                ticket_subject = safe_text(row.get("subject"), "No subject")
+                ticket_status = status_label(row.get("status"))
+                ticket_created = format_for_user_timezone(row.get("created_at"), user_timezone)
+                ticket_issue_type = safe_text(row.get("issue_type"), "N/A")
+                ticket_message = safe_text(row.get("message"), "No message saved.").strip() or "No message saved."
+
+                with st.expander(f"Ticket No: {ticket_id} — {ticket_subject} · {ticket_status}", expanded=False):
+                    detail_left, detail_right = st.columns([2, 1])
+                    detail_left.markdown(f"**Subject:** {ticket_subject}")
+                    detail_right.markdown(f"**Status:** {ticket_status}")
+                    st.write(f"**Ticket No:** {ticket_id}")
+                    st.write(f"**Issue type:** {ticket_issue_type}")
+                    st.write(f"**Created:** {ticket_created}")
                     if row.get("related_question_id"):
-                        st.caption(f"Question ID: {row.get('related_question_id')}")
+                        st.write(f"**Question ID:** {row.get('related_question_id')}")
+                    st.markdown("**Details**")
+                    st.write(ticket_message)
     except Exception as e:
         st.warning("Recent tickets could not be loaded yet. Ticket submission may still work.")
         with st.expander("Show technical error"):
