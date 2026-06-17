@@ -13,7 +13,7 @@ from utils.access_control import render_app_chrome, get_current_user_email as sh
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "SUPABASE_DB_V15_ATTEMPT_DEDUPE"
+APP_VERSION = "SUPABASE_DB_V16_QUESTION_ATTEMPT_TRACKING"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -760,6 +760,7 @@ def ensure_exam_generated(exam_access_type, exam_name, language_code, category_c
         st.session_state.started = False
         st.session_state.review_mode = False
         st.session_state.attempt_saved = False
+        reset_question_timing()
         st.session_state.exam_access_type = exam_access_type
         st.session_state.exam_key = exam_key
 
@@ -781,6 +782,97 @@ def format_diff(value):
     return str(value).strip().capitalize()
 
 
+def _safe_json_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value]
+    return [str(value)]
+
+
+def _clamped_seconds(value, max_seconds=7200):
+    try:
+        seconds = float(value or 0)
+    except Exception:
+        return 0.0
+    if seconds < 0:
+        return 0.0
+    return round(min(seconds, max_seconds), 3)
+
+
+def reset_question_timing():
+    st.session_state.question_time_spent = {}
+    st.session_state.question_entered_at = time.time()
+    st.session_state.question_timing_index = int(st.session_state.get("current_question") or 0)
+
+
+def record_current_question_time():
+    questions_now = st.session_state.get("all_questions") or []
+    if not questions_now:
+        return
+
+    try:
+        idx = int(st.session_state.get("question_timing_index", st.session_state.get("current_question", 0)) or 0)
+    except Exception:
+        idx = 0
+
+    if idx < 0 or idx >= len(questions_now):
+        st.session_state.question_entered_at = time.time()
+        st.session_state.question_timing_index = int(st.session_state.get("current_question") or 0)
+        return
+
+    entered_at = st.session_state.get("question_entered_at")
+    now = time.time()
+    if entered_at:
+        elapsed = _clamped_seconds(now - float(entered_at))
+        existing = float((st.session_state.get("question_time_spent") or {}).get(idx, 0) or 0)
+        st.session_state.question_time_spent[idx] = round(existing + elapsed, 3)
+
+    st.session_state.question_entered_at = now
+    st.session_state.question_timing_index = int(st.session_state.get("current_question") or 0)
+
+
+def move_to_question(new_index):
+    record_current_question_time()
+    st.session_state.current_question = int(new_index)
+    st.session_state.question_entered_at = time.time()
+    st.session_state.question_timing_index = int(new_index)
+
+
+def build_question_attempt_rows(exam_attempt_id, user_email, questions_to_save=None, answers_to_save=None):
+    questions_to_save = questions_to_save or st.session_state.get("all_questions") or []
+    answers_to_save = answers_to_save if answers_to_save is not None else st.session_state.get("answers", {})
+    question_times = st.session_state.get("question_time_spent") or {}
+
+    rows = []
+    for idx, q in enumerate(questions_to_save):
+        selected = _safe_json_list((answers_to_save or {}).get(idx, []))
+        correct_answers = _safe_json_list(q.get("answers", []))
+        rows.append({
+            "exam_attempt_id": exam_attempt_id,
+            "question_id": int(q.get("id")),
+            "user_email": user_email,
+            "exam_name": q.get("exam_name") or SELECTED_EXAM_NAME,
+            "language_code": q.get("language_code") or SELECTED_LANGUAGE_CODE,
+            "category": q.get("category") or q.get("topic") or "Uncategorized",
+            "difficulty": str(q.get("difficulty") or "medium").strip().lower(),
+            "selected_options": selected,
+            "correct_options": correct_answers,
+            "is_correct": is_correct(selected, correct_answers),
+            "time_spent_seconds": _clamped_seconds(question_times.get(idx, 0)),
+            "answered_at": datetime.now(timezone.utc).isoformat(),
+        })
+    return rows
+
+
+def save_question_attempt_rows(supabase, rows):
+    if not rows:
+        return
+    chunk_size = 100
+    for start in range(0, len(rows), chunk_size):
+        supabase.table("question_attempts").insert(rows[start:start + chunk_size]).execute()
+
+
 # Defaults are initialized before exam generation so access type/certification/language can control the exam set.
 defaults = {
     "started": False,
@@ -795,6 +887,9 @@ defaults = {
     "choice_orders": {},
     "attempt_saved": False,
     "attempt_save_checked": False,
+    "question_time_spent": {},
+    "question_entered_at": None,
+    "question_timing_index": 0,
 }
 
 for key, value in defaults.items():
@@ -989,6 +1084,10 @@ def apply_pending_exam_state_if_valid(bank, exam_key):
     st.session_state.marked = set(i for i in (state.get("marked") or []) if isinstance(i, int) and 0 <= i < len(restored_questions))
     st.session_state.choice_orders = _restore_choice_orders(state, restored_questions)
     st.session_state.all_questions = restored_questions
+    if "question_time_spent" not in st.session_state or not isinstance(st.session_state.get("question_time_spent"), dict):
+        st.session_state.question_time_spent = {}
+    st.session_state.question_entered_at = time.time()
+    st.session_state.question_timing_index = int(st.session_state.current_question or 0)
     st.session_state["_exam_state_restored_once"] = True
     st.session_state.pop("_pending_exam_state", None)
     return restored_questions
@@ -1204,7 +1303,19 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
     }
 
     try:
-        supabase.table("exam_attempts").insert(payload).execute()
+        result = supabase.table("exam_attempts").insert(payload).execute()
+        inserted_rows = getattr(result, "data", None) or []
+        exam_attempt_id = inserted_rows[0].get("id") if inserted_rows else None
+
+        if exam_attempt_id:
+            question_rows = build_question_attempt_rows(
+                exam_attempt_id=exam_attempt_id,
+                user_email=user_email,
+                questions_to_save=questions,
+                answers_to_save=st.session_state.get("answers", {}),
+            )
+            save_question_attempt_rows(supabase, question_rows)
+
         return True, None
     except Exception as exc:
         return False, str(exc)
@@ -1297,6 +1408,7 @@ if not st.session_state.started:
             st.session_state.submitted = False
             st.session_state.attempt_saved = False
             st.session_state.attempt_save_checked = False
+            reset_question_timing()
             persist_exam_state_to_query(questions)
             st.rerun()
     with col_regen:
@@ -1310,6 +1422,7 @@ elif not st.session_state.submitted:
     remaining = (EXAM_MINUTES * 60) - elapsed
 
     if remaining <= 0:
+        record_current_question_time()
         st.session_state.submitted = True
         st.rerun()
 
@@ -1341,7 +1454,7 @@ elif not st.session_state.submitted:
         if i in st.session_state.marked:
             label += " 🚩"
         if st.sidebar.button(label, key=f"nav_{i}"):
-            st.session_state.current_question = i
+            move_to_question(i)
             st.session_state.review_mode = False
             persist_exam_state_to_query(questions)
             st.rerun()
@@ -1375,6 +1488,7 @@ elif not st.session_state.submitted:
                 st.rerun()
         with col2:
             if st.button("Final Submit", type="primary"):
+                record_current_question_time()
                 st.session_state.submitted = True
                 persist_exam_state_to_query(questions)
                 st.rerun()
@@ -1441,11 +1555,11 @@ elif not st.session_state.submitted:
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             if st.button("← Previous") and q_index > 0:
-                st.session_state.current_question -= 1
+                move_to_question(q_index - 1)
                 st.rerun()
         with col2:
             if st.button("Next →") and q_index < len(questions) - 1:
-                st.session_state.current_question += 1
+                move_to_question(q_index + 1)
                 st.rerun()
         with col3:
             if q_index in st.session_state.marked:
@@ -1458,10 +1572,13 @@ elif not st.session_state.submitted:
                     st.rerun()
         with col4:
             if st.button("Review / Submit", type="primary"):
+                record_current_question_time()
                 st.session_state.review_mode = True
                 st.rerun()
 
 else:
+    if not st.session_state.get("attempt_save_checked", False):
+        record_current_question_time()
     correct = 0
     for i, q in enumerate(questions):
         if is_correct(st.session_state.answers.get(i, []), q["answers"]):
