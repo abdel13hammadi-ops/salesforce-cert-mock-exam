@@ -21,7 +21,7 @@ from utils.access_control import (
     unlock_admin,
 )
 
-APP_VERSION = "ACCOUNT_IDENTITY_GUARD_V1"
+APP_VERSION = "ACCOUNT_IDENTITY_GUARD_V2"
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -404,6 +404,22 @@ def mark_password_reset_sent(email: str) -> None:
     st.session_state[password_reset_cooldown_key(email)] = datetime.now(timezone.utc)
 
 
+def force_auth_client_sign_out() -> None:
+    """Best-effort sign out so signup cannot inherit or create an app session."""
+    try:
+        get_supabase_auth_client().auth.sign_out()
+    except Exception:
+        pass
+
+
+def stop_duplicate_signup() -> None:
+    """Reject duplicate signup hard and prevent any stale session from carrying forward."""
+    force_auth_client_sign_out()
+    clear_login_state()
+    st.error(DUPLICATE_ACCOUNT_MESSAGE)
+    st.stop()
+
+
 render_browser_locale_probe()
 
 
@@ -584,6 +600,7 @@ else:
         )
 
         if st.button("Create Account", type="primary"):
+            signup_email = normalize_email(signup_email)
             if not first_name:
                 st.warning("Enter your first name.")
             elif not last_name:
@@ -596,31 +613,48 @@ else:
                 st.warning("Passwords do not match.")
             else:
                 try:
+                    # Hard pre-check. Never call Supabase signup for an email we already know.
                     if email_already_has_account(signup_email):
-                        st.error(DUPLICATE_ACCOUNT_MESSAGE)
-                    else:
-                        response = get_supabase_auth_client().auth.sign_up({
-                            "email": signup_email,
-                            "password": signup_password,
-                            "options": {"data": {"full_name": full_name}},
-                        })
-                        user = response.user
-                        auth_user_id = str(getattr(user, "id", "") or "").strip() if user else ""
-                        if not auth_user_id:
-                            st.error("Account creation failed. Supabase did not return a user ID. Please try logging in or resetting your password.")
-                        else:
-                            profile = upsert_profile(signup_email, full_name, selected_language, auth_user_id, detected_timezone)
-                            save_logged_in_user(profile, persist=True)
-                            st.success("Account created ✅")
-                            st.info("If email confirmation is enabled in Supabase, check your inbox to confirm your account.")
-                            st.rerun()
+                        stop_duplicate_signup()
+
+                    # Create the Supabase Auth identity only after duplicate checks pass.
+                    response = get_supabase_auth_client().auth.sign_up({
+                        "email": signup_email,
+                        "password": signup_password,
+                        "options": {"data": {"full_name": full_name}},
+                    })
+                    user = response.user
+                    auth_user_id = str(getattr(user, "id", "") or "").strip() if user else ""
+
+                    if not auth_user_id:
+                        force_auth_client_sign_out()
+                        clear_login_state()
+                        st.error("Account creation failed. Supabase did not return a user ID. Please try logging in or resetting your password.")
+                        st.stop()
+
+                    # Defensive post-check. Supabase can return non-error responses for existing emails.
+                    # If an app profile now exists before this flow created it, this is not a new signup.
+                    existing_profile_after_signup = get_existing_profile_strict(signup_email)
+                    if existing_profile_after_signup:
+                        stop_duplicate_signup()
+
+                    # New signup only. Create the app profile, but do NOT log the user in here.
+                    # This prevents duplicate-signup attempts from becoming a session hijack path.
+                    upsert_profile(signup_email, full_name, selected_language, auth_user_id, detected_timezone)
+                    force_auth_client_sign_out()
+                    clear_login_state()
+                    st.success("Account created. Check your email if confirmation is required, then log in.")
+                    st.stop()
                 except Exception as exc:
                     msg = str(exc).lower()
+                    force_auth_client_sign_out()
+                    clear_login_state()
                     if "already" in msg or "duplicate" in msg or "unique" in msg or "registered" in msg:
                         st.error(DUPLICATE_ACCOUNT_MESSAGE)
                     else:
                         st.error("Account creation is temporarily unavailable because the existing-email check failed.")
                         st.caption(str(exc))
+                    st.stop()
 
 
     with reset_tab:
