@@ -2,6 +2,7 @@ import json
 import random
 from collections import defaultdict
 from datetime import datetime, timezone
+import time
 
 import pandas as pd
 import streamlit as st
@@ -14,7 +15,7 @@ from utils.access_control import (
     has_premium_access,
 )
 
-APP_VERSION = "WEAK_AREAS_PRACTICE_V10_FREE_PREVIEW"
+APP_VERSION = "WEAK_AREAS_PRACTICE_V11_QUESTION_ATTEMPT_TRACKING"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
@@ -236,6 +237,85 @@ def is_correct(user_ids, correct_ids):
     return set(user_ids or []) == set(correct_ids or [])
 
 
+def _clamped_seconds(value, max_seconds=7200):
+    try:
+        seconds = float(value or 0)
+    except Exception:
+        return 0.0
+    if seconds < 0:
+        return 0.0
+    return round(min(seconds, max_seconds), 3)
+
+
+def reset_weak_timing():
+    st.session_state.weak_question_time_spent = {}
+    st.session_state.weak_question_entered_at = time.time()
+    st.session_state.weak_timing_index = int(st.session_state.get("weak_current_index") or 0)
+
+
+def record_current_weak_time():
+    questions = st.session_state.get("weak_questions") or []
+    if not questions:
+        return
+
+    try:
+        idx = int(st.session_state.get("weak_timing_index", st.session_state.get("weak_current_index", 0)) or 0)
+    except Exception:
+        idx = 0
+
+    now = time.time()
+    entered_at = st.session_state.get("weak_question_entered_at")
+    if entered_at is not None and 0 <= idx < len(questions):
+        elapsed = _clamped_seconds(now - float(entered_at))
+        existing = float((st.session_state.get("weak_question_time_spent") or {}).get(idx, 0) or 0)
+        st.session_state.weak_question_time_spent[idx] = round(existing + elapsed, 3)
+
+    st.session_state.weak_question_entered_at = now
+    st.session_state.weak_timing_index = int(st.session_state.get("weak_current_index") or 0)
+
+
+def move_to_weak_question(new_index):
+    record_current_weak_time()
+    st.session_state.weak_current_index = int(new_index)
+    st.session_state.weak_question_entered_at = time.time()
+    st.session_state.weak_timing_index = int(new_index)
+
+
+def option_texts_by_id(question, ids):
+    ids = {str(v) for v in (ids or [])}
+    return [opt.get("text", "") for opt in question.get("options", []) if str(opt.get("id")) in ids]
+
+
+def build_question_attempt_rows(exam_attempt_id, user_email, questions, answers):
+    question_times = st.session_state.get("weak_question_time_spent") or {}
+    rows = []
+    for idx, q in enumerate(questions or []):
+        selected_ids = [str(v) for v in (answers.get(idx, []) if answers else [])]
+        correct_ids = [str(v) for v in q.get("correct_ids", [])]
+        rows.append({
+            "exam_attempt_id": exam_attempt_id,
+            "question_id": int(q.get("id")),
+            "user_email": user_email,
+            "exam_name": q.get("exam_name") or st.session_state.get("weak_exam_name"),
+            "language_code": q.get("language_code") or st.session_state.get("weak_language_code") or "en",
+            "category": q.get("category") or "Uncategorized",
+            "difficulty": str(q.get("difficulty") or "medium").strip().lower(),
+            "selected_options": option_texts_by_id(q, selected_ids),
+            "correct_options": option_texts_by_id(q, correct_ids),
+            "is_correct": is_correct(selected_ids, correct_ids),
+            "time_spent_seconds": _clamped_seconds(question_times.get(idx, 0)),
+            "answered_at": datetime.now(timezone.utc).isoformat(),
+        })
+    return rows
+
+
+def save_question_attempt_rows(supabase, rows):
+    if not rows:
+        return
+    for start in range(0, len(rows), 100):
+        supabase.table("question_attempts").insert(rows[start:start + 100]).execute()
+
+
 def build_breakdown(questions, answers, field):
     stats = defaultdict(lambda: {"correct": 0, "total": 0})
     for i, q in enumerate(questions):
@@ -275,13 +355,25 @@ def save_weak_attempt(score, correct, total, category_label, domain_breakdown, d
         "exam_name": exam_name,
         "language_code": language_code,
     }
-    get_supabase_client().table("exam_attempts").insert(payload).execute()
+    supabase = get_supabase_client()
+    result = supabase.table("exam_attempts").insert(payload).execute()
+    inserted_rows = getattr(result, "data", None) or []
+    exam_attempt_id = inserted_rows[0].get("id") if inserted_rows else None
+    if exam_attempt_id:
+        question_rows = build_question_attempt_rows(
+            exam_attempt_id=exam_attempt_id,
+            user_email=user_email,
+            questions=st.session_state.get("weak_questions", []),
+            answers=st.session_state.get("weak_answers", {}),
+        )
+        save_question_attempt_rows(supabase, question_rows)
 
 
 def reset_weak():
     for key in [
         "weak_started", "weak_submitted", "weak_current_index", "weak_answers", "weak_feedback_shown",
         "weak_saved", "weak_questions", "weak_categories", "weak_exam_name", "weak_language_code",
+        "weak_question_time_spent", "weak_question_entered_at", "weak_timing_index",
     ]:
         st.session_state.pop(key, None)
     st.rerun()
@@ -439,6 +531,7 @@ if not st.session_state.get("weak_started", False):
         st.session_state.weak_answers = {}
         st.session_state.weak_feedback_shown = False
         st.session_state.weak_saved = False
+        reset_weak_timing()
         st.rerun()
 
 elif not st.session_state.get("weak_submitted", False):
@@ -478,7 +571,7 @@ elif not st.session_state.get("weak_submitted", False):
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("Previous") and q_index > 0:
-            st.session_state.weak_current_index -= 1
+            move_to_weak_question(q_index - 1)
             st.session_state.weak_feedback_shown = False
             st.rerun()
     with col2:
@@ -487,11 +580,12 @@ elif not st.session_state.get("weak_submitted", False):
     with col3:
         if q_index < len(questions) - 1:
             if st.button("Next", type="primary"):
-                st.session_state.weak_current_index += 1
+                move_to_weak_question(q_index + 1)
                 st.session_state.weak_feedback_shown = False
                 st.rerun()
         else:
             if st.button("Submit Practice", type="primary"):
+                record_current_weak_time()
                 st.session_state.weak_submitted = True
                 st.rerun()
 
@@ -524,6 +618,7 @@ else:
     c3.metric("Focus Domains", len(st.session_state.get("weak_categories", [])))
 
     if not st.session_state.get("weak_saved", False):
+        record_current_weak_time()
         try:
             save_weak_attempt(score, correct, total, category_label, domain_breakdown, difficulty_breakdown, st.session_state.weak_exam_name, st.session_state.weak_language_code)
             st.session_state.weak_saved = True

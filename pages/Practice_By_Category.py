@@ -1,6 +1,7 @@
 import random
 from collections import defaultdict
 from datetime import datetime, timezone
+import time
 
 import streamlit as st
 from utils.access_control import (
@@ -11,7 +12,7 @@ from utils.access_control import (
     has_premium_access,
 )
 
-APP_VERSION = "PRACTICE_BY_CATEGORY_V6_FREE_PREVIEW"
+APP_VERSION = "PRACTICE_BY_CATEGORY_V7_QUESTION_ATTEMPT_TRACKING"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
@@ -185,6 +186,7 @@ def reset_practice():
         "practice_started", "practice_submitted", "practice_current_index", "practice_questions",
         "practice_answers", "practice_feedback_shown", "practice_saved", "practice_category",
         "practice_count", "practice_exam_name", "practice_language_code",
+        "practice_question_time_spent", "practice_question_entered_at", "practice_timing_index",
     ]
     for key in keys:
         st.session_state.pop(key, None)
@@ -193,6 +195,85 @@ def reset_practice():
 
 def is_correct(user_ids, correct_ids):
     return set(user_ids or []) == set(correct_ids or [])
+
+
+def _clamped_seconds(value, max_seconds=7200):
+    try:
+        seconds = float(value or 0)
+    except Exception:
+        return 0.0
+    if seconds < 0:
+        return 0.0
+    return round(min(seconds, max_seconds), 3)
+
+
+def reset_practice_timing():
+    st.session_state.practice_question_time_spent = {}
+    st.session_state.practice_question_entered_at = time.time()
+    st.session_state.practice_timing_index = int(st.session_state.get("practice_current_index") or 0)
+
+
+def record_current_practice_time():
+    questions = st.session_state.get("practice_questions") or []
+    if not questions:
+        return
+
+    try:
+        idx = int(st.session_state.get("practice_timing_index", st.session_state.get("practice_current_index", 0)) or 0)
+    except Exception:
+        idx = 0
+
+    now = time.time()
+    entered_at = st.session_state.get("practice_question_entered_at")
+    if entered_at is not None and 0 <= idx < len(questions):
+        elapsed = _clamped_seconds(now - float(entered_at))
+        existing = float((st.session_state.get("practice_question_time_spent") or {}).get(idx, 0) or 0)
+        st.session_state.practice_question_time_spent[idx] = round(existing + elapsed, 3)
+
+    st.session_state.practice_question_entered_at = now
+    st.session_state.practice_timing_index = int(st.session_state.get("practice_current_index") or 0)
+
+
+def move_to_practice_question(new_index):
+    record_current_practice_time()
+    st.session_state.practice_current_index = int(new_index)
+    st.session_state.practice_question_entered_at = time.time()
+    st.session_state.practice_timing_index = int(new_index)
+
+
+def option_texts_by_id(question, ids):
+    ids = {str(v) for v in (ids or [])}
+    return [opt.get("text", "") for opt in question.get("options", []) if str(opt.get("id")) in ids]
+
+
+def build_question_attempt_rows(exam_attempt_id, user_email, questions, answers):
+    question_times = st.session_state.get("practice_question_time_spent") or {}
+    rows = []
+    for idx, q in enumerate(questions or []):
+        selected_ids = [str(v) for v in (answers.get(idx, []) if answers else [])]
+        correct_ids = [str(v) for v in q.get("correct_ids", [])]
+        rows.append({
+            "exam_attempt_id": exam_attempt_id,
+            "question_id": int(q.get("id")),
+            "user_email": user_email,
+            "exam_name": q.get("exam_name") or st.session_state.get("practice_exam_name"),
+            "language_code": q.get("language_code") or st.session_state.get("practice_language_code") or "en",
+            "category": q.get("category") or "Uncategorized",
+            "difficulty": str(q.get("difficulty") or "medium").strip().lower(),
+            "selected_options": option_texts_by_id(q, selected_ids),
+            "correct_options": option_texts_by_id(q, correct_ids),
+            "is_correct": is_correct(selected_ids, correct_ids),
+            "time_spent_seconds": _clamped_seconds(question_times.get(idx, 0)),
+            "answered_at": datetime.now(timezone.utc).isoformat(),
+        })
+    return rows
+
+
+def save_question_attempt_rows(supabase, rows):
+    if not rows:
+        return
+    for start in range(0, len(rows), 100):
+        supabase.table("question_attempts").insert(rows[start:start + 100]).execute()
 
 
 def build_breakdown(questions, answers, field):
@@ -222,7 +303,18 @@ def save_practice_attempt(score, correct, total, category, domain_breakdown, dif
         "exam_name": exam_name,
         "language_code": language_code,
     }
-    get_supabase_client().table("exam_attempts").insert(payload).execute()
+    supabase = get_supabase_client()
+    result = supabase.table("exam_attempts").insert(payload).execute()
+    inserted_rows = getattr(result, "data", None) or []
+    exam_attempt_id = inserted_rows[0].get("id") if inserted_rows else None
+    if exam_attempt_id:
+        question_rows = build_question_attempt_rows(
+            exam_attempt_id=exam_attempt_id,
+            user_email=user_email,
+            questions=st.session_state.get("practice_questions", []),
+            answers=st.session_state.get("practice_answers", {}),
+        )
+        save_question_attempt_rows(supabase, question_rows)
 
 
 def render_locked_practice_preview(user_email, language_code):
@@ -386,6 +478,7 @@ if not st.session_state.get("practice_started", False):
         st.session_state.practice_answers = {}
         st.session_state.practice_feedback_shown = False
         st.session_state.practice_saved = False
+        reset_practice_timing()
         st.rerun()
 
 elif not st.session_state.get("practice_submitted", False):
@@ -425,17 +518,18 @@ elif not st.session_state.get("practice_submitted", False):
             st.rerun()
     with col2:
         if st.button("Previous") and index > 0:
-            st.session_state.practice_current_index -= 1
+            move_to_practice_question(index - 1)
             st.session_state.practice_feedback_shown = False
             st.rerun()
     with col3:
         if index < len(questions) - 1:
             if st.button("Next"):
-                st.session_state.practice_current_index += 1
+                move_to_practice_question(index + 1)
                 st.session_state.practice_feedback_shown = False
                 st.rerun()
         else:
             if st.button("Finish Practice"):
+                record_current_practice_time()
                 st.session_state.practice_submitted = True
                 st.rerun()
 
@@ -466,6 +560,7 @@ else:
     difficulty_breakdown = build_breakdown(questions, answers, "difficulty")
 
     if not st.session_state.get("practice_saved", False):
+        record_current_practice_time()
         try:
             save_practice_attempt(score, correct, total, st.session_state.practice_category, domain_breakdown, difficulty_breakdown, st.session_state.practice_exam_name, st.session_state.practice_language_code)
             st.session_state.practice_saved = True
