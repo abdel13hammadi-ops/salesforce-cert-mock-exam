@@ -7,15 +7,15 @@ from utils.access_control import (
     get_supabase_admin_client,
     render_app_chrome,
     get_current_user_email as shared_get_current_user_email,
-    require_paid_access,
+    require_login,
+    has_premium_access,
 )
 
-APP_VERSION = "PRACTICE_BY_CATEGORY_V5_PAID_ACTIVE_CERT_ACCESS"
+APP_VERSION = "PRACTICE_BY_CATEGORY_V6_FREE_PREVIEW"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
-require_paid_access("Practice by Category")
 
 
 @st.cache_resource
@@ -225,12 +225,74 @@ def save_practice_attempt(score, correct, total, category, domain_breakdown, dif
     get_supabase_client().table("exam_attempts").insert(payload).execute()
 
 
+def render_locked_practice_preview(user_email, language_code):
+    """Show a premium preview for free users without exposing real paid practice questions."""
+    st.markdown(
+        """
+        <div class="practice-card locked-preview-card">
+            <div class="locked-eyebrow">Premium practice preview</div>
+            <h2 style="margin:0 0 8px 0;">Target weak domains before exam day.</h2>
+            <p class="small-muted" style="font-size:15px;line-height:1.5;margin-bottom:0;">
+                Practice by Category unlocks focused question sets by certification domain, instant explanations,
+                and saved progress tracking. This preview uses sample data only.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.info(f"Signed in as {user_email} | Preferred language: {language_label(language_code)}")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Sample Domains", "6")
+    c2.metric("Sample Practice Set", "20 questions")
+    c3.metric("Mode", "Untimed")
+
+    left, right = st.columns([1.2, 1])
+    with left:
+        st.markdown(
+            """
+            <div class="practice-card">
+                <h3 style="margin-top:0;">What premium users can do</h3>
+                <ul style="line-height:1.8;margin-bottom:0;">
+                    <li>Choose a certification and drill one domain at a time.</li>
+                    <li>Pick focused sets of 10, 20, or 30 approved questions.</li>
+                    <li>See explanations immediately after each answer.</li>
+                    <li>Save every practice session into My Progress.</li>
+                    <li>Feed weak-area data into readiness tracking.</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with right:
+        st.markdown(
+            """
+            <div class="practice-card sample-panel">
+                <h3 style="margin-top:0;">Sample domain drill</h3>
+                <div class="sample-row"><span>Configuration and Setup</span><strong>20 questions</strong></div>
+                <div class="sample-row"><span>Object Manager</span><strong>10 questions</strong></div>
+                <div class="sample-row"><span>Security and Access</span><strong>30 questions</strong></div>
+                <div class="locked-pill">Locked preview</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.warning("Practice by Category is locked on free accounts. Use the free mock exam now, or unlock premium access to practice by domain.")
+
+
 st.markdown(
     """
     <style>
     .block-container { max-width: 1120px; padding-top: 2rem !important; }
     .practice-banner { background:#16325c;color:white;padding:18px 22px;border-radius:8px;font-size:27px;font-weight:700;margin-bottom:18px; }
     .practice-card { border:1px solid #d8dde6;border-radius:8px;padding:20px;background:white;margin-bottom:18px; }
+    .locked-preview-card { border:1px solid #c9d7f5;background:linear-gradient(135deg,#ffffff 0%,#f4f8ff 100%); }
+    .locked-eyebrow { color:#1b4d89;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px; }
+    .sample-panel { background:#f8fafc; }
+    .sample-row { display:flex;justify-content:space-between;border-bottom:1px solid #e5e7eb;padding:10px 0;font-size:14px;gap:12px; }
+    .locked-pill { display:inline-block;margin-top:14px;padding:6px 10px;border-radius:999px;background:#e8f0fe;color:#1b4d89;font-size:12px;font-weight:700; }
     .small-muted { color:#5f6368;font-size:13px; }
     </style>
     """,
@@ -240,13 +302,15 @@ st.markdown(
 st.markdown('<div class="practice-banner">Practice by Category</div>', unsafe_allow_html=True)
 st.caption(f"App version: {APP_VERSION}")
 
-user_email = get_current_user_email()
-if not user_email:
-    st.warning("Please log in from the Account page before starting practice.")
-    st.stop()
+user_email = require_login()
 
 profile = fetch_user_profile(user_email)
 language_code = str(profile.get("preferred_language_code") or "en").strip().lower()
+
+if not has_premium_access(user_email):
+    render_locked_practice_preview(user_email, language_code)
+    st.stop()
+
 st.success(f"Account: {user_email} ✅ | Preferred language: {language_label(language_code)}")
 
 certifications = fetch_user_certifications(user_email)
