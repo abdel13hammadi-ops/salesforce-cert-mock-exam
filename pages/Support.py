@@ -10,9 +10,10 @@ from utils.access_control import (
     get_current_user_email as shared_get_current_user_email,
     get_preferred_timezone,
     render_app_chrome,
+    require_login,
 )
 
-APP_VERSION = "SUPPORT_V3_TICKET_DETAILS"
+APP_VERSION = "SUPPORT_V4_LOGIN_REQUIRED"
 
 st.set_page_config(page_title="Support", layout="wide")
 render_app_chrome()
@@ -45,7 +46,8 @@ def normalize_email(email: str) -> str:
 
 
 def get_saved_email() -> str:
-    return normalize_email(shared_get_current_user_email() or st.session_state.get("support_lookup_email") or "")
+    # Support is account-bound. Do not allow manual lookup emails.
+    return normalize_email(shared_get_current_user_email() or "")
 
 
 def is_valid_email(email: str) -> bool:
@@ -101,9 +103,9 @@ def status_label(status: str) -> str:
 st.title("Support")
 st.caption(f"App version: {APP_VERSION}")
 
-current_email = normalize_email(shared_get_current_user_email() or "")
-lookup_email = get_saved_email()
-user_timezone = get_preferred_timezone(current_email) if current_email else str(st.session_state.get("preferred_timezone") or "UTC")
+current_email = normalize_email(require_login() or "")
+lookup_email = current_email
+user_timezone = get_preferred_timezone(current_email) or "UTC"
 
 st.markdown(
     """
@@ -113,34 +115,23 @@ Keep reports specific. Vague tickets waste everyone’s time and slow down fixes
 )
 
 summary_left, summary_mid, summary_right = st.columns(3)
-summary_left.metric("Signed in", "Yes" if current_email else "No")
+summary_left.metric("Signed in", "Yes")
 summary_mid.metric("Ticket status", "Open / In progress / Resolved")
 summary_right.metric("Timezone", user_timezone or "UTC")
 
-if current_email:
-    st.info(f"Tickets will be submitted under your signed-in email: {current_email}")
-else:
-    st.warning("You can submit a ticket while logged out, but logging in keeps your ticket history attached to your account.")
+st.info(f"Tickets will be submitted under your signed-in email: {current_email}")
 
 supabase = get_supabase_client()
 
 with st.form("support_ticket_form", clear_on_submit=False):
     st.subheader("Submit a Support Ticket")
 
-    if current_email:
-        user_email = st.text_input(
-            "Email",
-            value=current_email,
-            disabled=True,
-            help="Signed-in users submit tickets under their account email.",
-        )
-    else:
-        user_email = st.text_input(
-            "Email",
-            value=lookup_email,
-            placeholder="your@email.com",
-            help="Use the same email you use for your account if you have one.",
-        )
+    user_email = st.text_input(
+        "Email",
+        value=current_email,
+        disabled=True,
+        help="Support tickets are tied to your signed-in account email.",
+    )
 
     issue_type = st.selectbox(
         "Issue type",
@@ -175,7 +166,7 @@ with st.form("support_ticket_form", clear_on_submit=False):
     submitted = st.form_submit_button("Submit Ticket", type="primary")
 
 if submitted:
-    user_email = normalize_email(current_email or user_email)
+    user_email = current_email
     subject = subject.strip()
     message = message.strip()
     related_question_id = related_question_id.strip() or None
@@ -203,7 +194,6 @@ if submitted:
 
         try:
             supabase.table("support_tickets").insert(ticket_data).execute()
-            st.session_state["support_lookup_email"] = user_email
             st.success("Support ticket submitted.")
             st.info("Status: Open. Check recent tickets below for updates.")
         except Exception as e:
@@ -222,7 +212,7 @@ st.subheader("My Recent Tickets")
 email_for_lookup = get_saved_email()
 
 if not email_for_lookup:
-    st.info("Enter your email in the support form or log in to see recent tickets here.")
+    st.stop()
 else:
     try:
         result = (
