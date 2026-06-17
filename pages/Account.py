@@ -8,6 +8,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import streamlit as st
 import streamlit.components.v1 as components
 
+try:
+    from streamlit_js_eval import streamlit_js_eval
+except Exception:
+    streamlit_js_eval = None
+
 from utils.access_control import (
     clear_login_state,
     get_current_user_email,
@@ -21,7 +26,7 @@ from utils.access_control import (
     unlock_admin,
 )
 
-APP_VERSION = "ACCOUNT_IDENTITY_GUARD_V3"
+APP_VERSION = "ACCOUNT_IDENTITY_GUARD_V3_TZ1"
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -253,72 +258,53 @@ def get_query_param(name: str) -> str:
         return ""
 
 
-def render_browser_locale_probe() -> None:
-    """Capture browser timezone/language by writing safe query params once.
+def browser_js_value(js_expression: str, key: str) -> str:
+    """Return a browser value via streamlit-js-eval when available.
 
-    Python cannot read navigator.language or Intl timezone directly. This tiny
-    client-side probe preserves existing query params, including fr_session.
+    components.html cannot reliably read or rewrite the parent Streamlit URL because
+    it runs inside a sandboxed iframe. streamlit-js-eval is already in requirements
+    and is the correct way to get browser timezone/language into Python.
     """
-    components.html(
-        """
-        <script>
-        (function () {
-            function getLoc() {
-                try {
-                    if (window.parent && window.parent.location) return window.parent.location;
-                } catch (e) {}
-                return window.location;
-            }
-
-            const loc = getLoc();
-            const url = new URL(loc.href);
-            let changed = false;
-
-            if (!url.searchParams.get("cb_tz")) {
-                try {
-                    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-                    if (tz) {
-                        url.searchParams.set("cb_tz", tz);
-                        changed = true;
-                    }
-                } catch (e) {}
-            }
-
-            if (!url.searchParams.get("cb_lang")) {
-                try {
-                    const lang = navigator.language || (navigator.languages && navigator.languages[0]) || "en";
-                    if (lang) {
-                        url.searchParams.set("cb_lang", lang);
-                        changed = true;
-                    }
-                } catch (e) {}
-            }
-
-            if (changed) {
-                loc.replace(url.toString());
-            }
-        })();
-        </script>
-        """,
-        height=0,
-    )
+    if streamlit_js_eval is None:
+        return ""
+    try:
+        value = streamlit_js_eval(js_expressions=js_expression, key=key)
+        return str(value or "").strip()
+    except Exception:
+        return ""
 
 
-def normalize_timezone(value: str | None) -> str:
+def normalize_timezone(value: str | None, default: str = "UTC") -> str:
     value = str(value or "").strip()
     if not value:
-        return "UTC"
+        return default
     try:
         ZoneInfo(value)
         return value
     except ZoneInfoNotFoundError:
-        return "UTC"
+        return default
     except Exception:
-        return "UTC"
+        return default
 
 
 def detected_browser_timezone() -> str:
-    return normalize_timezone(get_query_param("cb_tz") or "UTC")
+    # Primary: actual browser JS value. Fallback: old query-param probe if present.
+    raw = browser_js_value(
+        "Intl.DateTimeFormat().resolvedOptions().timeZone",
+        "browser_timezone_v1",
+    ) or get_query_param("cb_tz")
+    return normalize_timezone(raw, default="")
+
+
+def detected_browser_language_raw() -> str:
+    return (
+        browser_js_value(
+            "navigator.language || (navigator.languages && navigator.languages[0]) || 'en'",
+            "browser_language_v1",
+        )
+        or get_query_param("cb_lang")
+        or "en"
+    )
 
 
 def normalize_browser_language(value: str | None) -> str:
@@ -343,7 +329,7 @@ def load_question_language_codes() -> set[str]:
 
 
 def default_language_from_browser(language_codes: list[str], question_language_codes: set[str]) -> str:
-    detected = normalize_browser_language(get_query_param("cb_lang") or "en")
+    detected = normalize_browser_language(detected_browser_language_raw())
     active = {str(code or "").strip().lower() for code in language_codes}
     available = {str(code or "").strip().lower() for code in question_language_codes}
     if detected in active and detected in available:
@@ -425,8 +411,6 @@ def stop_duplicate_signup() -> None:
     st.stop()
 
 
-render_browser_locale_probe()
-
 
 def send_password_reset_email(email: str) -> None:
     email = str(email or "").strip().lower()
@@ -476,9 +460,12 @@ current_email = get_current_user_email()
 
 if current_email:
     profile = get_existing_profile(current_email) or {}
+    stored_timezone = normalize_timezone(profile.get("preferred_timezone") or st.session_state.get("preferred_timezone") or "UTC")
+    effective_timezone = detected_timezone or stored_timezone
     if profile and detected_timezone and profile.get("preferred_timezone") != detected_timezone:
         timezone_update = update_profile_timezone(current_email, detected_timezone)
-        profile = {**profile, **timezone_update, "preferred_timezone": detected_timezone}
+        profile = {**profile, **timezone_update, "preferred_timezone": detected_timezone or "UTC"}
+        effective_timezone = detected_timezone
     if profile:
         merged = dict(profile)
         merged["email"] = current_email
@@ -501,7 +488,7 @@ if current_email:
         index=language_codes.index(saved_language),
         format_func=lambda code: label_by_code.get(code, code),
     )
-    st.caption(f"Timezone: {detected_timezone} — detected automatically from this browser.")
+    st.caption(f"Timezone: {effective_timezone} — detected automatically from this browser.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -512,7 +499,7 @@ if current_email:
                 language_code=selected_language,
                 # Do not trust session_state for identity writes. The DB profile is the source of truth.
                 auth_user_id=profile.get("auth_user_id"),
-                preferred_timezone=detected_timezone,
+                preferred_timezone=effective_timezone,
             )
             save_logged_in_user(updated, persist=True)
             st.success("Profile saved ✅")
@@ -562,12 +549,12 @@ else:
                         profile = get_existing_profile(login_email)
                         current_auth_user_id = str(getattr(user, "id", "") or "").strip()
                         if not profile:
-                            profile = upsert_profile(login_email, "", detected_default_language, current_auth_user_id, detected_timezone)
+                            profile = upsert_profile(login_email, "", detected_default_language, current_auth_user_id, detected_timezone or "UTC")
                         else:
                             stored_auth_user_id = str(profile.get("auth_user_id") or "").strip()
                             if not stored_auth_user_id:
                                 # First real login for a legacy profile: attach the verified Supabase Auth ID.
-                                repaired = repair_profile_auth_user_id(login_email, current_auth_user_id, detected_timezone)
+                                repaired = repair_profile_auth_user_id(login_email, current_auth_user_id, detected_timezone or None)
                                 profile = {**profile, **repaired, "auth_user_id": current_auth_user_id}
                             elif stored_auth_user_id != current_auth_user_id:
                                 # Never overwrite an existing auth_user_id mismatch from app code.
@@ -576,10 +563,10 @@ else:
                                 clear_login_state()
                                 st.error("Account identity mismatch. Contact support before logging in again.")
                                 st.stop()
-                        profile = profile or {"email": login_email, "auth_user_id": current_auth_user_id, "subscription_status": "free", "preferred_language_code": detected_default_language, "preferred_timezone": detected_timezone}
+                        profile = profile or {"email": login_email, "auth_user_id": current_auth_user_id, "subscription_status": "free", "preferred_language_code": detected_default_language, "preferred_timezone": detected_timezone or "UTC"}
                         if detected_timezone and profile.get("preferred_timezone") != detected_timezone:
                             timezone_update = update_profile_timezone(login_email, detected_timezone)
-                            profile = {**profile, **timezone_update, "preferred_timezone": detected_timezone}
+                            profile = {**profile, **timezone_update, "preferred_timezone": detected_timezone or "UTC"}
                         profile["email"] = login_email
                         profile["auth_user_id"] = current_auth_user_id
                         save_logged_in_user(profile, persist=True)
@@ -652,7 +639,7 @@ else:
 
                     # New signup only. Create the app profile, but do NOT log the user in here.
                     # This prevents duplicate-signup attempts from becoming a session hijack path.
-                    upsert_profile(signup_email, full_name, selected_language, auth_user_id, detected_timezone)
+                    upsert_profile(signup_email, full_name, selected_language, auth_user_id, detected_timezone or "UTC")
                     force_auth_client_sign_out()
                     clear_login_state()
                     st.success("Account created. Check your email if confirmation is required, then log in.")
