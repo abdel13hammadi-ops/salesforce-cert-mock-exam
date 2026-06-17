@@ -14,6 +14,7 @@ from utils.access_control import (
     get_user_profile,
     has_premium_access,
     render_app_chrome,
+    render_session_page_link,
 )
 
 try:
@@ -21,7 +22,7 @@ try:
 except Exception:
     calculate_readiness = None
 
-APP_VERSION = "DASHBOARD_ONBOARDING_V1"
+APP_VERSION = "DASHBOARD_V2_PRODUCT_POLISH"
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 
@@ -289,19 +290,20 @@ def render_public_onboarding() -> None:
 
 
 def render_locked_premium_cards() -> None:
-    st.subheader("Premium features")
+    st.subheader("Premium previews")
+    st.caption("Free users can preview these workflows. Real practice data unlocks with Premium access.")
     cols = st.columns(3)
     cards = [
-        ("Practice By Category", "Drill specific exam domains after you finish the free preview.", "pages/Practice_By_Category.py", "📚"),
-        ("Weak Areas Practice", "Use your result history to generate targeted practice.", "pages/Weak_Areas_Practice.py", "🎯"),
-        ("My Progress", "Track attempt history, readiness, and domain performance.", "pages/My_Progress.py", "📈"),
+        ("Practice By Category", "Preview domain-based drilling without exposing paid questions.", "pages/Practice_By_Category.py", "📚"),
+        ("Weak Areas Practice", "Preview targeted practice based on sample weak-domain data.", "pages/Weak_Areas_Practice.py", "🎯"),
+        ("My Progress", "Preview readiness, weak areas, and attempt-history tracking.", "pages/My_Progress.py", "📈"),
     ]
     for col, (title, body, path, icon) in zip(cols, cards):
         with col:
             st.markdown(f"**{icon} {title}**")
             st.write(body)
-            st.caption("Premium access required")
-            st.page_link(path, label="Preview / Open", icon=icon)
+            st.caption("Locked preview — no paid questions exposed")
+            render_session_page_link(path, label="Open preview", icon=icon)
 
 
 def render_logged_in_dashboard(email: str) -> None:
@@ -310,10 +312,25 @@ def render_logged_in_dashboard(email: str) -> None:
     subscription_status = safe_lower(profile.get("subscription_status") or st.session_state.get("subscription_status"), "free")
     preferred_language = safe_lower(profile.get("preferred_language_code") or st.session_state.get("preferred_language_code"), "en") or "en"
     full_name = safe_str(profile.get("full_name") or st.session_state.get("full_name"), "")
+    display_name = full_name or email.split("@", 1)[0]
 
-    st.title("Dashboard")
+    st.title(f"Welcome, {display_name}")
     st.caption(f"App version: {APP_VERSION}")
-    st.info(f"Signed in: {email} | Access: {access_level} | Subscription: {subscription_status} | Language: {preferred_language}")
+
+    profile_col, status_col, language_col, account_col = st.columns([2, 1, 1, 1])
+    profile_col.metric("Signed in", email)
+    status_col.metric("Access", access_level.title())
+    language_col.metric("Language", preferred_language.upper())
+    with account_col:
+        st.markdown("**Account**")
+        render_session_page_link("pages/Account.py", label="Manage profile", icon="👤")
+
+    if access_level == "free":
+        st.info("You are on Free Preview access. Use the free mock exam first; premium pages now show locked previews instead of dead-end blocks.")
+    elif access_level == "paid":
+        st.success("Premium access is active. Full mock exams, targeted practice, weak-area practice, and progress tracking are available.")
+    elif access_level == "admin":
+        st.success("Admin session active. User/admin tools are available from the sidebar.")
 
     certifications = fetch_active_certifications()
     if not certifications:
@@ -354,15 +371,22 @@ def render_logged_in_dashboard(email: str) -> None:
             st.write("Run a full randomized mock exam for the selected certification.")
         else:
             st.write("Run the free fixed preview and review explanations.")
-        st.page_link("app.py", label="Open Mock Exam", icon="📝")
+        render_session_page_link("app.py", label="Open Mock Exam", icon="📝")
     with n2:
         st.markdown("**Practice targeted questions**")
-        st.write("Use category or weak-area practice when premium is active.")
-        st.page_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
+        if premium:
+            st.write("Drill categories and weak areas using real question data.")
+            render_session_page_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
+        else:
+            st.write("Preview premium practice workflows without exposing paid questions.")
+            render_session_page_link("pages/Practice_By_Category.py", label="Open Practice Preview", icon="📚")
     with n3:
         st.markdown("**Review progress**")
-        st.write("See score trend, weak domains, and attempt history.")
-        st.page_link("pages/My_Progress.py", label="My Progress", icon="📈")
+        if premium:
+            st.write("See score trend, weak domains, readiness, and recent attempts.")
+        else:
+            st.write("Preview readiness tracking and attempt-history analytics.")
+        render_session_page_link("pages/My_Progress.py", label="My Progress", icon="📈")
 
     st.divider()
     st.subheader("Current status")
