@@ -10,16 +10,16 @@ from utils.access_control import (
     get_user_access_level,
     render_app_chrome,
     get_current_user_email as shared_get_current_user_email,
-    require_paid_access,
+    require_login,
+    has_premium_access,
 )
 
-APP_VERSION = "WEAK_AREAS_PRACTICE_V9_DISPLAY_FIX"
+APP_VERSION = "WEAK_AREAS_PRACTICE_V10_FREE_PREVIEW"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
 st.set_page_config(page_title="Weak Areas Practice", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
-require_paid_access("Weak Areas Practice")
 
 
 @st.cache_resource
@@ -287,12 +287,71 @@ def reset_weak():
     st.rerun()
 
 
+def render_locked_weak_areas_preview(user_email, language_code, access_level):
+    """Show a premium preview for free users without exposing real weak-area practice questions."""
+    st.markdown(
+        """
+        <div class="weak-card locked-preview-card">
+            <div class="locked-eyebrow">Premium weak-area preview</div>
+            <h2 style="margin:0 0 8px 0;">Practice where your scores are actually leaking points.</h2>
+            <p class="small-muted" style="font-size:15px;line-height:1.5;margin-bottom:0;">
+                Weak Areas Practice builds targeted practice sets from your saved mock exams and practice history.
+                This preview uses sample data only and does not expose the paid question bank.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.info(f"Signed in as {user_email} | Access: {access_level} | Preferred language: {language_label(language_code)}")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Sample Weak Domains", "3")
+    c2.metric("Sample Practice Set", "10 questions")
+    c3.metric("Mode", "Targeted")
+
+    left, right = st.columns([1.15, 1])
+    with left:
+        st.markdown(
+            """
+            <div class="weak-card">
+                <h3 style="margin-top:0;">What premium users can do</h3>
+                <ul style="line-height:1.8;margin-bottom:0;">
+                    <li>Automatically detect weak domains from saved attempts.</li>
+                    <li>Build practice sets focused on the lowest-scoring domains.</li>
+                    <li>Review explanations after each question.</li>
+                    <li>Save weak-area practice results into My Progress.</li>
+                    <li>Use results to improve readiness scoring over time.</li>
+                </ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with right:
+        sample_domains = pd.DataFrame(
+            [
+                {"Sample Weak Domain": "Security and Access", "Accuracy %": 58, "Priority": "High"},
+                {"Sample Weak Domain": "Automation and Process", "Accuracy %": 63, "Priority": "High"},
+                {"Sample Weak Domain": "Data Management", "Accuracy %": 69, "Priority": "Medium"},
+            ]
+        )
+        st.markdown('<div class="weak-card sample-panel"><h3 style="margin-top:0;">Sample weak-area signal</h3>', unsafe_allow_html=True)
+        st.dataframe(sample_domains, use_container_width=True, hide_index=True)
+        st.markdown('<span class="locked-pill">Locked preview</span></div>', unsafe_allow_html=True)
+
+    st.warning("Weak Areas Practice is locked on free accounts. Complete a free mock exam now, or unlock premium access to generate real weak-area drills.")
+
+
 st.markdown(
     """
     <style>
     .block-container { max-width:1120px; padding-top:2rem !important; }
     .weak-banner { background:#16325c;color:white;padding:18px 22px;border-radius:8px;font-size:27px;font-weight:700;margin-bottom:18px; }
     .weak-card { border:1px solid #d8dde6;border-radius:8px;padding:20px;background:white;margin-bottom:18px; }
+    .locked-preview-card { border:1px solid #c9d7f5;background:linear-gradient(135deg,#ffffff 0%,#f4f8ff 100%); }
+    .locked-eyebrow { color:#1b4d89;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px; }
+    .sample-panel { background:#f8fafc; }
+    .locked-pill { display:inline-block;margin-top:10px;padding:6px 10px;border-radius:999px;background:#e8f0fe;color:#1b4d89;font-size:12px;font-weight:700; }
     .small-muted { color:#5f6368;font-size:13px; }
     </style>
     """,
@@ -302,14 +361,16 @@ st.markdown(
 st.markdown('<div class="weak-banner">Weak Areas Practice</div>', unsafe_allow_html=True)
 st.caption(f"App version: {APP_VERSION}")
 
-user_email = get_current_user_email()
-if not user_email:
-    st.warning("Please log in from the Account page before using Weak Areas Practice.")
-    st.stop()
+user_email = require_login()
 
 profile = fetch_user_profile(user_email)
 access_level = get_user_access_level(user_email)
 language_code = str(profile.get("preferred_language_code") or "en").strip().lower()
+
+if not has_premium_access(user_email):
+    render_locked_weak_areas_preview(user_email, language_code, access_level)
+    st.stop()
+
 st.success(f"Account: {user_email} ✅ | Access: {access_level} | Preferred language: {language_label(language_code)}")
 
 certifications = fetch_user_certifications(user_email)
