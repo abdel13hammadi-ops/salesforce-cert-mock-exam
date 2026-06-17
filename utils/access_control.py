@@ -47,9 +47,14 @@ def _secret(name: str, default: str = "") -> str:
 
 
 def _signing_secret() -> str:
-    # COOKIE_PASSWORD is the intended signing secret. SUPABASE_SERVICE_ROLE_KEY is a fallback
-    # so existing Render deploys keep working, but set COOKIE_PASSWORD explicitly before launch.
-    return _secret("COOKIE_PASSWORD") or _secret("SUPABASE_SERVICE_ROLE_KEY") or "dev-only-unsafe-secret"
+    # COOKIE_PASSWORD is the intended signing secret. SUPABASE_SERVICE_ROLE_KEY is
+    # accepted as a legacy fallback so existing deploys do not break, but there is
+    # no insecure dev fallback anymore. Missing signing secrets must fail closed.
+    secret = _secret("COOKIE_PASSWORD") or _secret("SUPABASE_SERVICE_ROLE_KEY")
+    if not secret:
+        st.error("Missing COOKIE_PASSWORD or SUPABASE_SERVICE_ROLE_KEY. Session signing cannot run safely.")
+        st.stop()
+    return secret
 
 
 def _b64url_encode(raw: bytes) -> str:
