@@ -13,7 +13,7 @@ from utils.access_control import render_app_chrome, get_current_user_email as sh
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "SUPABASE_DB_V16_QUESTION_ATTEMPT_TRACKING"
+APP_VERSION = "SUPABASE_DB_V17_PAID_ATTEMPT_TRACKING_HOTFIX"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -865,12 +865,63 @@ def build_question_attempt_rows(exam_attempt_id, user_email, questions_to_save=N
     return rows
 
 
-def save_question_attempt_rows(supabase, rows):
-    if not rows:
-        return
-    chunk_size = 100
-    for start in range(0, len(rows), chunk_size):
-        supabase.table("question_attempts").insert(rows[start:start + chunk_size]).execute()
+def save_question_attempt_rows(supabase, rows, exam_attempt_id=None):
+    """Persist question-level rows for readiness analytics.
+
+    This is intentionally idempotent for a completed exam attempt. Streamlit can
+    rerun during result rendering, and the duplicate-guard can find an existing
+    exam_attempt row. In either path, the linked question_attempts must exist.
+    """
+    cleaned_rows = []
+    for row in rows or []:
+        try:
+            if not row.get("question_id"):
+                continue
+            if exam_attempt_id is not None:
+                row["exam_attempt_id"] = int(exam_attempt_id)
+            cleaned_rows.append(row)
+        except Exception:
+            continue
+
+    if not cleaned_rows:
+        return 0
+
+    target_attempt_id = exam_attempt_id or cleaned_rows[0].get("exam_attempt_id")
+    if target_attempt_id:
+        # Replace rows for this attempt so retries cannot double-count readiness.
+        supabase.table("question_attempts").delete().eq("exam_attempt_id", int(target_attempt_id)).execute()
+
+    saved_count = 0
+    chunk_size = 50
+    for start in range(0, len(cleaned_rows), chunk_size):
+        chunk = cleaned_rows[start:start + chunk_size]
+        supabase.table("question_attempts").insert(chunk).execute()
+        saved_count += len(chunk)
+    return saved_count
+
+
+def get_recent_matching_exam_attempt_id(supabase, user_email, mode, total_questions, correct, completed_at):
+    """Find the current attempt id after insert or rerun duplicate detection."""
+    recent_cutoff = (completed_at - timedelta(minutes=5)).isoformat()
+    try:
+        result = (
+            supabase.table("exam_attempts")
+            .select("id")
+            .eq("user_email", user_email)
+            .eq("exam_name", SELECTED_EXAM_NAME)
+            .eq("language_code", SELECTED_LANGUAGE_CODE)
+            .eq("mode", mode)
+            .eq("total_questions", int(total_questions))
+            .eq("correct_answers", int(correct))
+            .gte("completed_at", recent_cutoff)
+            .order("id", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(result, "data", None) or []
+        return rows[0].get("id") if rows else None
+    except Exception:
+        return None
 
 
 # Defaults are initialized before exam generation so access type/certification/language can control the exam set.
@@ -1280,7 +1331,17 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
             .limit(1)
             .execute()
         )
-        if getattr(existing, "data", None):
+        existing_rows = getattr(existing, "data", None) or []
+        if existing_rows:
+            existing_attempt_id = existing_rows[0].get("id")
+            if existing_attempt_id:
+                question_rows = build_question_attempt_rows(
+                    exam_attempt_id=existing_attempt_id,
+                    user_email=user_email,
+                    questions_to_save=questions,
+                    answers_to_save=st.session_state.get("answers", {}),
+                )
+                save_question_attempt_rows(supabase, question_rows, exam_attempt_id=existing_attempt_id)
             return True, None
     except Exception:
         # Do not block saving if the duplicate check fails. The insert error handler below
@@ -1307,14 +1368,31 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
         inserted_rows = getattr(result, "data", None) or []
         exam_attempt_id = inserted_rows[0].get("id") if inserted_rows else None
 
-        if exam_attempt_id:
-            question_rows = build_question_attempt_rows(
-                exam_attempt_id=exam_attempt_id,
+        # Some Supabase/PostgREST responses may not return inserted rows reliably.
+        # If that happens, fetch the newest matching attempt before saving question-level rows.
+        if not exam_attempt_id:
+            exam_attempt_id = get_recent_matching_exam_attempt_id(
+                supabase=supabase,
                 user_email=user_email,
-                questions_to_save=questions,
-                answers_to_save=st.session_state.get("answers", {}),
+                mode=mode,
+                total_questions=total_questions,
+                correct=correct,
+                completed_at=completed_at,
             )
-            save_question_attempt_rows(supabase, question_rows)
+
+        if not exam_attempt_id:
+            return False, "Exam attempt saved, but its id could not be found for question-level readiness tracking."
+
+        question_rows = build_question_attempt_rows(
+            exam_attempt_id=exam_attempt_id,
+            user_email=user_email,
+            questions_to_save=questions,
+            answers_to_save=st.session_state.get("answers", {}),
+        )
+        saved_question_rows = save_question_attempt_rows(supabase, question_rows, exam_attempt_id=exam_attempt_id)
+
+        if saved_question_rows != int(total_questions):
+            return False, f"Exam attempt saved, but only {saved_question_rows}/{int(total_questions)} question attempts were saved."
 
         return True, None
     except Exception as exc:
