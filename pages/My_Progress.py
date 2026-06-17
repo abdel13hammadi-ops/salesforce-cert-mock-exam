@@ -1,6 +1,7 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -13,7 +14,7 @@ from utils.access_control import (
 )
 from utils.readiness import calculate_readiness, readiness_methodology_text
 
-APP_VERSION = "MY_PROGRESS_V8_FREE_PREVIEW"
+APP_VERSION = "MY_PROGRESS_V9_TZ_DISPLAY"
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -53,11 +54,35 @@ def normalize_breakdown(value: Any) -> Dict[str, Any]:
 
 def _parse_dt(value: Any) -> datetime:
     if not value:
-        return datetime.min
+        return datetime.min.replace(tzinfo=timezone.utc)
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00").replace("+00:00", ""))
+        raw = str(value).strip().replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
     except Exception:
-        return datetime.min
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def format_user_datetime(value: Any, preferred_timezone: str = "UTC") -> str:
+    if not value:
+        return "Not recorded"
+
+    parsed = _parse_dt(value)
+    if parsed == datetime.min.replace(tzinfo=timezone.utc):
+        return str(value)
+
+    tz_name = str(preferred_timezone or "UTC").strip() or "UTC"
+    try:
+        user_tz = ZoneInfo(tz_name)
+    except Exception:
+        user_tz = timezone.utc
+        tz_name = "UTC"
+
+    local_dt = parsed.astimezone(user_tz)
+    # Example: Jun 17, 2026, 12:06 AM EDT
+    return local_dt.strftime("%b %d, %Y, %I:%M %p %Z").replace(", 0", ", ", 1)
 
 
 def sort_attempts(attempts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -81,7 +106,7 @@ def fetch_user_profile(email: str) -> Dict[str, Any]:
         result = (
             get_supabase_client()
             .table("app_users")
-            .select("email,full_name,subscription_status,preferred_language_code")
+            .select("email,full_name,subscription_status,preferred_language_code,preferred_timezone")
             .eq("email", email)
             .limit(1)
             .execute()
@@ -315,13 +340,14 @@ if not user_email:
 
 profile = fetch_user_profile(user_email)
 preferred_language = _safe_lower(profile.get("preferred_language_code"), "en") or "en"
+preferred_timezone = str(profile.get("preferred_timezone") or st.session_state.get("preferred_timezone") or "UTC").strip() or "UTC"
 subscription_status = _safe_lower(profile.get("subscription_status") or st.session_state.get("subscription_status"), "free")
 
 if not has_premium_access(user_email):
     render_locked_progress_preview(user_email, subscription_status)
     st.stop()
 
-st.info(f"Account: {user_email} | Access: {subscription_status} | Preferred language: {preferred_language}")
+st.info(f"Account: {user_email} | Access: {subscription_status} | Preferred language: {preferred_language} | Timezone: {preferred_timezone}")
 
 certifications = fetch_certifications()
 exam_names = [c.get("exam_name") for c in certifications if c.get("exam_name")]
@@ -393,7 +419,7 @@ trend_rows = []
 for attempt in reversed(attempts):
     trend_rows.append(
         {
-            "Completed": attempt.get("completed_at") or attempt.get("started_at") or f"Attempt {attempt.get('id')}",
+            "Completed": format_user_datetime(attempt.get("completed_at") or attempt.get("started_at"), preferred_timezone),
             "Score": _safe_float(attempt.get("score"), 0.0),
         }
     )
@@ -420,8 +446,8 @@ for attempt in attempts:
     history_rows.append(
         {
             "Attempt ID": attempt.get("id"),
-            "Completed At": attempt.get("completed_at") or "Not recorded",
-            "Started At": attempt.get("started_at") or "Not recorded",
+            "Completed At": format_user_datetime(attempt.get("completed_at"), preferred_timezone),
+            "Started At": format_user_datetime(attempt.get("started_at"), preferred_timezone),
             "Mode": attempt.get("mode"),
             "Category": attempt.get("category"),
             "Score %": attempt.get("score"),
