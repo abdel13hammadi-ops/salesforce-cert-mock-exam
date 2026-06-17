@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
+import json
 import os
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import streamlit as st
@@ -18,14 +21,31 @@ from utils.access_control import (
     unlock_admin,
 )
 
-APP_VERSION = "ACCOUNT_TZ_LANG_DETECT_V8"
+APP_VERSION = "ACCOUNT_IDENTITY_GUARD_V1"
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
 
 
+DUPLICATE_ACCOUNT_MESSAGE = "An account already exists for this email. Please log in or use a different email."
+
+
+def normalize_email(email: str | None) -> str:
+    return str(email or "").strip().lower()
+
+
+def get_secret_value(name: str, default: str = "") -> str:
+    value = str(os.environ.get(name, "") or "").strip()
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name, default) or "").strip()
+    except Exception:
+        return default
+
+
 def get_existing_profile(email: str):
-    email = str(email or "").strip().lower()
+    email = normalize_email(email)
     if not email:
         return None
     try:
@@ -42,6 +62,110 @@ def get_existing_profile(email: str):
         return None
 
 
+def get_existing_profile_strict(email: str) -> dict | None:
+    """Find an app_users profile by normalized email and fail closed on DB errors."""
+    email = normalize_email(email)
+    if not email:
+        return None
+
+    admin = get_supabase_admin_client()
+
+    result = (
+        admin
+        .table("app_users")
+        .select("id,email,auth_user_id")
+        .eq("email", email)
+        .limit(1)
+        .execute()
+    )
+    if result.data:
+        return result.data[0]
+
+    # Defensive fallback for legacy rows that may not have been stored normalized.
+    result = admin.table("app_users").select("id,email,auth_user_id").execute()
+    for row in result.data or []:
+        if normalize_email(row.get("email")) == email:
+            return row
+    return None
+
+
+def find_auth_user_by_email(email: str) -> dict | None:
+    """Find a Supabase Auth user by normalized email using the service-role Auth API.
+
+    Signup must fail closed if this lookup cannot run. Supabase Auth can hide
+    duplicate signup attempts for security, so relying only on auth.sign_up is
+    not enough.
+    """
+    email = normalize_email(email)
+    if not email:
+        return None
+
+    base_url = get_secret_value("SUPABASE_URL").rstrip("/")
+    service_role_key = get_secret_value("SUPABASE_SERVICE_ROLE_KEY")
+    if not base_url or not service_role_key:
+        raise RuntimeError("Missing Supabase service-role configuration for duplicate email check.")
+
+    per_page = 1000
+    for page in range(1, 11):
+        query = urlencode({"page": page, "per_page": per_page})
+        request = Request(
+            f"{base_url}/auth/v1/admin/users?{query}",
+            headers={
+                "apikey": service_role_key,
+                "Authorization": f"Bearer {service_role_key}",
+                "Content-Type": "application/json",
+            },
+            method="GET",
+        )
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+
+        users = payload.get("users") if isinstance(payload, dict) else payload
+        users = users or []
+        for user in users:
+            if normalize_email(user.get("email")) == email:
+                return user
+        if len(users) < per_page:
+            break
+    return None
+
+
+def email_already_has_account(email: str) -> bool:
+    email = normalize_email(email)
+    if not email:
+        return False
+    if get_existing_profile_strict(email):
+        return True
+    if find_auth_user_by_email(email):
+        return True
+    return False
+
+
+def repair_profile_auth_user_id(email: str, auth_user_id: str, preferred_timezone: str | None = None) -> dict:
+    """Repair app_users.auth_user_id after a successful login with the same email."""
+    email = normalize_email(email)
+    auth_user_id = str(auth_user_id or "").strip()
+    if not email or not auth_user_id:
+        raise ValueError("Cannot repair profile identity link without email and auth user ID.")
+
+    payload = {"auth_user_id": auth_user_id}
+    if preferred_timezone:
+        payload["preferred_timezone"] = normalize_timezone(preferred_timezone)
+
+    result = (
+        get_supabase_admin_client()
+        .table("app_users")
+        .update(payload)
+        .eq("email", email)
+        .execute()
+    )
+    updated = (result.data or [None])[0]
+    if not updated:
+        existing = get_existing_profile(email) or {}
+        updated = {**existing, **payload, "email": email}
+    return updated
+
+
 def upsert_profile(
     email: str,
     full_name: str = "",
@@ -49,7 +173,7 @@ def upsert_profile(
     auth_user_id: str | None = None,
     preferred_timezone: str | None = None,
 ):
-    email = str(email or "").strip().lower()
+    email = normalize_email(email)
     if not email:
         return {
             "email": "",
@@ -80,7 +204,7 @@ def upsert_profile(
 
 
 def update_profile_timezone(email: str, preferred_timezone: str) -> dict:
-    email = str(email or "").strip().lower()
+    email = normalize_email(email)
     preferred_timezone = normalize_timezone(preferred_timezone)
     if not email:
         return {}
@@ -233,22 +357,8 @@ def language_label(row: dict) -> str:
 
 
 def get_app_base_url() -> str:
-    """Return deployed app base URL for auth redirects.
-
-    On Render, APP_BASE_URL is normally an environment variable.
-    In Streamlit Cloud/local dev, it may live in st.secrets.
-    Required value for current Render deploy:
-    https://salesforce-cert-mock-exam.onrender.com
-    """
-    base = str(os.environ.get("APP_BASE_URL", "") or "").strip()
-
-    if not base:
-        try:
-            base = str(st.secrets.get("APP_BASE_URL", "") or "").strip()
-        except Exception:
-            base = ""
-
-    return base.rstrip("/")
+    """Return deployed app base URL for auth redirects."""
+    return get_secret_value("APP_BASE_URL").rstrip("/")
 
 
 def is_auth_email_rate_limit_error(exc: Exception) -> bool:
@@ -428,22 +538,22 @@ else:
                         st.error("Login failed. Please check your email and password.")
                     else:
                         profile = get_existing_profile(login_email)
+                        current_auth_user_id = str(getattr(user, "id", "") or "").strip()
                         if not profile:
-                            profile = upsert_profile(login_email, "", detected_default_language, user.id, detected_timezone)
-                        elif not profile.get("auth_user_id"):
-                            profile = upsert_profile(
-                                login_email,
-                                profile.get("full_name") or "",
-                                profile.get("preferred_language_code") or detected_default_language,
-                                user.id,
-                                detected_timezone,
-                            )
-                        profile = profile or {"email": login_email, "auth_user_id": user.id, "subscription_status": "free", "preferred_language_code": detected_default_language, "preferred_timezone": detected_timezone}
+                            profile = upsert_profile(login_email, "", detected_default_language, current_auth_user_id, detected_timezone)
+                        else:
+                            stored_auth_user_id = str(profile.get("auth_user_id") or "").strip()
+                            if stored_auth_user_id != current_auth_user_id:
+                                # A successful Supabase login proves this auth user owns this email.
+                                # Repair missing or stale app_users.auth_user_id instead of preserving corruption.
+                                repaired = repair_profile_auth_user_id(login_email, current_auth_user_id, detected_timezone)
+                                profile = {**profile, **repaired, "auth_user_id": current_auth_user_id}
+                        profile = profile or {"email": login_email, "auth_user_id": current_auth_user_id, "subscription_status": "free", "preferred_language_code": detected_default_language, "preferred_timezone": detected_timezone}
                         if detected_timezone and profile.get("preferred_timezone") != detected_timezone:
                             timezone_update = update_profile_timezone(login_email, detected_timezone)
                             profile = {**profile, **timezone_update, "preferred_timezone": detected_timezone}
                         profile["email"] = login_email
-                        profile["auth_user_id"] = profile.get("auth_user_id") or user.id
+                        profile["auth_user_id"] = current_auth_user_id
                         save_logged_in_user(profile, persist=True)
                         st.success("Logged in ✅")
                         st.info("If the page does not refresh automatically, click Account again in the sidebar.")
@@ -486,21 +596,31 @@ else:
                 st.warning("Passwords do not match.")
             else:
                 try:
-                    response = get_supabase_auth_client().auth.sign_up({
-                        "email": signup_email,
-                        "password": signup_password,
-                        "options": {"data": {"full_name": full_name}},
-                    })
-                    user = response.user
-                    auth_user_id = user.id if user else None
-                    profile = upsert_profile(signup_email, full_name, selected_language, auth_user_id, detected_timezone)
-                    save_logged_in_user(profile, persist=True)
-                    st.success("Account created ✅")
-                    st.info("If email confirmation is enabled in Supabase, check your inbox to confirm your account.")
-                    st.rerun()
+                    if email_already_has_account(signup_email):
+                        st.error(DUPLICATE_ACCOUNT_MESSAGE)
+                    else:
+                        response = get_supabase_auth_client().auth.sign_up({
+                            "email": signup_email,
+                            "password": signup_password,
+                            "options": {"data": {"full_name": full_name}},
+                        })
+                        user = response.user
+                        auth_user_id = str(getattr(user, "id", "") or "").strip() if user else ""
+                        if not auth_user_id:
+                            st.error("Account creation failed. Supabase did not return a user ID. Please try logging in or resetting your password.")
+                        else:
+                            profile = upsert_profile(signup_email, full_name, selected_language, auth_user_id, detected_timezone)
+                            save_logged_in_user(profile, persist=True)
+                            st.success("Account created ✅")
+                            st.info("If email confirmation is enabled in Supabase, check your inbox to confirm your account.")
+                            st.rerun()
                 except Exception as exc:
-                    st.error("Account creation failed. The email may already be registered.")
-                    st.caption(str(exc))
+                    msg = str(exc).lower()
+                    if "already" in msg or "duplicate" in msg or "unique" in msg or "registered" in msg:
+                        st.error(DUPLICATE_ACCOUNT_MESSAGE)
+                    else:
+                        st.error("Account creation is temporarily unavailable because the existing-email check failed.")
+                        st.caption(str(exc))
 
 
     with reset_tab:
