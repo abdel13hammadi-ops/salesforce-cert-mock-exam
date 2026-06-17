@@ -21,7 +21,7 @@ from utils.access_control import (
     unlock_admin,
 )
 
-APP_VERSION = "ACCOUNT_IDENTITY_GUARD_V2"
+APP_VERSION = "ACCOUNT_IDENTITY_GUARD_V3"
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -142,11 +142,16 @@ def email_already_has_account(email: str) -> bool:
 
 
 def repair_profile_auth_user_id(email: str, auth_user_id: str, preferred_timezone: str | None = None) -> dict:
-    """Repair app_users.auth_user_id after a successful login with the same email."""
+    """Attach app_users.auth_user_id only when it is missing. Never overwrite a mismatch."""
     email = normalize_email(email)
     auth_user_id = str(auth_user_id or "").strip()
     if not email or not auth_user_id:
-        raise ValueError("Cannot repair profile identity link without email and auth user ID.")
+        raise ValueError("Cannot attach profile identity link without email and auth user ID.")
+
+    existing = get_existing_profile(email) or {}
+    existing_auth_user_id = str(existing.get("auth_user_id") or "").strip()
+    if existing_auth_user_id and existing_auth_user_id != auth_user_id:
+        raise RuntimeError("Account identity mismatch. Refusing to overwrite app_users.auth_user_id.")
 
     payload = {"auth_user_id": auth_user_id}
     if preferred_timezone:
@@ -157,11 +162,11 @@ def repair_profile_auth_user_id(email: str, auth_user_id: str, preferred_timezon
         .table("app_users")
         .update(payload)
         .eq("email", email)
+        .is_("auth_user_id", "null")
         .execute()
     )
     updated = (result.data or [None])[0]
     if not updated:
-        existing = get_existing_profile(email) or {}
         updated = {**existing, **payload, "email": email}
     return updated
 
@@ -505,7 +510,8 @@ if current_email:
                 email=current_email,
                 full_name=full_name,
                 language_code=selected_language,
-                auth_user_id=st.session_state.get("auth_user_id") or profile.get("auth_user_id"),
+                # Do not trust session_state for identity writes. The DB profile is the source of truth.
+                auth_user_id=profile.get("auth_user_id"),
                 preferred_timezone=detected_timezone,
             )
             save_logged_in_user(updated, persist=True)
@@ -559,11 +565,17 @@ else:
                             profile = upsert_profile(login_email, "", detected_default_language, current_auth_user_id, detected_timezone)
                         else:
                             stored_auth_user_id = str(profile.get("auth_user_id") or "").strip()
-                            if stored_auth_user_id != current_auth_user_id:
-                                # A successful Supabase login proves this auth user owns this email.
-                                # Repair missing or stale app_users.auth_user_id instead of preserving corruption.
+                            if not stored_auth_user_id:
+                                # First real login for a legacy profile: attach the verified Supabase Auth ID.
                                 repaired = repair_profile_auth_user_id(login_email, current_auth_user_id, detected_timezone)
                                 profile = {**profile, **repaired, "auth_user_id": current_auth_user_id}
+                            elif stored_auth_user_id != current_auth_user_id:
+                                # Never overwrite an existing auth_user_id mismatch from app code.
+                                # This is a data-integrity problem, not a normal login event.
+                                force_auth_client_sign_out()
+                                clear_login_state()
+                                st.error("Account identity mismatch. Contact support before logging in again.")
+                                st.stop()
                         profile = profile or {"email": login_email, "auth_user_id": current_auth_user_id, "subscription_status": "free", "preferred_language_code": detected_default_language, "preferred_timezone": detected_timezone}
                         if detected_timezone and profile.get("preferred_timezone") != detected_timezone:
                             timezone_update = update_profile_timezone(login_email, detected_timezone)
