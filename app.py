@@ -7,13 +7,12 @@ from datetime import datetime, timezone, timedelta
 import os
 
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "V26_TIMER_PERSISTENCE"
+APP_VERSION = "V27_STABLE_JS_TIMER_CORNER"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -107,6 +106,14 @@ def inject_exam_layout_css():
     st.markdown(
         """
         <style>
+        /* V27 production chrome + timer */
+        #MainMenu { visibility: hidden !important; display: none !important; }
+        header[data-testid="stHeader"] { visibility: hidden !important; height: 0px !important; }
+        footer { visibility: hidden !important; display: none !important; }
+        [data-testid="stToolbar"] { visibility: hidden !important; display: none !important; height: 0px !important; }
+        [data-testid="stDecoration"] { visibility: hidden !important; display: none !important; height: 0px !important; }
+        [data-testid="stStatusWidget"] { visibility: hidden !important; display: none !important; height: 0px !important; }
+
         /* Global page spacing */
         .block-container {
             max-width: 1180px;
@@ -203,26 +210,22 @@ def inject_exam_layout_css():
             margin-bottom: 15px;
         }
 
-        /* V26 timer persistence */
-        .exam-floating-timer{
-            will-change: transform;
-            backface-visibility:hidden;
-            transform:translateZ(0);
-        }
-
-        /* Production-style floating exam timer */
+        /* V27 stable timer overlay: fixed to true viewport top-right */
         .exam-floating-timer {
-            position: fixed;
-            top: 68px;
-            right: 30px;
-            z-index: 1001;
-            min-width: 170px;
+            position: fixed !important;
+            top: 12px !important;
+            right: 12px !important;
+            z-index: 2147483647 !important;
+            min-width: 148px;
             background: #fff4d6;
             border: 1px solid #e0b84f;
             border-radius: 12px;
-            padding: 10px 14px;
-            box-shadow: 0 6px 20px rgba(15, 23, 42, 0.16);
+            padding: 8px 12px;
+            box-shadow: 0 6px 20px rgba(15, 23, 42, 0.20);
             text-align: center;
+            pointer-events: none;
+            transform: translateZ(0);
+            backface-visibility: hidden;
         }
         .exam-floating-timer-label {
             font-size: 12px;
@@ -260,12 +263,16 @@ def inject_exam_layout_css():
         @media (max-width: 900px) {
             .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
             .exam-floating-timer {
-                position: sticky;
-                top: 0;
-                right: auto;
-                width: 100%;
-                margin-bottom: 12px;
-                min-width: 0;
+                position: fixed !important;
+                top: 8px !important;
+                right: 8px !important;
+                width: auto !important;
+                min-width: 132px !important;
+                margin-bottom: 0 !important;
+                padding: 7px 10px !important;
+            }
+            .exam-floating-timer-value {
+                font-size: 21px !important;
             }
         }
         </style>
@@ -1313,8 +1320,6 @@ if not st.session_state.started:
             reset_exam()
 
 elif not st.session_state.submitted:
-    st_autorefresh(interval=1000, key="exam_timer_refresh")
-
     elapsed = time.time() - st.session_state.start_time
     remaining = (EXAM_MINUTES * 60) - elapsed
 
@@ -1322,18 +1327,10 @@ elif not st.session_state.submitted:
         st.session_state.submitted = True
         st.rerun()
 
-    mins = int(remaining // 60)
-    secs = int(remaining % 60)
-
-    st.markdown(
-        f"""
-        <div class="exam-floating-timer">
-            <div class="exam-floating-timer-label">Time Remaining</div>
-            <div class="exam-floating-timer-value">{mins:02d}:{secs:02d}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    mins = int(max(0, remaining) // 60)
+    secs = int(max(0, remaining) % 60)
+    deadline_epoch_seconds = float(st.session_state.start_time) + (EXAM_MINUTES * 60)
+    render_stable_js_timer(deadline_epoch_seconds)
 
     st.sidebar.markdown(
         """
