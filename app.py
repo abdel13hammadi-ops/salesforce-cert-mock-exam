@@ -12,7 +12,7 @@ from utils.access_control import render_app_chrome, get_current_user_email as sh
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "V24_TIMER_CORNER_LOCK"
+APP_VERSION = "V25_HIDE_STREAMLIT_CHROME"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -106,6 +106,14 @@ def inject_exam_layout_css():
     st.markdown(
         """
         <style>
+        /* Hide Streamlit developer chrome for production UI */
+        #MainMenu { visibility: hidden !important; }
+        header[data-testid="stHeader"] { visibility: hidden !important; height: 0px !important; }
+        footer { visibility: hidden !important; }
+        [data-testid="stToolbar"] { visibility: hidden !important; height: 0px !important; position: fixed !important; }
+        [data-testid="stDecoration"] { visibility: hidden !important; height: 0px !important; }
+        [data-testid="stStatusWidget"] { visibility: hidden !important; height: 0px !important; }
+
         /* Global page spacing */
         .block-container {
             max-width: 1180px;
