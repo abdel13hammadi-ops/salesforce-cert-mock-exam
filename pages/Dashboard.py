@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
+import streamlit.components.v1 as components
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import (
     get_current_user_email,
@@ -24,12 +25,18 @@ try:
 except Exception:
     calculate_readiness = None
 
-APP_VERSION = "DASHBOARD_V7_FULL_MOCK_ONLY_READINESS"
+APP_VERSION = "DASHBOARD_V8_CLIENT_IDLE_TIMEOUT"
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 
 st.set_page_config(page_title="Dashboard", page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
+
+
+# V31A_CLIENT_IDLE_TIMEOUT_APPLIED
+enforce_client_idle_timeout_result()
+render_client_idle_timeout(timeout_minutes=30)
+
 
 
 # SESSION_TIMEOUT_APPLIED
@@ -86,33 +93,75 @@ def format_user_datetime(value: Any, preferred_timezone: str = "America/New_York
     return parsed.astimezone(user_tz).strftime("%b %d, %Y, %I:%M %p %Z").replace(", 0", ", ", 1)
 
 
+def render_client_idle_timeout(timeout_minutes: int = 30) -> None:
+    """Client-side idle timeout for Dashboard.
+
+    This is intentionally Dashboard-only for V31A so we can test safely before
+    rolling it out site-wide. It uses browser activity events and redirects the
+    current page with ?session_expired=1 after inactivity.
+    """
+    timeout_ms = int(timeout_minutes) * 60 * 1000
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            const timeoutMs = {timeout_ms};
+            const warningKey = "certbound_session_expired";
+            let idleTimer = null;
+
+            function currentUrlWithExpiredFlag() {{
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set("session_expired", "1");
+                return url.toString();
+            }}
+
+            function expireSession() {{
+                try {{
+                    window.parent.sessionStorage.setItem(warningKey, "1");
+                }} catch (e) {{}}
+                window.parent.location.href = currentUrlWithExpiredFlag();
+            }}
+
+            function resetIdleTimer() {{
+                if (idleTimer) {{
+                    window.clearTimeout(idleTimer);
+                }}
+                idleTimer = window.setTimeout(expireSession, timeoutMs);
+            }}
+
+            const events = ["mousemove", "mousedown", "keydown", "click", "scroll", "touchstart", "touchmove"];
+            events.forEach(function(evt) {{
+                window.parent.document.addEventListener(evt, resetIdleTimer, true);
+            }});
+
+            resetIdleTimer();
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def enforce_client_idle_timeout_result() -> None:
+    """Clear Streamlit session when the browser returns with session_expired=1."""
+    try:
+        params = st.query_params
+        expired = params.get("session_expired")
+    except Exception:
+        expired = None
+
+    if expired == "1":
+        st.session_state.clear()
+        st.warning("Your session expired after 30 minutes of inactivity. Please sign in again.")
+        st.stop()
+
+
 def paid_full_mock_count(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> int:
     count = 0
     for attempt in attempts or []:
         if safe_str(attempt.get("mode")) == "Paid Mock Exam" and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
             count += 1
     return count
-
-
-
-def filter_readiness_attempts(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> List[Dict[str, Any]]:
-    """Keep only Paid Mock Exam attempts that are full-length for readiness."""
-    filtered: List[Dict[str, Any]] = []
-    for attempt in attempts or []:
-        if safe_str(attempt.get("mode")) == "Paid Mock Exam" and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
-            filtered.append(attempt)
-    return filtered
-
-
-def filter_question_attempts_for_attempts(question_attempts: List[Dict[str, Any]], attempts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Keep only question-level rows linked to readiness-eligible attempts."""
-    eligible_ids = {safe_str(attempt.get("id")) for attempt in attempts or [] if attempt.get("id") is not None}
-    if not eligible_ids:
-        return []
-    return [
-        row for row in question_attempts or []
-        if safe_str(row.get("exam_attempt_id")) in eligible_ids
-    ]
 
 
 def render_readiness_locked(full_mocks: int, required_mocks: int = 3) -> None:
@@ -489,7 +538,7 @@ def render_logged_in_dashboard(email: str) -> None:
     s1.metric("Latest Score", f"{latest_score}%" if attempts else "No attempt")
     s2.metric("Average Score", f"{avg_score}%" if attempts else "No attempt")
     s3.metric("Best Score", f"{round(best_score, 2)}%" if attempts else "No attempt")
-    s4.metric("All Exam Attempts", len(attempts))
+    s4.metric("Exam Attempts", len(attempts))
 
     h1, h2, h3 = st.columns(3)
     h1.metric("Approved Questions", question_health.get("approved_questions", 0))
@@ -508,25 +557,23 @@ def render_logged_in_dashboard(email: str) -> None:
         domain_weights = fetch_domain_weights(selected_exam)
         passing_score = safe_float(cert.get("passing_score"), 72 if "Business Analyst" in selected_exam else 68)
         expected_question_count = safe_int(cert.get("question_count"), 60) or 60
-        readiness_attempts = filter_readiness_attempts(attempts, expected_question_count)
-        readiness_question_attempts = filter_question_attempts_for_attempts(question_attempts, readiness_attempts)
         readiness = calculate_readiness(
-            attempts=readiness_attempts,
+            attempts=attempts,
             passing_score=passing_score,
             domain_weights=domain_weights,
             expected_question_count=expected_question_count,
             question_bank_total=safe_int(question_health.get("approved_questions"), 0),
-            question_attempts=readiness_question_attempts,
+            question_attempts=question_attempts,
             time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
         )
-        full_mocks = len(readiness_attempts)
+        full_mocks = paid_full_mock_count(attempts, expected_question_count)
         required_mocks = 3
         if full_mocks < required_mocks:
             render_readiness_locked(full_mocks, required_mocks)
             r1, r2, r3 = st.columns(3)
             r1.metric("Full Mocks Completed", f"{full_mocks} / {required_mocks}")
-            r2.metric("Full-Mock Unique Questions", safe_int(readiness.get("unique_questions_seen"), 0))
-            r3.metric("Full-Mock Questions Attempted", safe_int(readiness.get("total_attempted"), 0))
+            r2.metric("Unique Questions Seen", safe_int(readiness.get("unique_questions_seen"), 0))
+            r3.metric("Total Questions Attempted", safe_int(readiness.get("total_attempted"), 0))
         else:
             r1, r2, r3, r4 = st.columns(4)
             r1.metric("Readiness", f"{round(safe_float(readiness.get('score')), 2)}%")
