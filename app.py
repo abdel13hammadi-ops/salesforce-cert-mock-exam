@@ -7,14 +7,13 @@ from datetime import datetime, timezone, timedelta
 import os
 
 import streamlit as st
-from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "V29_SESSION_TIMEOUT"
+APP_VERSION = "V30_CLEAN_NO_TIMEOUT"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -51,14 +50,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-
-# SESSION_TIMEOUT_APPLIED
-_active_exam_in_progress = bool(
-    st.session_state.get("started") and not st.session_state.get("submitted")
-)
-enforce_session_timeout(exempt_active_exam=_active_exam_in_progress)
-show_session_expired_notice()
 
 
 def redirect_supabase_recovery_hash_to_reset_page():
