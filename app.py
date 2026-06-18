@@ -12,7 +12,7 @@ from utils.access_control import render_app_chrome, get_current_user_email as sh
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "V27_STABLE_JS_TIMER_CORNER"
+APP_VERSION = "V28_STABLE_JS_TIMER_FUNCTION_FIX"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -97,7 +97,123 @@ redirect_supabase_recovery_hash_to_reset_page()
 render_app_chrome()
 
 
-def inject_exam_layout_css():
+def 
+def render_stable_js_timer(deadline_epoch_seconds):
+    """Render a browser-owned countdown timer without Streamlit autorefresh."""
+    try:
+        deadline_ms = int(float(deadline_epoch_seconds) * 1000)
+    except Exception:
+        deadline_ms = int(time.time() * 1000)
+
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            const deadlineMs = {deadline_ms};
+            const doc = window.parent.document;
+            const timerId = "certbound-stable-exam-timer";
+            const expiredKey = "certbound_timer_expired_" + deadlineMs;
+
+            let timer = doc.getElementById(timerId);
+            if (!timer) {{
+                timer = doc.createElement("div");
+                timer.id = timerId;
+                timer.className = "exam-floating-timer";
+                timer.innerHTML = `
+                    <div class="exam-floating-timer-label">Time Remaining</div>
+                    <div class="exam-floating-timer-value">--:--</div>
+                `;
+                doc.body.appendChild(timer);
+            }}
+
+            Object.assign(timer.style, {{
+                position: "fixed",
+                top: "12px",
+                right: "12px",
+                zIndex: "2147483647",
+                minWidth: "148px",
+                background: "#fff4d6",
+                border: "1px solid #e0b84f",
+                borderRadius: "12px",
+                padding: "8px 12px",
+                boxShadow: "0 6px 20px rgba(15, 23, 42, 0.20)",
+                textAlign: "center",
+                pointerEvents: "none",
+                transform: "translateZ(0)",
+                backfaceVisibility: "hidden"
+            }});
+
+            const valueEl = timer.querySelector(".exam-floating-timer-value");
+            const labelEl = timer.querySelector(".exam-floating-timer-label");
+
+            if (labelEl) {{
+                Object.assign(labelEl.style, {{
+                    fontSize: "11px",
+                    fontWeight: "800",
+                    color: "#5f4b00",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    marginBottom: "2px"
+                }});
+            }}
+
+            if (valueEl) {{
+                Object.assign(valueEl.style, {{
+                    fontSize: "24px",
+                    fontWeight: "900",
+                    color: "#1f2937",
+                    letterSpacing: "0.04em",
+                    lineHeight: "1"
+                }});
+            }}
+
+            if (window.parent.certboundExamTimerInterval) {{
+                window.parent.clearInterval(window.parent.certboundExamTimerInterval);
+            }}
+
+            function formatRemaining(ms) {{
+                const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+                const minutes = Math.floor(totalSeconds / 60);
+                const seconds = totalSeconds % 60;
+                return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+            }}
+
+            function updateTimer() {{
+                const remaining = deadlineMs - Date.now();
+                if (valueEl) {{
+                    valueEl.textContent = formatRemaining(remaining);
+                    if (remaining <= 5 * 60 * 1000) {{
+                        timer.style.background = "#fee2e2";
+                        timer.style.borderColor = "#dc2626";
+                        valueEl.style.color = "#991b1b";
+                    }} else if (remaining <= 15 * 60 * 1000) {{
+                        timer.style.background = "#ffedd5";
+                        timer.style.borderColor = "#f97316";
+                        valueEl.style.color = "#9a3412";
+                    }}
+                }}
+
+                if (remaining <= 0) {{
+                    window.parent.clearInterval(window.parent.certboundExamTimerInterval);
+                    if (!window.parent.sessionStorage.getItem(expiredKey)) {{
+                        window.parent.sessionStorage.setItem(expiredKey, "1");
+                        setTimeout(function() {{
+                            window.parent.location.reload();
+                        }}, 300);
+                    }}
+                }}
+            }}
+
+            updateTimer();
+            window.parent.certboundExamTimerInterval = window.parent.setInterval(updateTimer, 1000);
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
+inject_exam_layout_css():
     """Centralized exam-page layout CSS.
 
     Keep this early in the file so top widgets like the certification selector
@@ -106,14 +222,6 @@ def inject_exam_layout_css():
     st.markdown(
         """
         <style>
-        /* V27 production chrome + timer */
-        #MainMenu { visibility: hidden !important; display: none !important; }
-        header[data-testid="stHeader"] { visibility: hidden !important; height: 0px !important; }
-        footer { visibility: hidden !important; display: none !important; }
-        [data-testid="stToolbar"] { visibility: hidden !important; display: none !important; height: 0px !important; }
-        [data-testid="stDecoration"] { visibility: hidden !important; display: none !important; height: 0px !important; }
-        [data-testid="stStatusWidget"] { visibility: hidden !important; display: none !important; height: 0px !important; }
-
         /* Global page spacing */
         .block-container {
             max-width: 1180px;
@@ -210,7 +318,7 @@ def inject_exam_layout_css():
             margin-bottom: 15px;
         }
 
-        /* V27 stable timer overlay: fixed to true viewport top-right */
+        /* V26 timer persistence */
         .exam-floating-timer {
             position: fixed !important;
             top: 12px !important;
@@ -226,6 +334,21 @@ def inject_exam_layout_css():
             pointer-events: none;
             transform: translateZ(0);
             backface-visibility: hidden;
+        }
+
+        /* Production-style floating exam timer */
+        .exam-floating-timer {
+            position: fixed;
+            top: 68px;
+            right: 30px;
+            z-index: 1001;
+            min-width: 170px;
+            background: #fff4d6;
+            border: 1px solid #e0b84f;
+            border-radius: 12px;
+            padding: 10px 14px;
+            box-shadow: 0 6px 20px rgba(15, 23, 42, 0.16);
+            text-align: center;
         }
         .exam-floating-timer-label {
             font-size: 12px;
@@ -263,16 +386,12 @@ def inject_exam_layout_css():
         @media (max-width: 900px) {
             .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
             .exam-floating-timer {
-                position: fixed !important;
-                top: 8px !important;
-                right: 8px !important;
-                width: auto !important;
-                min-width: 132px !important;
-                margin-bottom: 0 !important;
-                padding: 7px 10px !important;
-            }
-            .exam-floating-timer-value {
-                font-size: 21px !important;
+                position: sticky;
+                top: 0;
+                right: auto;
+                width: 100%;
+                margin-bottom: 12px;
+                min-width: 0;
             }
         }
         </style>
@@ -1327,8 +1446,6 @@ elif not st.session_state.submitted:
         st.session_state.submitted = True
         st.rerun()
 
-    mins = int(max(0, remaining) // 60)
-    secs = int(max(0, remaining) % 60)
     deadline_epoch_seconds = float(st.session_state.start_time) + (EXAM_MINUTES * 60)
     render_stable_js_timer(deadline_epoch_seconds)
 
