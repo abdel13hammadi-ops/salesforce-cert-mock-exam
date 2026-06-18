@@ -13,7 +13,7 @@ from utils.access_control import render_app_chrome, get_current_user_email as sh
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "SUPABASE_DB_V18_QUESTION_ATTEMPT_INSERT_DIAGNOSTIC"
+APP_VERSION = "V21_TIMER_UX_AUDIT_PATCH"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -1524,7 +1524,7 @@ if not st.session_state.started:
             reset_exam()
 
 elif not st.session_state.submitted:
-    st_autorefresh(interval=1000, key="exam_timer_refresh")
+    st_autorefresh(interval=5000, key="exam_timer_refresh")  # reduced rerender frequency
 
     elapsed = time.time() - st.session_state.start_time
     remaining = (EXAM_MINUTES * 60) - elapsed
