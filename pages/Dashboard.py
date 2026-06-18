@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
 
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import (
     get_current_user_email,
     get_supabase_client,
@@ -22,12 +24,17 @@ try:
 except Exception:
     calculate_readiness = None
 
-APP_VERSION = "DASHBOARD_V9_TIMEOUT_ROLLBACK_CLEAN"
+APP_VERSION = "DASHBOARD_V5_METRIC_LABEL_CLEANUP"
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 
 st.set_page_config(page_title="Dashboard", page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 
 def safe_str(value: Any, default: str = "") -> str:
@@ -54,11 +61,49 @@ def safe_int(value: Any, default: int = 0) -> int:
 
 def parse_dt(value: Any) -> datetime:
     if not value:
-        return datetime.min
+        return datetime.min.replace(tzinfo=timezone.utc)
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00").replace("+00:00", ""))
+        raw = str(value).strip().replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
     except Exception:
-        return datetime.min
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def format_user_datetime(value: Any, preferred_timezone: str = "America/New_York") -> str:
+    if not value:
+        return "Not recorded"
+    parsed = parse_dt(value)
+    if parsed == datetime.min.replace(tzinfo=timezone.utc):
+        return str(value)
+    tz_name = safe_str(preferred_timezone, "America/New_York") or "America/New_York"
+    try:
+        user_tz = ZoneInfo(tz_name)
+    except Exception:
+        user_tz = ZoneInfo("America/New_York")
+    return parsed.astimezone(user_tz).strftime("%b %d, %Y, %I:%M %p %Z").replace(", 0", ", ", 1)
+
+
+def paid_full_mock_count(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> int:
+    count = 0
+    for attempt in attempts or []:
+        if safe_str(attempt.get("mode")) == "Paid Mock Exam" and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
+            count += 1
+    return count
+
+
+def render_readiness_locked(full_mocks: int, required_mocks: int = 3) -> None:
+    remaining = max(required_mocks - int(full_mocks or 0), 0)
+    st.subheader("Readiness Analysis")
+    st.warning("Readiness Locked")
+    st.info(
+        f"Complete {required_mocks} full paid mock exams to unlock your readiness score. "
+        f"Progress: {full_mocks} / {required_mocks}. "
+        f"You need {remaining} more full mock exam{'s' if remaining != 1 else ''}."
+    )
+    st.caption("We do not show readiness from too little data. This protects users from false confidence after one lucky or rushed exam.")
 
 
 def normalize_breakdown(value: Any) -> Dict[str, Any]:
@@ -144,6 +189,29 @@ def fetch_user_attempts(user_email: str, exam_name: Optional[str] = None) -> Lis
         ),
         reverse=True,
     )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_user_question_attempts(user_email: str, exam_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    user_email = safe_lower(user_email)
+    if not user_email:
+        return []
+    try:
+        query = (
+            get_supabase_client()
+            .table("question_attempts")
+            .select(
+                "id,exam_attempt_id,question_id,user_email,exam_name,language_code,category,difficulty,"
+                "is_correct,time_spent_seconds,answered_at"
+            )
+            .ilike("user_email", user_email)
+        )
+        if exam_name:
+            query = query.eq("exam_name", exam_name)
+        result = query.order("answered_at", desc=True).execute()
+        return result.data or []
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -311,6 +379,7 @@ def render_logged_in_dashboard(email: str) -> None:
     access_level = get_user_access_level(email)
     subscription_status = safe_lower(profile.get("subscription_status") or st.session_state.get("subscription_status"), "free")
     preferred_language = safe_lower(profile.get("preferred_language_code") or st.session_state.get("preferred_language_code"), "en") or "en"
+    preferred_timezone = safe_str(profile.get("preferred_timezone") or st.session_state.get("preferred_timezone"), "America/New_York") or "America/New_York"
     full_name = safe_str(profile.get("full_name") or st.session_state.get("full_name"), "")
     display_name = full_name or email.split("@", 1)[0]
 
@@ -359,6 +428,7 @@ def render_logged_in_dashboard(email: str) -> None:
         st.metric("Passing Score", f"{safe_int(cert.get('passing_score'), 68)}%")
 
     attempts = fetch_user_attempts(email, selected_exam)
+    question_attempts = fetch_user_question_attempts(email, selected_exam)
     question_health = fetch_question_health_for_exam(selected_exam, preferred_language)
     premium = has_premium_access(email)
 
@@ -398,7 +468,7 @@ def render_logged_in_dashboard(email: str) -> None:
     s1.metric("Latest Score", f"{latest_score}%" if attempts else "No attempt")
     s2.metric("Average Score", f"{avg_score}%" if attempts else "No attempt")
     s3.metric("Best Score", f"{round(best_score, 2)}%" if attempts else "No attempt")
-    s4.metric("Attempts", len(attempts))
+    s4.metric("Exam Attempts", len(attempts))
 
     h1, h2, h3 = st.columns(3)
     h1.metric("Approved Questions", question_health.get("approved_questions", 0))
@@ -422,15 +492,36 @@ def render_logged_in_dashboard(email: str) -> None:
             passing_score=passing_score,
             domain_weights=domain_weights,
             expected_question_count=expected_question_count,
-            question_bank_total=None,
+            question_bank_total=safe_int(question_health.get("approved_questions"), 0),
+            question_attempts=question_attempts,
+            time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
         )
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Readiness", f"{round(safe_float(readiness.get('score')), 2)}%")
-        r2.metric("Status", safe_str(readiness.get("label"), "Not Enough Data"))
-        r3.metric("Confidence", safe_str(readiness.get("confidence"), "No Data"))
-        r4.metric("Questions Practiced", safe_int(readiness.get("total_attempted"), 0))
-        recommendation = safe_str(readiness.get("recommendation"), "Complete more attempts to improve the readiness signal.")
-        st.info(recommendation)
+        full_mocks = paid_full_mock_count(attempts, expected_question_count)
+        required_mocks = 3
+        if full_mocks < required_mocks:
+            render_readiness_locked(full_mocks, required_mocks)
+            r1, r2, r3 = st.columns(3)
+            r1.metric("Full Mocks Completed", f"{full_mocks} / {required_mocks}")
+            r2.metric("Unique Questions Seen", safe_int(readiness.get("unique_questions_seen"), 0))
+            r3.metric("Total Questions Attempted", safe_int(readiness.get("total_attempted"), 0))
+        else:
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Readiness", f"{round(safe_float(readiness.get('score')), 2)}%")
+            r2.metric("Status", safe_str(readiness.get("label"), "Not Enough Data"))
+            r3.metric("Confidence", safe_str(readiness.get("confidence"), "No Data"))
+            r4.metric("Unique Questions Seen", safe_int(readiness.get("unique_questions_seen"), 0))
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Recency Accuracy", f"{safe_float(readiness.get('accuracy_score'), 0):.2f}%")
+            c2.metric("Coverage", f"{safe_float(readiness.get('coverage_score'), 0):.2f}%")
+            c3.metric("Domain Balance", f"{safe_float(readiness.get('domain_balance_score'), 0):.2f}%")
+            c4.metric("Pacing", f"{safe_float(readiness.get('pacing_score'), 0):.2f}%")
+
+            recommendation = safe_str(readiness.get("recommendation"), "Complete more attempts to improve the readiness signal.")
+            if readiness.get("guardrail_applied"):
+                st.warning(recommendation)
+            else:
+                st.info(recommendation)
 
     st.subheader("Weakest domains")
     if domain_df.empty:
@@ -445,7 +536,7 @@ def render_logged_in_dashboard(email: str) -> None:
     for attempt in attempts[:5]:
         rows.append(
             {
-                "Completed": attempt.get("completed_at") or attempt.get("started_at") or "Not recorded",
+                "Completed": format_user_datetime(attempt.get("completed_at") or attempt.get("started_at"), preferred_timezone),
                 "Mode": attempt.get("mode"),
                 "Score %": attempt.get("score"),
                 "Correct": attempt_correct_count(attempt),

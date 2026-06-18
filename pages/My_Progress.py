@@ -15,7 +15,7 @@ from utils.access_control import (
 )
 from utils.readiness import calculate_readiness, readiness_methodology_text
 
-APP_VERSION = "MY_PROGRESS_V14_FULL_MOCK_ONLY_READINESS"
+APP_VERSION = "MY_PROGRESS_V12_METRIC_LABEL_CLEANUP"
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -300,27 +300,6 @@ def paid_full_mock_count(attempts: List[Dict[str, Any]], expected_question_count
     return count
 
 
-
-def filter_readiness_attempts(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> List[Dict[str, Any]]:
-    """Keep only Paid Mock Exam attempts that are full-length for readiness."""
-    filtered: List[Dict[str, Any]] = []
-    for attempt in attempts or []:
-        if str(attempt.get("mode") or "").strip() == "Paid Mock Exam" and _safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
-            filtered.append(attempt)
-    return filtered
-
-
-def filter_question_attempts_for_attempts(question_attempts: List[Dict[str, Any]], attempts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Keep only question-level rows linked to readiness-eligible attempts."""
-    eligible_ids = {str(attempt.get("id")) for attempt in attempts or [] if attempt.get("id") is not None}
-    if not eligible_ids:
-        return []
-    return [
-        row for row in question_attempts or []
-        if str(row.get("exam_attempt_id")) in eligible_ids
-    ]
-
-
 def render_readiness_locked(full_mocks: int, required_mocks: int = 3) -> None:
     remaining = max(required_mocks - int(full_mocks or 0), 0)
     st.header("Overall Readiness")
@@ -501,26 +480,23 @@ passing_score = _safe_float(cert.get("passing_score"), 72 if "Business Analyst" 
 expected_question_count = _safe_int(cert.get("question_count"), 60) or 60
 domain_weights = fetch_domain_weights(selected_exam)
 
-readiness_attempts = filter_readiness_attempts(attempts, expected_question_count)
-readiness_question_attempts = filter_question_attempts_for_attempts(question_attempts, readiness_attempts)
-
 readiness = calculate_readiness(
-    attempts=readiness_attempts,
+    attempts=attempts,
     passing_score=passing_score,
     domain_weights=domain_weights,
     expected_question_count=expected_question_count,
     question_bank_total=question_bank_total,
-    question_attempts=readiness_question_attempts,
+    question_attempts=question_attempts,
     time_limit_minutes=_safe_int(cert.get("time_limit_minutes"), 105),
 )
 
-full_mocks_completed = len(readiness_attempts)
+full_mocks_completed = paid_full_mock_count(attempts, expected_question_count)
 if full_mocks_completed < 3:
     render_readiness_locked(full_mocks_completed, 3)
     m1, m2, m3 = st.columns(3)
     m1.metric("Full Mocks Completed", f"{full_mocks_completed} / 3")
-    m2.metric("Full-Mock Unique Questions", _safe_int(readiness.get("unique_questions_seen"), 0))
-    m3.metric("Full-Mock Questions Attempted", _safe_int(readiness.get("total_attempted"), 0))
+    m2.metric("Unique Questions Seen", _safe_int(readiness.get("unique_questions_seen"), 0))
+    m3.metric("Questions Practiced", _safe_int(readiness.get("total_attempted"), 0))
     st.info(readiness_methodology_text())
 else:
     render_readiness_card(readiness, passing_score, selected_exam)
@@ -536,7 +512,7 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Latest Score", f"{latest_score}%")
 c2.metric("Average Score", f"{average_score}%")
 c3.metric("Best Score", f"{best_score}%")
-c4.metric("All Exam Attempts", len(attempts))
+c4.metric("Attempts", len(attempts))
 
 trend_rows = []
 for attempt in reversed(attempts):
