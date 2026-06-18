@@ -23,7 +23,7 @@ try:
 except Exception:
     calculate_readiness = None
 
-APP_VERSION = "DASHBOARD_V4_READINESS_LOCK_TIMEZONE"
+APP_VERSION = "DASHBOARD_V5_METRIC_LABEL_CLEANUP"
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 
@@ -462,7 +462,7 @@ def render_logged_in_dashboard(email: str) -> None:
     s1.metric("Latest Score", f"{latest_score}%" if attempts else "No attempt")
     s2.metric("Average Score", f"{avg_score}%" if attempts else "No attempt")
     s3.metric("Best Score", f"{round(best_score, 2)}%" if attempts else "No attempt")
-    s4.metric("Attempts", len(attempts))
+    s4.metric("Exam Attempts", len(attempts))
 
     h1, h2, h3 = st.columns(3)
     h1.metric("Approved Questions", question_health.get("approved_questions", 0))
@@ -497,7 +497,7 @@ def render_logged_in_dashboard(email: str) -> None:
             r1, r2, r3 = st.columns(3)
             r1.metric("Full Mocks Completed", f"{full_mocks} / {required_mocks}")
             r2.metric("Unique Questions Seen", safe_int(readiness.get("unique_questions_seen"), 0))
-            r3.metric("Questions Practiced", safe_int(readiness.get("total_attempted"), 0))
+            r3.metric("Total Questions Attempted", safe_int(readiness.get("total_attempted"), 0))
         else:
             r1, r2, r3, r4 = st.columns(4)
             r1.metric("Readiness", f"{round(safe_float(readiness.get('score')), 2)}%")

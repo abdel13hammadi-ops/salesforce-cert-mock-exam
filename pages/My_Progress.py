@@ -14,7 +14,7 @@ from utils.access_control import (
 )
 from utils.readiness import calculate_readiness, readiness_methodology_text
 
-APP_VERSION = "MY_PROGRESS_V11_READINESS_LOCK_TIMEZONE"
+APP_VERSION = "MY_PROGRESS_V12_METRIC_LABEL_CLEANUP"
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -314,7 +314,7 @@ def render_readiness_card(readiness: Dict[str, Any], passing_score: float, selec
     c1.metric("Readiness Score", f"{round(_safe_float(readiness.get('score')), 2)}%")
     c2.metric("Status", readiness.get("label", "Not Enough Data"))
     c3.metric("Confidence", readiness.get("confidence", "No Data"))
-    c4.metric("Questions Practiced", _safe_int(readiness.get("total_attempted"), 0))
+    c4.metric("Total Questions Attempted", _safe_int(readiness.get("total_attempted"), 0))
 
     st.info(readiness_methodology_text())
     if readiness.get("guardrail_applied"):
