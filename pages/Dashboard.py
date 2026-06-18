@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import (
     get_current_user_email,
     get_supabase_client,
@@ -24,17 +23,12 @@ try:
 except Exception:
     calculate_readiness = None
 
-APP_VERSION = "DASHBOARD_V5_METRIC_LABEL_CLEANUP"
+APP_VERSION = "DASHBOARD_V10_FULL_MOCK_ONLY_CLEAN"
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 
 st.set_page_config(page_title="Dashboard", page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
-
-
-# SESSION_TIMEOUT_APPLIED
-enforce_session_timeout()
-show_session_expired_notice()
 
 
 def safe_str(value: Any, default: str = "") -> str:
@@ -92,6 +86,27 @@ def paid_full_mock_count(attempts: List[Dict[str, Any]], expected_question_count
         if safe_str(attempt.get("mode")) == "Paid Mock Exam" and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
             count += 1
     return count
+
+
+
+def filter_readiness_attempts(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> List[Dict[str, Any]]:
+    """Keep only full-length Paid Mock Exam attempts for readiness."""
+    filtered: List[Dict[str, Any]] = []
+    for attempt in attempts or []:
+        if safe_str(attempt.get("mode")) == "Paid Mock Exam" and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
+            filtered.append(attempt)
+    return filtered
+
+
+def filter_question_attempts_for_attempts(question_attempts: List[Dict[str, Any]], attempts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep only question attempts linked to readiness-eligible full mock attempts."""
+    eligible_ids = {safe_str(attempt.get("id")) for attempt in attempts or [] if attempt.get("id") is not None}
+    if not eligible_ids:
+        return []
+    return [
+        row for row in question_attempts or []
+        if safe_str(row.get("exam_attempt_id")) in eligible_ids
+    ]
 
 
 def render_readiness_locked(full_mocks: int, required_mocks: int = 3) -> None:
@@ -468,7 +483,7 @@ def render_logged_in_dashboard(email: str) -> None:
     s1.metric("Latest Score", f"{latest_score}%" if attempts else "No attempt")
     s2.metric("Average Score", f"{avg_score}%" if attempts else "No attempt")
     s3.metric("Best Score", f"{round(best_score, 2)}%" if attempts else "No attempt")
-    s4.metric("Exam Attempts", len(attempts))
+    s4.metric("All Exam Attempts", len(attempts))
 
     h1, h2, h3 = st.columns(3)
     h1.metric("Approved Questions", question_health.get("approved_questions", 0))
@@ -487,23 +502,25 @@ def render_logged_in_dashboard(email: str) -> None:
         domain_weights = fetch_domain_weights(selected_exam)
         passing_score = safe_float(cert.get("passing_score"), 72 if "Business Analyst" in selected_exam else 68)
         expected_question_count = safe_int(cert.get("question_count"), 60) or 60
+        readiness_attempts = filter_readiness_attempts(attempts, expected_question_count)
+        readiness_question_attempts = filter_question_attempts_for_attempts(question_attempts, readiness_attempts)
         readiness = calculate_readiness(
-            attempts=attempts,
+            attempts=readiness_attempts,
             passing_score=passing_score,
             domain_weights=domain_weights,
             expected_question_count=expected_question_count,
             question_bank_total=safe_int(question_health.get("approved_questions"), 0),
-            question_attempts=question_attempts,
+            question_attempts=readiness_question_attempts,
             time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
         )
-        full_mocks = paid_full_mock_count(attempts, expected_question_count)
+        full_mocks = len(readiness_attempts)
         required_mocks = 3
         if full_mocks < required_mocks:
             render_readiness_locked(full_mocks, required_mocks)
             r1, r2, r3 = st.columns(3)
             r1.metric("Full Mocks Completed", f"{full_mocks} / {required_mocks}")
-            r2.metric("Unique Questions Seen", safe_int(readiness.get("unique_questions_seen"), 0))
-            r3.metric("Total Questions Attempted", safe_int(readiness.get("total_attempted"), 0))
+            r2.metric("Full-Mock Unique Questions", safe_int(readiness.get("unique_questions_seen"), 0))
+            r3.metric("Full-Mock Questions Attempted", safe_int(readiness.get("total_attempted"), 0))
         else:
             r1, r2, r3, r4 = st.columns(4)
             r1.metric("Readiness", f"{round(safe_float(readiness.get('score')), 2)}%")
