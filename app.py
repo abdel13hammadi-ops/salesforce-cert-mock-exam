@@ -12,7 +12,7 @@ from utils.access_control import render_app_chrome, get_current_user_email as sh
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "V22_JS_TIMER_PRO"
+APP_VERSION = "V23_TIMER_POSITION_LOCK"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -202,11 +202,11 @@ def inject_exam_layout_css():
             margin-bottom: 15px;
         }
 
-        /* Production-style floating exam timer */
+        /* Professional fixed exam timer: locked to the exam container's top-right edge */
         .exam-floating-timer {
             position: fixed;
-            top: 68px;
-            right: 30px;
+            top: 84px;
+            right: max(24px, calc((100vw - 1180px) / 2 + 24px));
             z-index: 1001;
             min-width: 170px;
             background: #fff4d6;
@@ -252,12 +252,16 @@ def inject_exam_layout_css():
         @media (max-width: 900px) {
             .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
             .exam-floating-timer {
-                position: sticky;
-                top: 0;
-                right: auto;
-                width: 100%;
-                margin-bottom: 12px;
-                min-width: 0;
+                position: fixed;
+                top: 76px;
+                right: 16px;
+                width: auto;
+                min-width: 150px;
+                margin-bottom: 0;
+                padding: 8px 12px;
+            }
+            .exam-floating-timer-value {
+                font-size: 23px;
             }
         }
         </style>
