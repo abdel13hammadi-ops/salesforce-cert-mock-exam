@@ -7,12 +7,14 @@ from datetime import datetime, timezone, timedelta
 import os
 
 import streamlit as st
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
+from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "V25_HIDE_STREAMLIT_CHROME"
+APP_VERSION = "V29_SESSION_TIMEOUT"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -49,6 +51,14 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# SESSION_TIMEOUT_APPLIED
+_active_exam_in_progress = bool(
+    st.session_state.get("started") and not st.session_state.get("submitted")
+)
+enforce_session_timeout(exempt_active_exam=_active_exam_in_progress)
+show_session_expired_notice()
 
 
 def redirect_supabase_recovery_hash_to_reset_page():
@@ -106,14 +116,6 @@ def inject_exam_layout_css():
     st.markdown(
         """
         <style>
-        /* Hide Streamlit developer chrome for production UI */
-        #MainMenu { visibility: hidden !important; }
-        header[data-testid="stHeader"] { visibility: hidden !important; height: 0px !important; }
-        footer { visibility: hidden !important; }
-        [data-testid="stToolbar"] { visibility: hidden !important; height: 0px !important; position: fixed !important; }
-        [data-testid="stDecoration"] { visibility: hidden !important; height: 0px !important; }
-        [data-testid="stStatusWidget"] { visibility: hidden !important; height: 0px !important; }
-
         /* Global page spacing */
         .block-container {
             max-width: 1180px;
@@ -210,12 +212,19 @@ def inject_exam_layout_css():
             margin-bottom: 15px;
         }
 
-        /* Professional fixed exam timer: locked to the extreme upper-right viewport corner */
+        /* V26 timer persistence */
+        .exam-floating-timer{
+            will-change: transform;
+            backface-visibility:hidden;
+            transform:translateZ(0);
+        }
+
+        /* Production-style floating exam timer */
         .exam-floating-timer {
             position: fixed;
-            top: 14px;
-            right: 14px;
-            z-index: 9999;
+            top: 68px;
+            right: 30px;
+            z-index: 1001;
             min-width: 170px;
             background: #fff4d6;
             border: 1px solid #e0b84f;
@@ -260,16 +269,12 @@ def inject_exam_layout_css():
         @media (max-width: 900px) {
             .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
             .exam-floating-timer {
-                position: fixed;
-                top: 10px;
-                right: 10px;
-                width: auto;
-                min-width: 145px;
-                margin-bottom: 0;
-                padding: 8px 11px;
-            }
-            .exam-floating-timer-value {
-                font-size: 22px;
+                position: sticky;
+                top: 0;
+                right: auto;
+                width: 100%;
+                margin-bottom: 12px;
+                min-width: 0;
             }
         }
         </style>
@@ -771,7 +776,6 @@ def ensure_exam_generated(exam_access_type, exam_name, language_code, category_c
         st.session_state.started = False
         st.session_state.review_mode = False
         st.session_state.attempt_saved = False
-        reset_question_timing()
         st.session_state.exam_access_type = exam_access_type
         st.session_state.exam_key = exam_key
 
@@ -793,176 +797,6 @@ def format_diff(value):
     return str(value).strip().capitalize()
 
 
-def _safe_json_list(value):
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple, set)):
-        return [str(v) for v in value]
-    return [str(value)]
-
-
-def _clamped_seconds(value, max_seconds=7200):
-    try:
-        seconds = float(value or 0)
-    except Exception:
-        return 0.0
-    if seconds < 0:
-        return 0.0
-    return round(min(seconds, max_seconds), 3)
-
-
-def reset_question_timing():
-    st.session_state.question_time_spent = {}
-    st.session_state.question_entered_at = time.time()
-    st.session_state.question_timing_index = int(st.session_state.get("current_question") or 0)
-
-
-def record_current_question_time():
-    questions_now = st.session_state.get("all_questions") or []
-    if not questions_now:
-        return
-
-    try:
-        idx = int(st.session_state.get("question_timing_index", st.session_state.get("current_question", 0)) or 0)
-    except Exception:
-        idx = 0
-
-    if idx < 0 or idx >= len(questions_now):
-        st.session_state.question_entered_at = time.time()
-        st.session_state.question_timing_index = int(st.session_state.get("current_question") or 0)
-        return
-
-    entered_at = st.session_state.get("question_entered_at")
-    now = time.time()
-    if entered_at:
-        elapsed = _clamped_seconds(now - float(entered_at))
-        existing = float((st.session_state.get("question_time_spent") or {}).get(idx, 0) or 0)
-        st.session_state.question_time_spent[idx] = round(existing + elapsed, 3)
-
-    st.session_state.question_entered_at = now
-    st.session_state.question_timing_index = int(st.session_state.get("current_question") or 0)
-
-
-def move_to_question(new_index):
-    record_current_question_time()
-    st.session_state.current_question = int(new_index)
-    st.session_state.question_entered_at = time.time()
-    st.session_state.question_timing_index = int(new_index)
-
-
-def build_question_attempt_rows(exam_attempt_id, user_email, questions_to_save=None, answers_to_save=None):
-    questions_to_save = questions_to_save or st.session_state.get("all_questions") or []
-    answers_to_save = answers_to_save if answers_to_save is not None else st.session_state.get("answers", {})
-    question_times = st.session_state.get("question_time_spent") or {}
-
-    rows = []
-    for idx, q in enumerate(questions_to_save):
-        selected = _safe_json_list((answers_to_save or {}).get(idx, []))
-        correct_answers = _safe_json_list(q.get("answers", []))
-        rows.append({
-            "exam_attempt_id": exam_attempt_id,
-            "question_id": int(q.get("id")),
-            "user_email": user_email,
-            "exam_name": q.get("exam_name") or SELECTED_EXAM_NAME,
-            "language_code": q.get("language_code") or SELECTED_LANGUAGE_CODE,
-            "category": q.get("category") or q.get("topic") or "Uncategorized",
-            "difficulty": str(q.get("difficulty") or "medium").strip().lower(),
-            "selected_options": selected,
-            "correct_options": correct_answers,
-            "is_correct": is_correct(selected, correct_answers),
-            "time_spent_seconds": _clamped_seconds(question_times.get(idx, 0)),
-            "answered_at": datetime.now(timezone.utc).isoformat(),
-        })
-    return rows
-
-
-def save_question_attempt_rows(supabase, rows, exam_attempt_id=None):
-    """Persist question-level rows for readiness analytics.
-
-    V18 deliberately saves rows one-by-one and verifies the database count.
-    Bulk insert was not reliably producing linked rows for paid mock exams.
-    This is slower, but 60 rows per exam is trivial and correctness matters more.
-    """
-    cleaned_rows = []
-    for row in rows or []:
-        try:
-            if not row.get("question_id"):
-                continue
-            if exam_attempt_id is not None:
-                row["exam_attempt_id"] = int(exam_attempt_id)
-            if not row.get("exam_attempt_id"):
-                continue
-            cleaned_rows.append(row)
-        except Exception:
-            continue
-
-    if not cleaned_rows:
-        raise RuntimeError("No valid question_attempt rows were built for this exam attempt.")
-
-    target_attempt_id = int(exam_attempt_id or cleaned_rows[0].get("exam_attempt_id"))
-
-    # Replace rows for this attempt so retries cannot double-count readiness.
-    supabase.table("question_attempts").delete().eq("exam_attempt_id", target_attempt_id).execute()
-
-    errors = []
-    saved_count = 0
-    for idx, row in enumerate(cleaned_rows, start=1):
-        try:
-            result = supabase.table("question_attempts").insert(row).execute()
-            # Some clients return data, some don't; absence of data is not treated as failure.
-            saved_count += 1
-        except Exception as exc:
-            qid = row.get("question_id")
-            errors.append(f"row {idx} question_id={qid}: {exc}")
-
-    verify_result = (
-        supabase.table("question_attempts")
-        .select("id", count="exact")
-        .eq("exam_attempt_id", target_attempt_id)
-        .execute()
-    )
-    verified_count = getattr(verify_result, "count", None)
-    if verified_count is None:
-        verified_count = len(getattr(verify_result, "data", None) or [])
-
-    if errors:
-        first_errors = " | ".join(errors[:3])
-        raise RuntimeError(
-            f"Question attempt insert errors. Saved={saved_count}, verified={verified_count}, expected={len(cleaned_rows)}. {first_errors}"
-        )
-
-    if int(verified_count or 0) != len(cleaned_rows):
-        raise RuntimeError(
-            f"Question attempt verification failed. Verified={verified_count}, expected={len(cleaned_rows)}, attempt_id={target_attempt_id}."
-        )
-
-    return int(verified_count or 0)
-
-
-def get_recent_matching_exam_attempt_id(supabase, user_email, mode, total_questions, correct, completed_at):
-    """Find the current attempt id after insert or rerun duplicate detection."""
-    recent_cutoff = (completed_at - timedelta(minutes=5)).isoformat()
-    try:
-        result = (
-            supabase.table("exam_attempts")
-            .select("id")
-            .eq("user_email", user_email)
-            .eq("exam_name", SELECTED_EXAM_NAME)
-            .eq("language_code", SELECTED_LANGUAGE_CODE)
-            .eq("mode", mode)
-            .eq("total_questions", int(total_questions))
-            .eq("correct_answers", int(correct))
-            .gte("completed_at", recent_cutoff)
-            .order("id", desc=True)
-            .limit(1)
-            .execute()
-        )
-        rows = getattr(result, "data", None) or []
-        return rows[0].get("id") if rows else None
-    except Exception:
-        return None
-
-
 # Defaults are initialized before exam generation so access type/certification/language can control the exam set.
 defaults = {
     "started": False,
@@ -977,9 +811,6 @@ defaults = {
     "choice_orders": {},
     "attempt_saved": False,
     "attempt_save_checked": False,
-    "question_time_spent": {},
-    "question_entered_at": None,
-    "question_timing_index": 0,
 }
 
 for key, value in defaults.items():
@@ -1098,7 +929,6 @@ def persist_exam_state_to_query(questions=None):
         "review_mode": bool(st.session_state.get("review_mode")),
         "current_question": int(st.session_state.get("current_question") or 0),
         "start_time": float(st.session_state.get("start_time") or time.time()),
-        "exam_deadline_epoch": float(st.session_state.get("exam_deadline_epoch") or ((st.session_state.get("start_time") or time.time()) + (EXAM_MINUTES * 60))),
         "randomize_choices": bool(st.session_state.get("randomize_choices", True)),
         "exam_access_type": st.session_state.get("exam_access_type"),
         "exam_name": st.session_state.get("selected_exam_name"),
@@ -1169,17 +999,12 @@ def apply_pending_exam_state_if_valid(bank, exam_key):
     st.session_state.review_mode = bool(state.get("review_mode"))
     st.session_state.current_question = max(0, min(int(state.get("current_question") or 0), len(restored_questions) - 1))
     st.session_state.start_time = float(state.get("start_time") or time.time())
-    st.session_state.exam_deadline_epoch = float(state.get("exam_deadline_epoch") or (st.session_state.start_time + (EXAM_MINUTES * 60)))
     st.session_state.randomize_choices = bool(state.get("randomize_choices", True))
     st.session_state.exam_access_type = state.get("exam_access_type") or st.session_state.get("exam_access_type")
     st.session_state.answers = _restore_indexed_answers(state, restored_questions)
     st.session_state.marked = set(i for i in (state.get("marked") or []) if isinstance(i, int) and 0 <= i < len(restored_questions))
     st.session_state.choice_orders = _restore_choice_orders(state, restored_questions)
     st.session_state.all_questions = restored_questions
-    if "question_time_spent" not in st.session_state or not isinstance(st.session_state.get("question_time_spent"), dict):
-        st.session_state.question_time_spent = {}
-    st.session_state.question_entered_at = time.time()
-    st.session_state.question_timing_index = int(st.session_state.current_question or 0)
     st.session_state["_exam_state_restored_once"] = True
     st.session_state.pop("_pending_exam_state", None)
     return restored_questions
@@ -1372,17 +1197,7 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
             .limit(1)
             .execute()
         )
-        existing_rows = getattr(existing, "data", None) or []
-        if existing_rows:
-            existing_attempt_id = existing_rows[0].get("id")
-            if existing_attempt_id:
-                question_rows = build_question_attempt_rows(
-                    exam_attempt_id=existing_attempt_id,
-                    user_email=user_email,
-                    questions_to_save=questions,
-                    answers_to_save=st.session_state.get("answers", {}),
-                )
-                save_question_attempt_rows(supabase, question_rows, exam_attempt_id=existing_attempt_id)
+        if getattr(existing, "data", None):
             return True, None
     except Exception:
         # Do not block saving if the duplicate check fails. The insert error handler below
@@ -1405,36 +1220,7 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
     }
 
     try:
-        result = supabase.table("exam_attempts").insert(payload).execute()
-        inserted_rows = getattr(result, "data", None) or []
-        exam_attempt_id = inserted_rows[0].get("id") if inserted_rows else None
-
-        # Some Supabase/PostgREST responses may not return inserted rows reliably.
-        # If that happens, fetch the newest matching attempt before saving question-level rows.
-        if not exam_attempt_id:
-            exam_attempt_id = get_recent_matching_exam_attempt_id(
-                supabase=supabase,
-                user_email=user_email,
-                mode=mode,
-                total_questions=total_questions,
-                correct=correct,
-                completed_at=completed_at,
-            )
-
-        if not exam_attempt_id:
-            return False, "Exam attempt saved, but its id could not be found for question-level readiness tracking."
-
-        question_rows = build_question_attempt_rows(
-            exam_attempt_id=exam_attempt_id,
-            user_email=user_email,
-            questions_to_save=questions,
-            answers_to_save=st.session_state.get("answers", {}),
-        )
-        saved_question_rows = save_question_attempt_rows(supabase, question_rows, exam_attempt_id=exam_attempt_id)
-
-        if saved_question_rows != int(total_questions):
-            return False, f"Exam attempt saved, but only {saved_question_rows}/{int(total_questions)} question attempts were saved."
-
+        supabase.table("exam_attempts").insert(payload).execute()
         return True, None
     except Exception as exc:
         return False, str(exc)
@@ -1442,7 +1228,7 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
 
 def reset_exam():
     clear_exam_state_query()
-    for key in list(defaults.keys()) + ["all_questions", "bank_meta", "exam_key", "exam_deadline_epoch", "_pending_exam_state", "_exam_state_restored_once"]:
+    for key in list(defaults.keys()) + ["all_questions", "bank_meta", "exam_key", "_pending_exam_state", "_exam_state_restored_once"]:
         if key in st.session_state:
             del st.session_state[key]
     fetch_question_bank.clear()
@@ -1521,7 +1307,6 @@ if not st.session_state.started:
         if st.button("Begin Exam", type="primary", disabled=begin_disabled):
             st.session_state.started = True
             st.session_state.start_time = time.time()
-            st.session_state.exam_deadline_epoch = st.session_state.start_time + (EXAM_MINUTES * 60)
             st.session_state.choice_orders = {}
             st.session_state.answers = {}
             st.session_state.marked = set()
@@ -1530,7 +1315,6 @@ if not st.session_state.started:
             st.session_state.submitted = False
             st.session_state.attempt_saved = False
             st.session_state.attempt_save_checked = False
-            reset_question_timing()
             persist_exam_state_to_query(questions)
             st.rerun()
     with col_regen:
@@ -1538,72 +1322,26 @@ if not st.session_state.started:
             reset_exam()
 
 elif not st.session_state.submitted:
-    # V22: Browser-side countdown display. Do NOT rerun Streamlit every second.
-    # Python still enforces the real deadline whenever the page reruns from navigation/submit.
-    if not st.session_state.get("exam_deadline_epoch"):
-        st.session_state.exam_deadline_epoch = float(st.session_state.get("start_time") or time.time()) + (EXAM_MINUTES * 60)
+    st_autorefresh(interval=1000, key="exam_timer_refresh")
 
-    deadline_epoch = float(st.session_state.get("exam_deadline_epoch") or (time.time() + (EXAM_MINUTES * 60)))
-    remaining = deadline_epoch - time.time()
+    elapsed = time.time() - st.session_state.start_time
+    remaining = (EXAM_MINUTES * 60) - elapsed
 
     if remaining <= 0:
-        record_current_question_time()
         st.session_state.submitted = True
         st.rerun()
 
-    mins = int(max(0, remaining) // 60)
-    secs = int(max(0, remaining) % 60)
+    mins = int(remaining // 60)
+    secs = int(remaining % 60)
 
     st.markdown(
         f"""
         <div class="exam-floating-timer">
             <div class="exam-floating-timer-label">Time Remaining</div>
-            <div class="exam-floating-timer-value" id="certbound-exam-timer">{mins:02d}:{secs:02d}</div>
+            <div class="exam-floating-timer-value">{mins:02d}:{secs:02d}</div>
         </div>
         """,
         unsafe_allow_html=True,
-    )
-
-    components.html(
-        f"""
-        <script>
-        (function () {{
-            const deadlineMs = {int(deadline_epoch * 1000)};
-            const timerId = "certbound-exam-timer";
-            const inlineTimerId = "certbound-inline-timer";
-            const expiredKey = "certbound_exam_expired_" + deadlineMs;
-
-            function parentDocument() {{
-                try {{ return window.parent.document; }} catch (e) {{ return document; }}
-            }}
-
-            function updateTimerText() {{
-                const now = Date.now();
-                const remainingMs = Math.max(0, deadlineMs - now);
-                const totalSeconds = Math.floor(remainingMs / 1000);
-                const minutes = Math.floor(totalSeconds / 60);
-                const seconds = totalSeconds % 60;
-                const text = String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
-
-                const doc = parentDocument();
-                const timer = doc.getElementById(timerId);
-                if (timer) timer.textContent = text;
-                const inlineTimer = doc.getElementById(inlineTimerId);
-                if (inlineTimer) inlineTimer.textContent = text;
-
-                if (remainingMs <= 0 && !window.sessionStorage.getItem(expiredKey)) {{
-                    window.sessionStorage.setItem(expiredKey, "1");
-                    try {{ window.parent.location.reload(); }} catch (e) {{ window.location.reload(); }}
-                }}
-            }}
-
-            updateTimerText();
-            window.clearInterval(window.certboundExamTimerInterval);
-            window.certboundExamTimerInterval = window.setInterval(updateTimerText, 1000);
-        }})();
-        </script>
-        """,
-        height=0,
     )
 
     st.sidebar.markdown(
@@ -1621,7 +1359,7 @@ elif not st.session_state.submitted:
         if i in st.session_state.marked:
             label += " 🚩"
         if st.sidebar.button(label, key=f"nav_{i}"):
-            move_to_question(i)
+            st.session_state.current_question = i
             st.session_state.review_mode = False
             persist_exam_state_to_query(questions)
             st.rerun()
@@ -1655,7 +1393,6 @@ elif not st.session_state.submitted:
                 st.rerun()
         with col2:
             if st.button("Final Submit", type="primary"):
-                record_current_question_time()
                 st.session_state.submitted = True
                 persist_exam_state_to_query(questions)
                 st.rerun()
@@ -1677,7 +1414,7 @@ elif not st.session_state.submitted:
                 &nbsp;&nbsp; | &nbsp;&nbsp;
                 <strong>Marked:</strong> {marked}
                 &nbsp;&nbsp; | &nbsp;&nbsp;
-                <strong>Time:</strong> <span id="certbound-inline-timer">{mins:02d}:{secs:02d}</span>
+                <strong>Time:</strong> {mins:02d}:{secs:02d}
             </div>
             """,
             unsafe_allow_html=True,
@@ -1722,11 +1459,11 @@ elif not st.session_state.submitted:
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             if st.button("← Previous") and q_index > 0:
-                move_to_question(q_index - 1)
+                st.session_state.current_question -= 1
                 st.rerun()
         with col2:
             if st.button("Next →") and q_index < len(questions) - 1:
-                move_to_question(q_index + 1)
+                st.session_state.current_question += 1
                 st.rerun()
         with col3:
             if q_index in st.session_state.marked:
@@ -1739,13 +1476,10 @@ elif not st.session_state.submitted:
                     st.rerun()
         with col4:
             if st.button("Review / Submit", type="primary"):
-                record_current_question_time()
                 st.session_state.review_mode = True
                 st.rerun()
 
 else:
-    if not st.session_state.get("attempt_save_checked", False):
-        record_current_question_time()
     correct = 0
     for i, q in enumerate(questions):
         if is_correct(st.session_state.answers.get(i, []), q["answers"]):
