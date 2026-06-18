@@ -1238,6 +1238,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+st.caption(f"App version: {APP_VERSION}")
+
 if not st.session_state.started:
     st.header("Exam Instructions")
     st.success(f"Question bank ready ✅ | {'Paid randomized mock exam' if has_paid_access else 'Free fixed sample mock exam'} | {len(all_questions)} questions")
