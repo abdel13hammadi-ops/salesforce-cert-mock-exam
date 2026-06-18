@@ -7,13 +7,12 @@ from datetime import datetime, timezone, timedelta
 import os
 
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "V21_TIMER_UX_AUDIT_PATCH"
+APP_VERSION = "V22_JS_TIMER_PRO"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -1087,6 +1086,7 @@ def persist_exam_state_to_query(questions=None):
         "review_mode": bool(st.session_state.get("review_mode")),
         "current_question": int(st.session_state.get("current_question") or 0),
         "start_time": float(st.session_state.get("start_time") or time.time()),
+        "exam_deadline_epoch": float(st.session_state.get("exam_deadline_epoch") or ((st.session_state.get("start_time") or time.time()) + (EXAM_MINUTES * 60))),
         "randomize_choices": bool(st.session_state.get("randomize_choices", True)),
         "exam_access_type": st.session_state.get("exam_access_type"),
         "exam_name": st.session_state.get("selected_exam_name"),
@@ -1157,6 +1157,7 @@ def apply_pending_exam_state_if_valid(bank, exam_key):
     st.session_state.review_mode = bool(state.get("review_mode"))
     st.session_state.current_question = max(0, min(int(state.get("current_question") or 0), len(restored_questions) - 1))
     st.session_state.start_time = float(state.get("start_time") or time.time())
+    st.session_state.exam_deadline_epoch = float(state.get("exam_deadline_epoch") or (st.session_state.start_time + (EXAM_MINUTES * 60)))
     st.session_state.randomize_choices = bool(state.get("randomize_choices", True))
     st.session_state.exam_access_type = state.get("exam_access_type") or st.session_state.get("exam_access_type")
     st.session_state.answers = _restore_indexed_answers(state, restored_questions)
@@ -1429,7 +1430,7 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
 
 def reset_exam():
     clear_exam_state_query()
-    for key in list(defaults.keys()) + ["all_questions", "bank_meta", "exam_key", "_pending_exam_state", "_exam_state_restored_once"]:
+    for key in list(defaults.keys()) + ["all_questions", "bank_meta", "exam_key", "exam_deadline_epoch", "_pending_exam_state", "_exam_state_restored_once"]:
         if key in st.session_state:
             del st.session_state[key]
     fetch_question_bank.clear()
@@ -1508,6 +1509,7 @@ if not st.session_state.started:
         if st.button("Begin Exam", type="primary", disabled=begin_disabled):
             st.session_state.started = True
             st.session_state.start_time = time.time()
+            st.session_state.exam_deadline_epoch = st.session_state.start_time + (EXAM_MINUTES * 60)
             st.session_state.choice_orders = {}
             st.session_state.answers = {}
             st.session_state.marked = set()
@@ -1524,27 +1526,72 @@ if not st.session_state.started:
             reset_exam()
 
 elif not st.session_state.submitted:
-    st_autorefresh(interval=5000, key="exam_timer_refresh")  # reduced rerender frequency
+    # V22: Browser-side countdown display. Do NOT rerun Streamlit every second.
+    # Python still enforces the real deadline whenever the page reruns from navigation/submit.
+    if not st.session_state.get("exam_deadline_epoch"):
+        st.session_state.exam_deadline_epoch = float(st.session_state.get("start_time") or time.time()) + (EXAM_MINUTES * 60)
 
-    elapsed = time.time() - st.session_state.start_time
-    remaining = (EXAM_MINUTES * 60) - elapsed
+    deadline_epoch = float(st.session_state.get("exam_deadline_epoch") or (time.time() + (EXAM_MINUTES * 60)))
+    remaining = deadline_epoch - time.time()
 
     if remaining <= 0:
         record_current_question_time()
         st.session_state.submitted = True
         st.rerun()
 
-    mins = int(remaining // 60)
-    secs = int(remaining % 60)
+    mins = int(max(0, remaining) // 60)
+    secs = int(max(0, remaining) % 60)
 
     st.markdown(
         f"""
         <div class="exam-floating-timer">
             <div class="exam-floating-timer-label">Time Remaining</div>
-            <div class="exam-floating-timer-value">{mins:02d}:{secs:02d}</div>
+            <div class="exam-floating-timer-value" id="certbound-exam-timer">{mins:02d}:{secs:02d}</div>
         </div>
         """,
         unsafe_allow_html=True,
+    )
+
+    components.html(
+        f"""
+        <script>
+        (function () {{
+            const deadlineMs = {int(deadline_epoch * 1000)};
+            const timerId = "certbound-exam-timer";
+            const inlineTimerId = "certbound-inline-timer";
+            const expiredKey = "certbound_exam_expired_" + deadlineMs;
+
+            function parentDocument() {{
+                try {{ return window.parent.document; }} catch (e) {{ return document; }}
+            }}
+
+            function updateTimerText() {{
+                const now = Date.now();
+                const remainingMs = Math.max(0, deadlineMs - now);
+                const totalSeconds = Math.floor(remainingMs / 1000);
+                const minutes = Math.floor(totalSeconds / 60);
+                const seconds = totalSeconds % 60;
+                const text = String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0");
+
+                const doc = parentDocument();
+                const timer = doc.getElementById(timerId);
+                if (timer) timer.textContent = text;
+                const inlineTimer = doc.getElementById(inlineTimerId);
+                if (inlineTimer) inlineTimer.textContent = text;
+
+                if (remainingMs <= 0 && !window.sessionStorage.getItem(expiredKey)) {{
+                    window.sessionStorage.setItem(expiredKey, "1");
+                    try {{ window.parent.location.reload(); }} catch (e) {{ window.location.reload(); }}
+                }}
+            }}
+
+            updateTimerText();
+            window.clearInterval(window.certboundExamTimerInterval);
+            window.certboundExamTimerInterval = window.setInterval(updateTimerText, 1000);
+        }})();
+        </script>
+        """,
+        height=0,
     )
 
     st.sidebar.markdown(
@@ -1618,7 +1665,7 @@ elif not st.session_state.submitted:
                 &nbsp;&nbsp; | &nbsp;&nbsp;
                 <strong>Marked:</strong> {marked}
                 &nbsp;&nbsp; | &nbsp;&nbsp;
-                <strong>Time:</strong> {mins:02d}:{secs:02d}
+                <strong>Time:</strong> <span id="certbound-inline-timer">{mins:02d}:{secs:02d}</span>
             </div>
             """,
             unsafe_allow_html=True,
