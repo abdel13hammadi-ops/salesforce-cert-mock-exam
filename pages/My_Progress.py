@@ -14,7 +14,7 @@ from utils.access_control import (
 )
 from utils.readiness import calculate_readiness, readiness_methodology_text
 
-APP_VERSION = "MY_PROGRESS_V10_READINESS_EMA"
+APP_VERSION = "MY_PROGRESS_V11_READINESS_LOCK_TIMEZONE"
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -286,6 +286,26 @@ def build_domain_table(attempts: List[Dict[str, Any]]) -> pd.DataFrame:
     return df
 
 
+def paid_full_mock_count(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> int:
+    count = 0
+    for attempt in attempts or []:
+        if str(attempt.get("mode") or "").strip() == "Paid Mock Exam" and _safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
+            count += 1
+    return count
+
+
+def render_readiness_locked(full_mocks: int, required_mocks: int = 3) -> None:
+    remaining = max(required_mocks - int(full_mocks or 0), 0)
+    st.header("Overall Readiness")
+    st.warning("Readiness Locked")
+    st.info(
+        f"Complete {required_mocks} full paid mock exams to unlock readiness analysis. "
+        f"Progress: {full_mocks} / {required_mocks}. "
+        f"You need {remaining} more full mock exam{'s' if remaining != 1 else ''}."
+    )
+    st.caption("We do not show readiness from too little data. This protects users from false confidence after one lucky or rushed exam.")
+
+
 def render_readiness_card(readiness: Dict[str, Any], passing_score: float, selected_exam: str) -> None:
     st.header("Overall Readiness")
     st.caption("This is a study-planning estimate, not a pass guarantee.")
@@ -464,7 +484,16 @@ readiness = calculate_readiness(
     time_limit_minutes=_safe_int(cert.get("time_limit_minutes"), 105),
 )
 
-render_readiness_card(readiness, passing_score, selected_exam)
+full_mocks_completed = paid_full_mock_count(attempts, expected_question_count)
+if full_mocks_completed < 3:
+    render_readiness_locked(full_mocks_completed, 3)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Full Mocks Completed", f"{full_mocks_completed} / 3")
+    m2.metric("Unique Questions Seen", _safe_int(readiness.get("unique_questions_seen"), 0))
+    m3.metric("Questions Practiced", _safe_int(readiness.get("total_attempted"), 0))
+    st.info(readiness_methodology_text())
+else:
+    render_readiness_card(readiness, passing_score, selected_exam)
 
 st.divider()
 st.header("Score Summary")
