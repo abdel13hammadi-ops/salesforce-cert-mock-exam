@@ -84,11 +84,16 @@ def _parse_sort_value(attempt: Dict[str, Any]) -> str:
 
 
 def is_full_mock_attempt(attempt: Dict[str, Any], expected_question_count: int = 60) -> bool:
-    mode = str(attempt.get("mode") or "").lower()
+    """Return True only for readiness-eligible full mock exams.
+
+    CertBound readiness must be based only on full Paid Mock Exams.
+    Timed exams, category practice, free previews, and partial drills are learning activity;
+    they should not drive readiness scoring or unlock readiness.
+    """
+    mode = str(attempt.get("mode") or "").strip().lower()
     total = _safe_int(attempt.get("total_questions"), 0)
-    full_enough = total >= max(50, expected_question_count - 5)
-    mock_mode = "mock" in mode or "timed" in mode or "paid mock" in mode
-    return full_enough and mock_mode
+    full_enough = total >= int(expected_question_count or 60)
+    return mode == "paid mock exam" and full_enough
 
 
 def full_mock_count(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> int:
