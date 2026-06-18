@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import streamlit as st
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from supabase import create_client
 
 from utils.access_control import (
@@ -17,6 +18,11 @@ APP_VERSION = "SUPPORT_V4_LOGIN_REQUIRED"
 
 st.set_page_config(page_title="Support", layout="wide")
 render_app_chrome()
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 
 def get_secret(name: str) -> str:

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import (
     get_current_user_email,
     get_supabase_client,
@@ -29,6 +30,11 @@ DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 
 st.set_page_config(page_title="Dashboard", page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 
 def safe_str(value: Any, default: str = "") -> str:

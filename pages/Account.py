@@ -6,6 +6,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import streamlit as st
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 import streamlit.components.v1 as components
 
 try:
@@ -30,6 +31,11 @@ APP_VERSION = "ACCOUNT_IDENTITY_GUARD_V3_TZ1"
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 
 DUPLICATE_ACCOUNT_MESSAGE = "An account already exists for this email. Please log in or use a different email."

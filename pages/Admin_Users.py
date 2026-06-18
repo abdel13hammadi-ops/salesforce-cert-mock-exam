@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import get_supabase_admin_client, get_supabase_auth_client, require_admin, render_app_chrome
 
 
@@ -16,6 +17,11 @@ APP_VERSION = "ADMIN_USERS_CREATE_MISSING_USER_SPLIT_NAME_V4"
 st.set_page_config(page_title="Admin Users", page_icon="👥", layout="wide")
 render_app_chrome()
 require_admin()
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 supabase = get_supabase_admin_client()
 

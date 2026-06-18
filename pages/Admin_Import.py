@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import os
 
 import streamlit as st
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from supabase import create_client
 from utils.access_control import render_app_chrome, require_admin
 
@@ -13,6 +14,11 @@ render_app_chrome()
 require_admin()
 st.title("Admin Import")
 st.caption(f"App version: {APP_VERSION}")
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 
 def get_secret(name: str) -> str:

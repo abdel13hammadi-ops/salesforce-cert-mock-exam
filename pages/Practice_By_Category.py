@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import time
 
 import streamlit as st
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import (
     get_supabase_admin_client,
     render_app_chrome,
@@ -17,6 +18,11 @@ QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 
 @st.cache_resource

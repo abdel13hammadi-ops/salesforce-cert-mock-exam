@@ -1,4 +1,5 @@
 import streamlit as st
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from supabase import create_client
 from utils.access_control import render_app_chrome, require_admin
 from datetime import datetime
@@ -13,6 +14,11 @@ st.set_page_config(
 )
 render_app_chrome()
 require_admin()
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 st.title("Admin Support Tickets")
 st.caption(f"App version: {APP_VERSION}")

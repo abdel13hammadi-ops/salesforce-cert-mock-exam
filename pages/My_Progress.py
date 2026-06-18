@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import (
     render_app_chrome,
     get_current_user_email,
@@ -18,6 +19,11 @@ APP_VERSION = "MY_PROGRESS_V12_METRIC_LABEL_CLEANUP"
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 
 def _safe_lower(value: Any, default: str = "") -> str:

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import get_supabase_admin_client, render_app_chrome, require_admin
 
 APP_VERSION = "ADMIN_QUESTION_REVIEW_V4_EXAM_SELECTOR"
@@ -11,6 +12,11 @@ APP_VERSION = "ADMIN_QUESTION_REVIEW_V4_EXAM_SELECTOR"
 st.set_page_config(page_title="Admin Question Review", layout="wide")
 render_app_chrome()
 require_admin()
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 FALLBACK_CATEGORIES = [
     "Configuration and Setup",

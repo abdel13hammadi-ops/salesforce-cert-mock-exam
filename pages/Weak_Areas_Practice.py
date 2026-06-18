@@ -6,6 +6,7 @@ import time
 
 import pandas as pd
 import streamlit as st
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import (
     get_supabase_admin_client,
     get_user_access_level,
@@ -21,6 +22,11 @@ PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
 st.set_page_config(page_title="Weak Areas Practice", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
+
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 
 @st.cache_resource
