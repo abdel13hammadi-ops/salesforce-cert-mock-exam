@@ -13,7 +13,7 @@ from utils.access_control import render_app_chrome, get_current_user_email as sh
 import streamlit.components.v1 as components
 
 
-APP_VERSION = "SUPABASE_DB_V17_PAID_ATTEMPT_TRACKING_HOTFIX"
+APP_VERSION = "SUPABASE_DB_V18_QUESTION_ATTEMPT_INSERT_DIAGNOSTIC"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -868,9 +868,9 @@ def build_question_attempt_rows(exam_attempt_id, user_email, questions_to_save=N
 def save_question_attempt_rows(supabase, rows, exam_attempt_id=None):
     """Persist question-level rows for readiness analytics.
 
-    This is intentionally idempotent for a completed exam attempt. Streamlit can
-    rerun during result rendering, and the duplicate-guard can find an existing
-    exam_attempt row. In either path, the linked question_attempts must exist.
+    V18 deliberately saves rows one-by-one and verifies the database count.
+    Bulk insert was not reliably producing linked rows for paid mock exams.
+    This is slower, but 60 rows per exam is trivial and correctness matters more.
     """
     cleaned_rows = []
     for row in rows or []:
@@ -879,25 +879,53 @@ def save_question_attempt_rows(supabase, rows, exam_attempt_id=None):
                 continue
             if exam_attempt_id is not None:
                 row["exam_attempt_id"] = int(exam_attempt_id)
+            if not row.get("exam_attempt_id"):
+                continue
             cleaned_rows.append(row)
         except Exception:
             continue
 
     if not cleaned_rows:
-        return 0
+        raise RuntimeError("No valid question_attempt rows were built for this exam attempt.")
 
-    target_attempt_id = exam_attempt_id or cleaned_rows[0].get("exam_attempt_id")
-    if target_attempt_id:
-        # Replace rows for this attempt so retries cannot double-count readiness.
-        supabase.table("question_attempts").delete().eq("exam_attempt_id", int(target_attempt_id)).execute()
+    target_attempt_id = int(exam_attempt_id or cleaned_rows[0].get("exam_attempt_id"))
 
+    # Replace rows for this attempt so retries cannot double-count readiness.
+    supabase.table("question_attempts").delete().eq("exam_attempt_id", target_attempt_id).execute()
+
+    errors = []
     saved_count = 0
-    chunk_size = 50
-    for start in range(0, len(cleaned_rows), chunk_size):
-        chunk = cleaned_rows[start:start + chunk_size]
-        supabase.table("question_attempts").insert(chunk).execute()
-        saved_count += len(chunk)
-    return saved_count
+    for idx, row in enumerate(cleaned_rows, start=1):
+        try:
+            result = supabase.table("question_attempts").insert(row).execute()
+            # Some clients return data, some don't; absence of data is not treated as failure.
+            saved_count += 1
+        except Exception as exc:
+            qid = row.get("question_id")
+            errors.append(f"row {idx} question_id={qid}: {exc}")
+
+    verify_result = (
+        supabase.table("question_attempts")
+        .select("id", count="exact")
+        .eq("exam_attempt_id", target_attempt_id)
+        .execute()
+    )
+    verified_count = getattr(verify_result, "count", None)
+    if verified_count is None:
+        verified_count = len(getattr(verify_result, "data", None) or [])
+
+    if errors:
+        first_errors = " | ".join(errors[:3])
+        raise RuntimeError(
+            f"Question attempt insert errors. Saved={saved_count}, verified={verified_count}, expected={len(cleaned_rows)}. {first_errors}"
+        )
+
+    if int(verified_count or 0) != len(cleaned_rows):
+        raise RuntimeError(
+            f"Question attempt verification failed. Verified={verified_count}, expected={len(cleaned_rows)}, attempt_id={target_attempt_id}."
+        )
+
+    return int(verified_count or 0)
 
 
 def get_recent_matching_exam_attempt_id(supabase, user_email, mode, total_questions, correct, completed_at):
