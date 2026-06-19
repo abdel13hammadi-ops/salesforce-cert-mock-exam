@@ -1,5 +1,6 @@
 import json
 import base64
+import math
 import time
 import random
 from collections import defaultdict, Counter
@@ -96,22 +97,71 @@ redirect_supabase_recovery_hash_to_reset_page()
 
 render_app_chrome()
 
-# Exempt only when an exam is genuinely running:
-#   started=True, submitted=False, a valid recent start_time, and questions loaded.
-# A stale or orphaned started flag (no start_time, no questions, or time already
-# elapsed) does not qualify — timeout applies normally in those states.
+# Exempt only while a legitimate exam is actively running with time remaining.
+# All six conditions must hold: started, not submitted, numeric start_time not in
+# the future, non-empty questions, a configured duration > 0, and elapsed seconds
+# strictly less than that duration.  Expired, abandoned, stale-reload, submitted,
+# results-page, and lobby states are never exempt.
 # SESSION_TIMEOUT_APPLIED
-_exam_start_time = st.session_state.get("start_time")
-_has_valid_start = (
+
+def _valid_exam_duration_minutes(value) -> float:
+    """Return the exam duration as a finite positive float, or 0.0 if invalid.
+
+    Rejects bool (True/False), None, zero, negative, NaN, +/-inf, malformed
+    strings, and nonnumeric objects.  bool is checked first because bool is a
+    subclass of int and would otherwise pass float() as 1.0/0.0.  math.isfinite
+    excludes NaN and infinities; float() never raises OverflowError for huge
+    numeric strings (it returns inf, which isfinite then rejects).
+    """
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if math.isfinite(v) and v > 0:
+        return v
+    return 0.0
+
+
+def _valid_exam_start_time(value):
+    """Return start_time as a finite float, or None if invalid.
+
+    Rejects bool, None, malformed values, NaN, +/-inf, zero/negative timestamps,
+    and timestamps more than 5 seconds in the future.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    if v <= 0:
+        return None
+    if v > time.time() + 5:  # reject meaningfully future timestamps
+        return None
+    return v
+
+
+_exam_start_time = _valid_exam_start_time(st.session_state.get("start_time"))
+_exam_duration_minutes = _valid_exam_duration_minutes(
+    st.session_state.get("exam_time_limit_minutes")
+)
+_elapsed_seconds = (time.time() - _exam_start_time) if _exam_start_time is not None else None
+_has_time_remaining = (
     _exam_start_time is not None
-    and isinstance(_exam_start_time, (int, float))
-    and (time.time() - float(_exam_start_time)) < 86400  # sanity: within 24 h
+    and _exam_duration_minutes > 0
+    and _elapsed_seconds is not None
+    and _elapsed_seconds >= 0
+    and _elapsed_seconds < (_exam_duration_minutes * 60)
 )
 _is_active_exam = (
     bool(st.session_state.get("started"))
     and not bool(st.session_state.get("submitted"))
-    and _has_valid_start
     and bool(st.session_state.get("all_questions"))
+    and _has_time_remaining
 )
 enforce_session_timeout(exempt_active_exam=_is_active_exam)
 show_session_expired_notice()
@@ -948,6 +998,9 @@ def persist_exam_state_to_query(questions=None):
         "answers": answers_as_indexes,
         "marked": sorted([int(i) for i in (st.session_state.get("marked") or set()) if isinstance(i, int)]),
         "choice_orders": choice_orders_as_indexes,
+        # Carry the certified exam duration so it survives browser reload and the
+        # exemption block can validate elapsed time even before EXAM_MINUTES resolves.
+        "time_limit_minutes": int(st.session_state.get("exam_time_limit_minutes") or EXAM_MINUTES_DEFAULT),
     }
     _set_exam_state_query_value(_encode_exam_state_for_query(state))
 
@@ -1015,6 +1068,13 @@ def apply_pending_exam_state_if_valid(bank, exam_key):
     st.session_state.marked = set(i for i in (state.get("marked") or []) if isinstance(i, int) and 0 <= i < len(restored_questions))
     st.session_state.choice_orders = _restore_choice_orders(state, restored_questions)
     st.session_state.all_questions = restored_questions
+    # Restore exam duration so the exemption block can validate remaining time on
+    # reruns that follow this restoration (e.g. the 1-second autorefresh).
+    # Route the untrusted URL value through the hardened validator: it rejects
+    # bool/NaN/inf/malformed/huge values without ever raising (no int() on raw URL).
+    restored_minutes = _valid_exam_duration_minutes(state.get("time_limit_minutes"))
+    if restored_minutes > 0:
+        st.session_state["exam_time_limit_minutes"] = int(restored_minutes)
     st.session_state["_exam_state_restored_once"] = True
     st.session_state.pop("_pending_exam_state", None)
     return restored_questions
@@ -1112,6 +1172,9 @@ exam_setup = fetch_exam_setup(SELECTED_EXAM_NAME)
 
 PASSING_SCORE = exam_setup["passing_score"]
 EXAM_MINUTES = exam_setup["time_limit_minutes"]
+# Persist so the exemption block (which runs before this point on every rerun) can
+# read the correct certification-specific duration on the *next* run onwards.
+st.session_state["exam_time_limit_minutes"] = int(EXAM_MINUTES)
 QUESTION_COUNT = exam_setup["question_count"]
 EXAM_TITLE = f"{exam_setup['display_name']} Mock Exam"
 CERTIFICATION = exam_setup["display_name"]

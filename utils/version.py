@@ -6,4 +6,4 @@ To update for any code change:
   3. All pages import from here — one edit updates every page simultaneously.
 """
 
-APP_VERSION = "V36_TIMEOUT_ACCOUNT_FIX"
+APP_VERSION = "V37_ACTIVE_EXAM_TIMEOUT_FIX"
