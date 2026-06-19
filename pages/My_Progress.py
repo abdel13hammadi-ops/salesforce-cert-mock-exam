@@ -335,32 +335,37 @@ def render_readiness_card(readiness: Dict[str, Any], passing_score: float, selec
     st.header("Overall Readiness")
     st.caption("This is a study-planning estimate, not a pass guarantee.")
 
+    # Primary metrics
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Readiness Score", f"{round(_safe_float(readiness.get('score')), 2)}%")
     c2.metric("Status", readiness.get("label", "Not Enough Data"))
-    c3.metric("Confidence", readiness.get("confidence", "No Data"))
-    c4.metric("Total Questions Attempted", _safe_int(readiness.get("total_attempted"), 0))
+    c3.metric(
+        "Estimate Confidence",
+        f"{_safe_float(readiness.get('confidence_score'), 0):.0f}% — {readiness.get('confidence_label', 'Low')}",
+    )
+    c4.metric("Recent Mock Accuracy", f"{_safe_float(readiness.get('recent_accuracy', readiness.get('accuracy_score')), 0):.2f}%")
 
+    st.caption(
+        "Confidence measures how well-supported the estimate is. "
+        "It is not your probability of passing."
+    )
     st.info(readiness_methodology_text())
-    if readiness.get("guardrail_applied"):
-        st.warning(f"Guardrail active: visible readiness is capped at {readiness.get('guardrail_cap', 65)} until 2 full-length mock exams are completed.")
-    else:
-        st.warning("Readiness is not a guarantee of passing. It is a study-planning signal based on accuracy, coverage, domain balance, and pacing.")
 
-    st.subheader("Readiness Components")
+    # Diagnostics
+    st.subheader("Readiness Diagnostics")
     r1, r2, r3, r4 = st.columns(4)
-    r1.metric("Recency Accuracy", f"{readiness.get('accuracy_score', 0)}%")
-    r2.metric("Coverage", f"{readiness.get('coverage_score', 0)}%")
-    r3.metric("Domain Balance", f"{readiness.get('domain_balance_score', 0)}%")
-    r4.metric("Pacing Stability", f"{readiness.get('pacing_score', 0)}%")
+    r1.metric("Domain Robustness", f"{_safe_float(readiness.get('domain_robustness'), 0):.2f}%")
+    r2.metric("Trend", readiness.get("trend_label", "Stable"))
+    r3.metric("Consistency (SD)", f"±{_safe_float(readiness.get('consistency_standard_deviation'), 0):.1f}pts")
+    r4.metric("Pacing", readiness.get("pacing_status", "Insufficient Timing Data"))
 
     d1, d2, d3, d4 = st.columns(4)
     d1.metric("Unique Questions Seen", _safe_int(readiness.get("unique_questions_seen"), 0))
-    d2.metric("Full Mocks", _safe_int(readiness.get("full_mock_count"), 0))
-    d3.metric("Median Time/Q", f"{_safe_float(readiness.get('median_time_per_question'), 0):.1f}s")
-    d4.metric("Target Time/Q", f"{_safe_float(readiness.get('target_time_per_question'), 0):.1f}s")
+    d2.metric("Full Mocks", _safe_int(readiness.get("eligible_mock_count", readiness.get("full_mock_count")), 0))
+    d3.metric("Question Data Completeness", f"{_safe_float(readiness.get('question_attempt_completeness'), 0) * 100:.0f}%")
+    d4.metric("Coverage", f"{_safe_float(readiness.get('coverage_percent'), 0):.1f}%")
 
-    st.write(readiness.get("recommendation", "Complete more attempts to improve the readiness signal."))
+    st.info(readiness.get("recommendation", "Complete more attempts to improve the readiness signal."))
 
     weak = readiness.get("weak_domains") or []
     strong = readiness.get("strong_domains") or []
@@ -512,13 +517,22 @@ readiness = calculate_readiness(
     time_limit_minutes=_safe_int(cert.get("time_limit_minutes"), 105),
 )
 
-full_mocks_completed = len(readiness_attempts)
-if full_mocks_completed < 3:
-    render_readiness_locked(full_mocks_completed, 3)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Full Mocks Completed", f"{full_mocks_completed} / 3")
-    m2.metric("Full-Mock Unique Questions", _safe_int(readiness.get("unique_questions_seen"), 0))
-    m3.metric("Full-Mock Questions Attempted", _safe_int(readiness.get("total_attempted"), 0))
+full_mocks_completed = _safe_int(readiness.get("eligible_mock_count"), len(readiness_attempts))
+required_mocks = _safe_int(readiness.get("required_mock_count"), 3)
+if readiness.get("is_locked", full_mocks_completed < required_mocks):
+    render_readiness_locked(full_mocks_completed, required_mocks)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Full Mocks Completed", f"{full_mocks_completed} / {required_mocks}")
+    m2.metric("Mocks Remaining", _safe_int(readiness.get("mocks_remaining"), max(required_mocks - full_mocks_completed, 0)))
+    m3.metric("Unique Questions Seen", _safe_int(readiness.get("unique_questions_seen"), 0))
+    m4.metric(
+        "Estimate Confidence",
+        f"{_safe_float(readiness.get('confidence_score'), 0):.0f}% — {readiness.get('confidence_label', 'Low')}",
+    )
+    st.caption(
+        "Confidence measures how well-supported the estimate is. "
+        "It is not your probability of passing."
+    )
     st.info(readiness_methodology_text())
 else:
     render_readiness_card(readiness, passing_score, selected_exam)

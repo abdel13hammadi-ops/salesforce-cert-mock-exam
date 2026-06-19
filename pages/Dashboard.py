@@ -23,9 +23,11 @@ from utils.session_timeout import enforce_session_timeout, show_session_expired_
 from utils.version import APP_VERSION
 
 try:
-    from utils.readiness import calculate_readiness
+    from utils.readiness import calculate_readiness, readiness_methodology_text
 except Exception:
     calculate_readiness = None
+    def readiness_methodology_text() -> str:  # type: ignore[misc]
+        return ""
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 
@@ -611,32 +613,39 @@ def render_logged_in_dashboard(email: str) -> None:
             question_attempts=readiness_question_attempts,
             time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
         )
-        full_mocks = len(readiness_attempts)
-        required_mocks = 3
-        if full_mocks < required_mocks:
+        full_mocks = safe_int(readiness.get("eligible_mock_count"), len(readiness_attempts))
+        required_mocks = safe_int(readiness.get("required_mock_count"), 3)
+        if readiness.get("is_locked", full_mocks < required_mocks):
             render_readiness_locked(full_mocks, required_mocks)
             r1, r2, r3 = st.columns(3)
             r1.metric("Full Mocks Completed", f"{full_mocks} / {required_mocks}")
-            r2.metric("Full-Mock Unique Questions", safe_int(readiness.get("unique_questions_seen"), 0))
-            r3.metric("Full-Mock Questions Attempted", safe_int(readiness.get("total_attempted"), 0))
+            r2.metric("Unique Questions Seen", safe_int(readiness.get("unique_questions_seen"), 0))
+            r3.metric("Estimate Confidence", f"{safe_float(readiness.get('confidence_score'), 0):.0f}% — {safe_str(readiness.get('confidence_label'), 'Low')}")
+            st.info(readiness_methodology_text())
         else:
+            # Primary row
             r1, r2, r3, r4 = st.columns(4)
             r1.metric("Readiness", f"{round(safe_float(readiness.get('score')), 2)}%")
             r2.metric("Status", safe_str(readiness.get("label"), "Not Enough Data"))
-            r3.metric("Confidence", safe_str(readiness.get("confidence"), "No Data"))
-            r4.metric("Unique Questions Seen", safe_int(readiness.get("unique_questions_seen"), 0))
+            r3.metric(
+                "Estimate Confidence",
+                f"{safe_float(readiness.get('confidence_score'), 0):.0f}% — {safe_str(readiness.get('confidence_label'), 'Low')}",
+            )
+            r4.metric("Recent Mock Accuracy", f"{safe_float(readiness.get('recent_accuracy'), 0):.2f}%")
 
+            # Diagnostics row
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Recency Accuracy", f"{safe_float(readiness.get('accuracy_score'), 0):.2f}%")
-            c2.metric("Coverage", f"{safe_float(readiness.get('coverage_score'), 0):.2f}%")
-            c3.metric("Domain Balance", f"{safe_float(readiness.get('domain_balance_score'), 0):.2f}%")
-            c4.metric("Pacing", f"{safe_float(readiness.get('pacing_score'), 0):.2f}%")
+            c1.metric("Domain Robustness", f"{safe_float(readiness.get('domain_robustness'), 0):.2f}%")
+            c2.metric("Trend", safe_str(readiness.get("trend_label"), "Stable"))
+            c3.metric("Consistency (SD)", f"±{safe_float(readiness.get('consistency_standard_deviation'), 0):.1f}pts")
+            c4.metric("Pacing", safe_str(readiness.get("pacing_status"), "Insufficient Timing Data"))
 
+            st.caption(
+                "Confidence measures how well-supported the estimate is. "
+                "It is not your probability of passing."
+            )
             recommendation = safe_str(readiness.get("recommendation"), "Complete more attempts to improve the readiness signal.")
-            if readiness.get("guardrail_applied"):
-                st.warning(recommendation)
-            else:
-                st.info(recommendation)
+            st.info(recommendation)
 
     st.subheader("Weakest domains")
     if domain_df.empty:
