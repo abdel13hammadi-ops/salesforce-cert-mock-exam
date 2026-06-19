@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import random
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -23,7 +25,7 @@ try:
 except Exception:
     calculate_readiness = None
 
-APP_VERSION = "DASHBOARD_V10_FULL_MOCK_ONLY_CLEAN"
+APP_VERSION = "DASHBOARD_V11_DAILY_SPRINT_V1"
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 
@@ -107,6 +109,80 @@ def filter_question_attempts_for_attempts(question_attempts: List[Dict[str, Any]
         row for row in question_attempts or []
         if safe_str(row.get("exam_attempt_id")) in eligible_ids
     ]
+
+
+
+def get_daily_sprint_domain(readiness: Dict[str, Any], domain_df: pd.DataFrame) -> str:
+    """Return the single weakest domain for Daily Sprint V1."""
+    weak_domains = readiness.get("weak_domains") if isinstance(readiness, dict) else None
+    if isinstance(weak_domains, list) and weak_domains:
+        return safe_str(weak_domains[0])
+
+    if domain_df is not None and not domain_df.empty and "Domain" in domain_df.columns:
+        return safe_str(domain_df.iloc[0].get("Domain"))
+
+    return ""
+
+
+def build_daily_sprint_href(page_path: str, exam_name: str, category: str, count: int = 10) -> str:
+    """Build a session-preserving Daily Sprint link to Practice By Category."""
+    token = safe_str(st.query_params.get("fr_session", ""))
+    base = "Practice_By_Category" if page_path.endswith("Practice_By_Category.py") else page_path
+    params = {
+        "daily_sprint": "1",
+        "exam_name": exam_name,
+        "category": category,
+        "count": str(int(count or 10)),
+    }
+    if token:
+        params["fr_session"] = token
+    query = "&".join(f"{quote(str(k))}={quote(str(v))}" for k, v in params.items())
+    return f"{base}?{query}"
+
+
+def render_daily_sprint_card(exam_name: str, weakest_domain: str, premium: bool) -> None:
+    """Render the premium Daily Sprint card."""
+    if not weakest_domain:
+        return
+
+    href = build_daily_sprint_href("pages/Practice_By_Category.py", exam_name, weakest_domain, 10)
+    locked_note = "" if premium else "<p style='margin:10px 0 0 0;color:#cbd5e1;'>Premium required to start the sprint.</p>"
+    button_html = (
+        f'<a href="{href}" target="_self" style="display:inline-block;margin-top:14px;'
+        'background:#ffffff;color:#0f172a;padding:10px 16px;border-radius:999px;'
+        'font-weight:800;text-decoration:none;">Start Daily Sprint →</a>'
+        if premium
+        else '<span style="display:inline-block;margin-top:14px;background:#334155;color:#cbd5e1;'
+             'padding:10px 16px;border-radius:999px;font-weight:800;">Premium Locked</span>'
+    )
+
+    st.markdown(
+        f"""
+        <div style="
+            background: linear-gradient(135deg,#0b1220 0%,#111827 48%,#172554 100%);
+            color: white;
+            border-radius: 18px;
+            padding: 24px 26px;
+            margin: 8px 0 20px 0;
+            box-shadow: 0 16px 38px rgba(15,23,42,0.22);
+            border: 1px solid rgba(255,255,255,0.10);
+        ">
+            <div style="font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.12em;color:#93c5fd;margin-bottom:8px;">
+                Daily Sprint
+            </div>
+            <h2 style="margin:0 0 8px 0;color:white;font-size:28px;line-height:1.15;">
+                Your Daily Sprint is Ready.
+            </h2>
+            <p style="margin:0;color:#e5e7eb;font-size:16px;line-height:1.55;">
+                10 questions tailored to your current gaps in <strong style="color:white;">{weakest_domain}</strong>.
+                Takes ~10 minutes.
+            </p>
+            {button_html}
+            {locked_note}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_readiness_locked(full_mocks: int, required_mocks: int = 3) -> None:
@@ -497,6 +573,24 @@ def render_logged_in_dashboard(email: str) -> None:
         return
 
     domain_df = build_domain_summary(attempts)
+    if calculate_readiness is not None:
+        daily_domain_weights = fetch_domain_weights(selected_exam)
+        daily_passing_score = safe_float(cert.get("passing_score"), 72 if "Business Analyst" in selected_exam else 68)
+        daily_expected_question_count = safe_int(cert.get("question_count"), 60) or 60
+        daily_readiness_attempts = filter_readiness_attempts(attempts, daily_expected_question_count)
+        daily_readiness_question_attempts = filter_question_attempts_for_attempts(question_attempts, daily_readiness_attempts)
+        daily_readiness = calculate_readiness(
+            attempts=daily_readiness_attempts,
+            passing_score=daily_passing_score,
+            domain_weights=daily_domain_weights,
+            expected_question_count=daily_expected_question_count,
+            question_bank_total=safe_int(question_health.get("approved_questions"), 0),
+            question_attempts=daily_readiness_question_attempts,
+            time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
+        )
+        daily_sprint_domain = get_daily_sprint_domain(daily_readiness, domain_df)
+        render_daily_sprint_card(selected_exam, daily_sprint_domain, premium)
+
     st.divider()
     if calculate_readiness is not None:
         domain_weights = fetch_domain_weights(selected_exam)

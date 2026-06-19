@@ -13,7 +13,7 @@ from utils.access_control import (
     has_premium_access,
 )
 
-APP_VERSION = "PRACTICE_BY_CATEGORY_V7_QUESTION_ATTEMPT_TRACKING"
+APP_VERSION = "PRACTICE_BY_CATEGORY_V8_DAILY_SPRINT_V1"
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
@@ -72,6 +72,23 @@ def language_label(language_code):
             native = lang.get("native_name") or lang.get("language_name") or language_code
             return f"{native} ({language_code})"
     return language_code
+
+
+def get_daily_sprint_params():
+    """Read Daily Sprint query params sent by Dashboard."""
+    try:
+        params = st.query_params
+        is_daily = str(params.get("daily_sprint", "")).strip() == "1"
+        exam_name = str(params.get("exam_name", "")).strip()
+        category = str(params.get("category", "")).strip()
+        try:
+            count = int(params.get("count", 10))
+        except Exception:
+            count = 10
+        count = max(1, min(count, 30))
+        return is_daily, exam_name, category, count
+    except Exception:
+        return False, "", "", 10
 
 
 @st.cache_data(ttl=60)
@@ -298,7 +315,7 @@ def save_practice_attempt(score, correct, total, category, domain_breakdown, dif
         raise ValueError("No account email saved. Open Account first.")
     payload = {
         "user_email": user_email,
-        "mode": "Practice by Category",
+        "mode": st.session_state.get("practice_mode_label", "Practice by Category"),
         "category": category,
         "score": float(score),
         "correct_answers": int(correct),
@@ -404,6 +421,7 @@ user_email = require_login()
 
 profile = fetch_user_profile(user_email)
 language_code = str(profile.get("preferred_language_code") or "en").strip().lower()
+is_daily_sprint, daily_sprint_exam_name, daily_sprint_category, daily_sprint_count = get_daily_sprint_params()
 
 if not has_premium_access(user_email):
     render_locked_practice_preview(user_email, language_code)
@@ -424,9 +442,14 @@ exam_names = [c["exam_name"] for c in certifications if c.get("exam_name")]
 display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications if c.get("exam_name")}
 
 if not st.session_state.get("practice_started", False):
+    default_exam_index = 0
+    if is_daily_sprint and daily_sprint_exam_name in exam_names:
+        default_exam_index = exam_names.index(daily_sprint_exam_name)
+
     selected_exam = st.selectbox(
         "Choose certification",
         exam_names,
+        index=default_exam_index,
         format_func=lambda x: display_by_exam.get(x, x),
         key="practice_selected_exam_name",
     )
@@ -434,7 +457,10 @@ if not st.session_state.get("practice_started", False):
     question_bank = fetch_question_bank(selected_exam, language_code)
 
     st.header("Choose Practice Settings")
-    st.info("Practice one domain at a time. Explanations are shown during practice and again in the final review.")
+    if is_daily_sprint and daily_sprint_category:
+        st.success(f"Daily Sprint loaded: 10 questions focused on {daily_sprint_category}.")
+    else:
+        st.info("Practice one domain at a time. Explanations are shown during practice and again in the final review.")
 
     if not question_bank:
         st.error(f"No approved questions found for {display_by_exam.get(selected_exam, selected_exam)} in {language_label(language_code)}.")
@@ -444,17 +470,28 @@ if not st.session_state.get("practice_started", False):
     extra_categories = sorted({q["category"] for q in question_bank if q["category"] not in available_categories})
     available_categories.extend(extra_categories)
 
-    selected_category = st.selectbox("Select category", available_categories)
+    default_category_index = 0
+    if is_daily_sprint and daily_sprint_category in available_categories:
+        default_category_index = available_categories.index(daily_sprint_category)
+
+    selected_category = st.selectbox("Select category", available_categories, index=default_category_index)
     available_count = sum(1 for q in question_bank if q["category"] == selected_category)
     valid_counts = [n for n in QUESTION_COUNT_OPTIONS if n <= available_count] or [available_count]
-    selected_count = st.selectbox("Number of questions", valid_counts)
+
+    default_count_index = 0
+    desired_count = 10 if is_daily_sprint else None
+    if desired_count in valid_counts:
+        default_count_index = valid_counts.index(desired_count)
+
+    selected_count = st.selectbox("Number of questions", valid_counts, index=default_count_index)
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Available Questions", available_count)
     c2.metric("Practice Questions", selected_count)
     c3.metric("Mode", "Untimed")
 
-    if st.button("Start Practice", type="primary"):
+    start_label = "Start Daily Sprint" if is_daily_sprint else "Start Practice"
+    if st.button(start_label, type="primary"):
         category_questions = [q for q in question_bank if q["category"] == selected_category]
         grouped = defaultdict(list)
         for q in category_questions:
@@ -478,6 +515,7 @@ if not st.session_state.get("practice_started", False):
         st.session_state.practice_count = selected_count
         st.session_state.practice_exam_name = selected_exam
         st.session_state.practice_language_code = language_code
+        st.session_state.practice_mode_label = "Daily Sprint" if is_daily_sprint else "Practice by Category"
         st.session_state.practice_started = True
         st.session_state.practice_submitted = False
         st.session_state.practice_current_index = 0
