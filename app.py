@@ -10,10 +10,9 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
+from utils.version import APP_VERSION
 import streamlit.components.v1 as components
-
-
-APP_VERSION = "V30_CLEAN_NO_TIMEOUT"
 CONFIG_FILE = "exam_config.json"
 DEFAULT_EXAM_NAME = "Salesforce Certified Platform Administrator"
 DEFAULT_LANGUAGE_CODE = "en"
@@ -96,6 +95,26 @@ def redirect_supabase_recovery_hash_to_reset_page():
 redirect_supabase_recovery_hash_to_reset_page()
 
 render_app_chrome()
+
+# Exempt only when an exam is genuinely running:
+#   started=True, submitted=False, a valid recent start_time, and questions loaded.
+# A stale or orphaned started flag (no start_time, no questions, or time already
+# elapsed) does not qualify — timeout applies normally in those states.
+# SESSION_TIMEOUT_APPLIED
+_exam_start_time = st.session_state.get("start_time")
+_has_valid_start = (
+    _exam_start_time is not None
+    and isinstance(_exam_start_time, (int, float))
+    and (time.time() - float(_exam_start_time)) < 86400  # sanity: within 24 h
+)
+_is_active_exam = (
+    bool(st.session_state.get("started"))
+    and not bool(st.session_state.get("submitted"))
+    and _has_valid_start
+    and bool(st.session_state.get("all_questions"))
+)
+enforce_session_timeout(exempt_active_exam=_is_active_exam)
+show_session_expired_notice()
 
 
 def inject_exam_layout_css():
@@ -1238,7 +1257,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.caption(f"App version: {APP_VERSION}")
+st.caption(f"App Version: {APP_VERSION}")
 
 if not st.session_state.started:
     st.header("Exam Instructions")

@@ -13,11 +13,15 @@ from utils.access_control import (
     get_supabase_client,
 )
 from utils.readiness import calculate_readiness, readiness_methodology_text
-
-APP_VERSION = "MY_PROGRESS_V15_FULL_MOCK_ONLY_CLEAN"
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
+from utils.version import APP_VERSION
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 
 def _safe_lower(value: Any, default: str = "") -> str:
@@ -425,7 +429,7 @@ def render_locked_progress_preview(user_email: str, subscription_status: str) ->
 
 
 st.title("My Progress")
-st.caption(f"App version: {APP_VERSION}")
+st.caption(f"App Version: {APP_VERSION}")
 
 user_email = get_current_user_email()
 if not user_email:

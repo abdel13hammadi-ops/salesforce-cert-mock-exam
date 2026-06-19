@@ -16,7 +16,7 @@ from utils.access_control import (
     has_premium_access,
 )
 
-APP_VERSION = "WEAK_AREAS_PRACTICE_V11_QUESTION_ATTEMPT_TRACKING"
+from utils.version import APP_VERSION
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
@@ -457,7 +457,7 @@ st.markdown(
 )
 
 st.markdown('<div class="weak-banner">Weak Areas Practice</div>', unsafe_allow_html=True)
-st.caption(f"App version: {APP_VERSION}")
+st.caption(f"App Version: {APP_VERSION}")
 
 user_email = require_login()
 

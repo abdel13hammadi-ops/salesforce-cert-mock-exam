@@ -13,7 +13,7 @@ from utils.access_control import (
     has_premium_access,
 )
 
-APP_VERSION = "PRACTICE_BY_CATEGORY_V8_DAILY_SPRINT_V1"
+from utils.version import APP_VERSION
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
@@ -415,7 +415,7 @@ st.markdown(
 )
 
 st.markdown('<div class="practice-banner">Practice by Category</div>', unsafe_allow_html=True)
-st.caption(f"App version: {APP_VERSION}")
+st.caption(f"App Version: {APP_VERSION}")
 
 user_email = require_login()
 

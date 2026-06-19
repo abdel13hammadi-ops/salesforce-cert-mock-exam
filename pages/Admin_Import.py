@@ -7,13 +7,13 @@ from utils.session_timeout import enforce_session_timeout, show_session_expired_
 from supabase import create_client
 from utils.access_control import render_app_chrome, require_admin
 
-APP_VERSION = "ADMIN_IMPORT_V2_BA_COMPATIBLE"
+from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Admin Import", layout="wide")
 render_app_chrome()
 require_admin()
 st.title("Admin Import")
-st.caption(f"App version: {APP_VERSION}")
+st.caption(f"App Version: {APP_VERSION}")
 
 
 # SESSION_TIMEOUT_APPLIED

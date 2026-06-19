@@ -12,7 +12,7 @@ from utils.session_timeout import enforce_session_timeout, show_session_expired_
 from utils.access_control import get_supabase_admin_client, get_supabase_auth_client, require_admin, render_app_chrome
 
 
-APP_VERSION = "ADMIN_USERS_CREATE_MISSING_USER_SPLIT_NAME_V4"
+from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Admin Users", page_icon="👥", layout="wide")
 render_app_chrome()
@@ -26,9 +26,10 @@ show_session_expired_notice()
 supabase = get_supabase_admin_client()
 
 st.title("👥 Admin Users")
+st.caption(f"App Version: {APP_VERSION}")
 st.caption(
     "Search users, create missing app/Auth users, grant/revoke premium access, send reset links, "
-    f"view attempts, and remove app-level profiles. Version: {APP_VERSION}"
+    "view attempts, and remove app-level profiles."
 )
 
 

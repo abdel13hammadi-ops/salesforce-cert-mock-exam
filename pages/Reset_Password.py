@@ -3,7 +3,6 @@ from __future__ import annotations
 from urllib.parse import parse_qs, urlparse
 
 import streamlit as st
-from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 import streamlit.components.v1 as components
 
 from utils.access_control import get_supabase_auth_client, render_sidebar_navigation
@@ -14,16 +13,12 @@ except Exception:
     streamlit_js_eval = None
 
 
-APP_VERSION = "RESET_PASSWORD_PARENT_HASH_V3"
+from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Reset Password", page_icon="🔐", layout="wide")
 render_sidebar_navigation()
 
-
-# SESSION_TIMEOUT_APPLIED
-enforce_session_timeout()
-show_session_expired_notice()
-
+st.caption(f"App Version: {APP_VERSION}")
 st.title("🔐 Reset Password")
 st.caption("Use this page after clicking the password reset link sent by email.")
 

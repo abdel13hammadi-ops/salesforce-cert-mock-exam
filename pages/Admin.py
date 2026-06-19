@@ -5,7 +5,7 @@ import streamlit as st
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import render_app_chrome, require_admin, render_session_page_link
 
-APP_VERSION = "ADMIN_LANDING_V1"
+from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Admin", page_icon="🔐", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -17,7 +17,7 @@ enforce_session_timeout()
 show_session_expired_notice()
 
 st.title("🔐 Admin")
-st.caption(f"App version: {APP_VERSION}")
+st.caption(f"App Version: {APP_VERSION}")
 st.success("Admin access is unlocked for this session.")
 
 st.subheader("Admin tools")

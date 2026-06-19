@@ -141,6 +141,9 @@ def _session_payload_from_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
         "preferred_timezone": str(profile.get("preferred_timezone") or "UTC").strip() or "UTC",
         "subscription_status": str(profile.get("subscription_status") or "free").strip().lower(),
         "admin_unlocked": admin_unlocked,
+        # last_activity_at rides inside the signed token so it survives full browser
+        # navigation without requiring session_state to persist.
+        "last_activity_at": float(st.session_state.get("last_activity_at") or time.time()),
     }
 
 
@@ -260,6 +263,10 @@ def _render_browser_session_bridge() -> None:
 
 def restore_login_from_signed_url() -> bool:
     """Restore session_state from signed query token, if present and valid."""
+    # Do not re-authenticate a session that was explicitly expired by the timeout.
+    # The flag is cleared by save_logged_in_user() when the user logs back in.
+    if st.session_state.get("user_session_expired"):
+        return False
     if st.session_state.get("user_email"):
         return True
     token = _get_query_param(SESSION_PARAM)
@@ -280,6 +287,11 @@ def restore_login_from_signed_url() -> bool:
     if bool(payload.get("admin_unlocked")) and _email_is_configured_admin(email):
         st.session_state["admin_unlocked"] = True
     st.session_state["auth_restored_from_url"] = True
+    # Restore last_activity_at from the token so enforce_session_timeout() can
+    # check idle time correctly even after a full browser navigation wipes session_state.
+    # Falls back to now for tokens created before this field was added.
+    stored_activity = payload.get("last_activity_at")
+    st.session_state["last_activity_at"] = float(stored_activity) if stored_activity is not None else time.time()
     return True
 
 
@@ -313,6 +325,12 @@ def save_logged_in_user(profile: Dict[str, Any], persist: bool = True) -> None:
     email = str(profile.get("email") or profile.get("user_email") or "").strip().lower()
     if not email:
         return
+    # Clear the session-expired flag only when it was actually set (real login after
+    # timeout), and reset the idle clock at the same time.  Passive profile refreshes
+    # called from get_subscription_status() do not set the flag, so they are unaffected.
+    if st.session_state.pop("user_session_expired", None):
+        st.session_state["last_activity_at"] = time.time()
+        st.session_state.pop("_last_activity_stamp_at", None)
     st.session_state["user_email"] = email
     st.session_state["auth_user_id"] = str(profile.get("auth_user_id") or "")
     st.session_state["full_name"] = str(profile.get("full_name") or "")
@@ -321,6 +339,38 @@ def save_logged_in_user(profile: Dict[str, Any], persist: bool = True) -> None:
     st.session_state["subscription_status"] = str(profile.get("subscription_status") or "free").strip().lower()
     if persist:
         persist_login_to_signed_url(profile)
+
+
+def clear_login_and_flush_browser() -> None:
+    """Clear Python auth state AND immediately render the localStorage-clearing JS.
+
+    Use this instead of clear_login_state() whenever you need the browser
+    localStorage token removed in the same script run (e.g. session timeout).
+    clear_login_state() marks localStorage for clearing on the next bridge render;
+    this function renders it right away so st.stop() does not skip it.
+    """
+    clear_login_state()
+    _render_browser_session_clearer()
+
+
+def stamp_activity_to_token() -> None:
+    """Re-sign the current session token with the latest last_activity_at timestamp.
+
+    Called by enforce_session_timeout() on every non-expired rerun so that sidebar
+    links and hard-refresh URLs carry an up-to-date activity timestamp. This is what
+    allows idle timeout to survive full browser navigation: the token in the URL
+    preserves last_activity_at across page loads even when session_state is cleared.
+    """
+    token = _current_signed_session_token()
+    if not token:
+        return
+    payload = verify_signed_session(token)
+    if not payload:
+        return
+    payload["last_activity_at"] = float(st.session_state.get("last_activity_at") or time.time())
+    payload.pop("exp", None)  # make_signed_session sets a fresh 30-day expiry
+    new_token = make_signed_session(payload)
+    _persist_token_to_url(new_token)
 
 
 def clear_login_state() -> None:
@@ -334,6 +384,10 @@ def clear_login_state() -> None:
         "admin_unlocked",
         "auth_restored_from_url",
         "signed_session_token",
+        # Must clear last_activity_at so a stale timestamp cannot immediately
+        # re-trigger timeout the moment the user logs back in after expiry.
+        "last_activity_at",
+        "_last_activity_stamp_at",
     ]:
         st.session_state.pop(key, None)
     clear_persisted_login()

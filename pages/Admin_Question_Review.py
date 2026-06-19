@@ -7,7 +7,7 @@ import streamlit as st
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import get_supabase_admin_client, render_app_chrome, require_admin
 
-APP_VERSION = "ADMIN_QUESTION_REVIEW_V4_EXAM_SELECTOR"
+from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Admin Question Review", layout="wide")
 render_app_chrome()
@@ -179,7 +179,7 @@ def valid_email_or_none(value):
 
 
 st.title("Admin Question Review")
-st.caption(f"App version: {APP_VERSION}")
+st.caption(f"App Version: {APP_VERSION}")
 st.info("Admin-only page for reviewing and editing questions, answers, explanations, categories, difficulty, and eligibility.")
 
 exam_names, display_by_exam = build_exam_options()

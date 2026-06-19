@@ -27,7 +27,7 @@ from utils.access_control import (
     unlock_admin,
 )
 
-APP_VERSION = "ACCOUNT_IDENTITY_GUARD_V3_TZ1"
+from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -453,7 +453,7 @@ def send_password_reset_email(email: str) -> None:
     raise RuntimeError(f"Password reset is not supported by the installed Supabase client: {last_error}")
 
 st.title("Account")
-st.caption(f"App version: {APP_VERSION}")
+st.caption(f"App Version: {APP_VERSION}")
 
 languages = load_languages()
 language_codes = [row["language_code"] for row in languages] or ["en"]

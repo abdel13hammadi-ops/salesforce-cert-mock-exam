@@ -5,7 +5,7 @@ from utils.access_control import render_app_chrome, require_admin
 from datetime import datetime
 import os
 
-APP_VERSION = "ADMIN_SUPPORT_TICKETS_V1"
+from utils.version import APP_VERSION
 
 st.set_page_config(
     page_title="Admin Support Tickets",
@@ -21,7 +21,7 @@ enforce_session_timeout()
 show_session_expired_notice()
 
 st.title("Admin Support Tickets")
-st.caption(f"App version: {APP_VERSION}")
+st.caption(f"App Version: {APP_VERSION}")
 
 def get_secret(name: str) -> str:
     value = str(os.environ.get(name, "") or "").strip()

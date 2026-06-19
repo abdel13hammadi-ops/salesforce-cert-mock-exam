@@ -19,18 +19,22 @@ from utils.access_control import (
     render_app_chrome,
     render_session_page_link,
 )
+from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
+from utils.version import APP_VERSION
 
 try:
     from utils.readiness import calculate_readiness
 except Exception:
     calculate_readiness = None
-
-APP_VERSION = "DASHBOARD_V11_DAILY_SPRINT_V1"
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 
 st.set_page_config(page_title="Dashboard", page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
+
+# SESSION_TIMEOUT_APPLIED
+enforce_session_timeout()
+show_session_expired_notice()
 
 
 def safe_str(value: Any, default: str = "") -> str:
@@ -399,7 +403,7 @@ def build_domain_summary(attempts: List[Dict[str, Any]]) -> pd.DataFrame:
 
 def render_public_onboarding() -> None:
     st.title("CertBound Dashboard")
-    st.caption(f"App version: {APP_VERSION}")
+    st.caption(f"App Version: {APP_VERSION}")
 
     st.markdown(
         """
@@ -475,7 +479,7 @@ def render_logged_in_dashboard(email: str) -> None:
     display_name = full_name or email.split("@", 1)[0]
 
     st.title(f"Welcome, {display_name}")
-    st.caption(f"App version: {APP_VERSION}")
+    st.caption(f"App Version: {APP_VERSION}")
 
     profile_col, status_col, language_col, account_col = st.columns([2, 1, 1, 1])
     profile_col.metric("Signed in", email)

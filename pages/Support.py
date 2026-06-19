@@ -14,7 +14,7 @@ from utils.access_control import (
     require_login,
 )
 
-APP_VERSION = "SUPPORT_V4_LOGIN_REQUIRED"
+from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Support", layout="wide")
 render_app_chrome()
@@ -107,7 +107,7 @@ def status_label(status: str) -> str:
 
 
 st.title("Support")
-st.caption(f"App version: {APP_VERSION}")
+st.caption(f"App Version: {APP_VERSION}")
 
 current_email = normalize_email(require_login() or "")
 lookup_email = current_email
