@@ -681,6 +681,11 @@ def render_sidebar_navigation() -> None:
 
 
 def render_app_chrome() -> None:
+    try:
+        from utils.sentry_config import init_sentry  # noqa: PLC0415
+        init_sentry()
+    except Exception:
+        pass
     restore_login_from_signed_url()
     _sync_existing_session_token_to_url()
     _render_browser_session_bridge()

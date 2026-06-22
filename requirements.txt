@@ -6,3 +6,4 @@ psycopg2-binary
 sqlalchemy
 supabase
 streamlit-js-eval
+sentry-sdk
