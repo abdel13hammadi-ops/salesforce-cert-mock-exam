@@ -6,4 +6,4 @@ To update for any code change:
   3. All pages import from here — one edit updates every page simultaneously.
 """
 
-APP_VERSION = "V38_READINESS_PERFORMANCE_ANCHORED"
+APP_VERSION = "V39_QUESTION_ROLE_ENFORCEMENT"

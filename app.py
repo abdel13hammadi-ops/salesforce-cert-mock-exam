@@ -596,7 +596,7 @@ def get_user_preferred_language_code(email):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_question_bank(exam_name, language_code):
+def fetch_question_bank(exam_name, language_code, free_mock_only=False):
     supabase = get_supabase_client()
     exam_name = exam_name or DEFAULT_EXAM_NAME
     language_code = language_code or DEFAULT_LANGUAGE_CODE
@@ -609,7 +609,11 @@ def fetch_question_bank(exam_name, language_code):
         .eq("is_active", True)
         .eq("is_exam_eligible", True)
         .eq("quality_status", "approved")
+        .eq("mock_eligible", True)
     )
+
+    if free_mock_only:
+        questions_query = questions_query.eq("free_mock_exam", True)
 
     questions_result = questions_query.execute()
     raw_questions = questions_result.data or []
@@ -794,7 +798,7 @@ def generate_free_mock_questions(bank, category_counts=None):
     the 60-question paid exam distribution. It must use exactly 10 fixed
     approved sample questions flagged in the database.
     """
-    selected = [q for q in bank if q.get("free_mock_exam") is True]
+    selected = list(bank)
 
     if len(selected) != 10:
         st.error("Free Preview setup error: expected exactly 10 approved sample questions for this certification/language.")
@@ -816,7 +820,8 @@ def generate_free_mock_questions(bank, category_counts=None):
 
 
 def ensure_exam_generated(exam_access_type, exam_name, language_code, category_counts):
-    bank, meta = fetch_question_bank(exam_name, language_code)
+    free_mock_only = (exam_access_type != "paid")
+    bank, meta = fetch_question_bank(exam_name, language_code, free_mock_only=free_mock_only)
     st.session_state.bank_meta = meta
 
     if meta.get("error"):

@@ -160,6 +160,7 @@ def fetch_question_bank(exam_name, language_code):
         .eq("is_active", True)
         .eq("is_exam_eligible", True)
         .eq("quality_status", "approved")
+        .eq("practice_eligible", True)
         .execute()
     )
     questions = q_response.data or []
