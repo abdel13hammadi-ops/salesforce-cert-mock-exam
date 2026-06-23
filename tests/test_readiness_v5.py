@@ -18,11 +18,12 @@ import sys
 import os
 import unittest
 from datetime import datetime, timezone, timedelta
+import math
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.readiness import (
-    # Constants
+    # Batch 1 constants
     GRADE_VERIFIED,
     GRADE_LEGACY,
     GRADE_INVALID,
@@ -33,7 +34,46 @@ from utils.readiness import (
     V5_QUESTION_DISCOUNT_DEFAULT,
     V5_FAMILY_DISCOUNT,
     V5_FAMILY_DISCOUNT_FLOOR,
-    # Helpers
+    # Batch 2 constants
+    V5_DR_DOMAIN_WEIGHT,
+    V5_DR_FLOOR_WEIGHT,
+    V5_DOMAIN_UNCOVERED,
+    V5_DOMAIN_UNDER_SAMPLED,
+    V5_DOMAIN_SUFFICIENTLY_SAMPLED,
+    V5_DOMAIN_RELIABLY_SAMPLED,
+    V5_DOMAIN_GAP_WEIGHT_THRESHOLD,
+    V5_DOMAIN_FLOOR_SCORE_THRESHOLD,
+    V5_DIFFICULTY_EASY_MIN,
+    V5_DIFFICULTY_MEDIUM_MIN,
+    V5_DIFFICULTY_HARD_MIN,
+    V5_COGNITIVE_HO_MULTIPLIER,
+    V5_COGNITIVE_HO_MIN,
+    V5_TREND_CLAMP_MIN,
+    V5_TREND_CLAMP_MAX,
+    V5_STALENESS_CURRENT,
+    V5_STALENESS_AGING,
+    V5_STALENESS_OLD,
+    V5_STALENESS_STALE,
+    V5_STALENESS_UNKNOWN,
+    V5_STALENESS_CURRENT_MAX_DAYS,
+    V5_STALENESS_AGING_MAX_DAYS,
+    V5_STALENESS_OLD_MAX_DAYS,
+    V5_CAP_AGING_OFFSET,
+    V5_CAP_OLD_OFFSET,
+    V5_CAP_STALE_VALUE,
+    V5_CAP_DOMAIN_GAP_OFFSET,
+    V5_CAP_DOMAIN_FLOOR_OFFSET,
+    V5_CAP_DOMAIN_FLOOR_MIN,
+    V5_CAP_DIFFICULTY_OFFSET,
+    V5_CAP_COGNITIVE_OFFSET,
+    V5_CONF_MOCK_VOLUME_PTS,
+    V5_CONF_BREADTH_PTS,
+    V5_CONF_RECENCY_PTS,
+    V5_CONF_DOMAIN_PTS,
+    V5_CONF_DIFFICULTY_PTS,
+    V5_CONF_COGNITIVE_PTS,
+    V5_CONF_COVERAGE_MOCK_COUNT,
+    # Batch 1 helpers
     _v5_parse_strict_int,
     v5_parse_attempt_datetime,
     v5_parse_attempt_id,
@@ -42,6 +82,16 @@ from utils.readiness import (
     v5_grade_attempt,
     v5_grade_all_attempts,
     v5_assign_evidence_weights,
+    # Batch 2 helpers
+    _v5_normalize_domain_weights,
+    _v5_build_domain_stats,
+    _v5_compute_domain_score,
+    _v5_compute_difficulty_analysis,
+    _v5_compute_cognitive_analysis,
+    _v5_compute_trend,
+    _v5_compute_staleness,
+    _v5_apply_score_caps,
+    _v5_compute_confidence,
 )
 
 
@@ -941,6 +991,711 @@ class TestEvidenceWeightsBoundary(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# G. Domain-weight normalization
+# ---------------------------------------------------------------------------
+
+class TestDomainWeightNormalization(unittest.TestCase):
+
+    def test_percentages_normalize_correctly(self):
+        r = _v5_normalize_domain_weights({"A": 50.0, "B": 25.0, "C": 25.0})
+        self.assertAlmostEqual(r["A"], 0.50)
+        self.assertAlmostEqual(r["B"], 0.25)
+        self.assertAlmostEqual(r["C"], 0.25)
+
+    def test_decimals_normalize_correctly(self):
+        r = _v5_normalize_domain_weights({"A": 0.50, "B": 0.25, "C": 0.25})
+        self.assertAlmostEqual(r["A"], 0.50)
+        self.assertAlmostEqual(r["B"], 0.25)
+        self.assertAlmostEqual(r["C"], 0.25)
+
+    def test_null_negative_zero_invalid_ignored(self):
+        r = _v5_normalize_domain_weights({"A": 50.0, "B": None, "C": -10.0, "D": 0.0, "E": "bad"})
+        self.assertAlmostEqual(r.get("A", 0.0), 1.0)
+        for k in ("B", "C", "D", "E"):
+            self.assertNotIn(k, r)
+
+    def test_empty_returns_empty(self):
+        self.assertEqual(_v5_normalize_domain_weights({}), {})
+        self.assertEqual(_v5_normalize_domain_weights(None), {})
+
+    def test_all_invalid_returns_empty(self):
+        self.assertEqual(_v5_normalize_domain_weights({"A": None, "B": -1, "C": 0}), {})
+
+    def test_preserves_official_domain_names(self):
+        r = _v5_normalize_domain_weights({"Sales Cloud": 30.0, "Service Cloud": 30.0, "Data Model": 40.0})
+        self.assertIn("Sales Cloud", r)
+        self.assertIn("Service Cloud", r)
+        self.assertIn("Data Model", r)
+
+    def test_weights_sum_to_1(self):
+        r = _v5_normalize_domain_weights({"A": 10.0, "B": 20.0, "C": 30.0, "D": 40.0})
+        self.assertAlmostEqual(sum(r.values()), 1.0)
+
+
+# ---------------------------------------------------------------------------
+# H. Domain statistics
+# ---------------------------------------------------------------------------
+
+def _make_domain_rows(attempt_id, domain, count, correct_count, weight=1.0,
+                      base_id=0):
+    rows = []
+    wts  = {}
+    for i in range(count):
+        rid = base_id + i + 1
+        rows.append({
+            "id": rid,
+            "exam_attempt_id": attempt_id,
+            "question_id": f"q-{domain}-{i}",
+            "category": domain,
+            "difficulty": "medium",
+            "cognitive_level": "application",
+            "is_correct": i < correct_count,
+        })
+        wts[str(rid)] = weight
+    return rows, wts
+
+
+class TestDomainStats(unittest.TestCase):
+    """_v5_build_domain_stats evidence states and boundary conditions."""
+
+    _NW = {"Domain A": 0.50, "Domain B": 0.50}   # expected_dq = max(5, round(30)) = 30
+
+    def _call(self, rows, wts, norm_w=None):
+        return _v5_build_domain_stats(rows, wts, 60, norm_w or self._NW)
+
+    # -- four states --
+
+    def test_uncovered_state(self):
+        rows, wts = _make_domain_rows(1, "Domain B", 5, 3)
+        r = self._call(rows, wts)
+        self.assertEqual(r["Domain A"]["evidence_state"], V5_DOMAIN_UNCOVERED)
+        self.assertAlmostEqual(r["Domain A"]["effective_total"], 0.0)
+
+    def test_under_sampled_state(self):
+        rows, wts = _make_domain_rows(1, "Domain A", 10, 7)
+        r = self._call(rows, wts)
+        self.assertEqual(r["Domain A"]["evidence_state"], V5_DOMAIN_UNDER_SAMPLED)
+
+    def test_sufficiently_sampled_state(self):
+        rows, wts = _make_domain_rows(1, "Domain A", 30, 20)
+        r = self._call(rows, wts)
+        self.assertEqual(r["Domain A"]["evidence_state"], V5_DOMAIN_SUFFICIENTLY_SAMPLED)
+
+    def test_reliably_sampled_state(self):
+        rows, wts = _make_domain_rows(1, "Domain A", 60, 45)
+        r = self._call(rows, wts)
+        self.assertEqual(r["Domain A"]["evidence_state"], V5_DOMAIN_RELIABLY_SAMPLED)
+
+    # -- exact threshold boundaries --
+
+    def test_boundary_under_to_sufficient_at_expected_dq(self):
+        # expected_dq = 30; 30 rows → sufficiently_sampled
+        rows30, wts30 = _make_domain_rows(1, "Domain A", 30, 15)
+        self.assertEqual(
+            self._call(rows30, wts30)["Domain A"]["evidence_state"],
+            V5_DOMAIN_SUFFICIENTLY_SAMPLED,
+        )
+        # 29 rows → under_sampled
+        rows29, wts29 = _make_domain_rows(2, "Domain A", 29, 14, base_id=1000)
+        self.assertEqual(
+            self._call(rows29, wts29)["Domain A"]["evidence_state"],
+            V5_DOMAIN_UNDER_SAMPLED,
+        )
+
+    def test_boundary_sufficient_to_reliable_at_2x_expected_dq(self):
+        # expected_dq = 30; 60 rows → reliably_sampled
+        rows60, wts60 = _make_domain_rows(1, "Domain A", 60, 40)
+        self.assertEqual(
+            self._call(rows60, wts60)["Domain A"]["evidence_state"],
+            V5_DOMAIN_RELIABLY_SAMPLED,
+        )
+        # 59 rows → sufficiently_sampled
+        rows59, wts59 = _make_domain_rows(2, "Domain A", 59, 39, base_id=1000)
+        self.assertEqual(
+            self._call(rows59, wts59)["Domain A"]["evidence_state"],
+            V5_DOMAIN_SUFFICIENTLY_SAMPLED,
+        )
+
+    def test_expected_dq_minimum_is_5(self):
+        nw = _v5_normalize_domain_weights({"Domain A": 0.01, "Domain B": 99.0})
+        rows, wts = _make_domain_rows(1, "Domain A", 1, 1)
+        r = _v5_build_domain_stats(rows, wts, 60, nw)
+        self.assertEqual(r["Domain A"]["expected_domain_questions"], 5)
+
+    def test_percent_correct_computed(self):
+        rows, wts = _make_domain_rows(1, "Domain A", 10, 7)
+        r = self._call(rows, wts)
+        self.assertAlmostEqual(r["Domain A"]["percent"], 70.0)
+
+    def test_unmapped_rows_do_not_distort_official_domains(self):
+        rows_off, wts_off = _make_domain_rows(1, "Domain A", 10, 10)
+        rogue = {"id": 9999, "exam_attempt_id": 1, "question_id": "q9999",
+                 "category": "Unknown", "is_correct": False}
+        all_rows = rows_off + [rogue]
+        all_wts  = dict(wts_off); all_wts["9999"] = 1.0
+        r = self._call(all_rows, all_wts)
+        self.assertAlmostEqual(r["Domain A"]["effective_total"], 10.0)
+
+
+# ---------------------------------------------------------------------------
+# I. Domain score
+# ---------------------------------------------------------------------------
+
+def _domain_stat(et, ec, expected_dq, state):
+    return {
+        "effective_correct": ec, "effective_total": et,
+        "percent": 100.0 * ec / et if et > 0 else 0.0,
+        "expected_domain_questions": expected_dq,
+        "evidence_state": state,
+    }
+
+
+class TestDomainScore(unittest.TestCase):
+
+    def test_DR_exact_arithmetic(self):
+        # A: weight 0.6, 80% acc; B: weight 0.4, 60% acc — both reliably_sampled
+        # D = 0.6*80 + 0.4*60 = 72.0 (weights sum to 1, no renorm needed)
+        # F = weakest reliable = B = 60
+        # DR = 0.70*72 + 0.30*60 = 50.4 + 18 = 68.4
+        stats = {
+            "A": _domain_stat(60, 48, 30, V5_DOMAIN_RELIABLY_SAMPLED),
+            "B": _domain_stat(40, 24, 20, V5_DOMAIN_RELIABLY_SAMPLED),
+        }
+        r = _v5_compute_domain_score(stats, {"A": 0.6, "B": 0.4})
+        self.assertAlmostEqual(r["D"],  72.0, places=4)
+        self.assertAlmostEqual(r["F"],  60.0, places=4)
+        self.assertAlmostEqual(r["DR"], 68.4, places=4)
+
+    def test_domain_gap_triggers_at_weight_exactly_0_10(self):
+        stats = {
+            "A": _domain_stat(50, 40, 25, V5_DOMAIN_RELIABLY_SAMPLED),
+            "B": _domain_stat(0,  0,  5,  V5_DOMAIN_UNCOVERED),
+        }
+        r = _v5_compute_domain_score(stats, {"A": 0.90, "B": 0.10})
+        self.assertTrue(r["domain_gap_triggered"])
+
+    def test_domain_gap_not_triggered_at_weight_0_09(self):
+        stats = {
+            "A": _domain_stat(50, 40, 25, V5_DOMAIN_RELIABLY_SAMPLED),
+            "B": _domain_stat(0,  0,  5,  V5_DOMAIN_UNCOVERED),
+        }
+        r = _v5_compute_domain_score(stats, {"A": 0.91, "B": 0.09})
+        self.assertFalse(r["domain_gap_triggered"])
+
+    def test_floor_triggers_at_39_99(self):
+        s = _domain_stat(100, 40, 50, V5_DOMAIN_RELIABLY_SAMPLED)
+        s["percent"] = 39.99
+        r = _v5_compute_domain_score({"A": s}, {"A": 1.0})
+        self.assertTrue(r["domain_floor_triggered"])
+
+    def test_floor_not_triggered_at_40_0(self):
+        s = _domain_stat(100, 40, 50, V5_DOMAIN_RELIABLY_SAMPLED)
+        s["percent"] = 40.0
+        r = _v5_compute_domain_score({"A": s}, {"A": 1.0})
+        self.assertFalse(r["domain_floor_triggered"])
+
+    def test_no_qualified_domain_F_equals_D(self):
+        stats = {
+            "A": _domain_stat(5, 3, 30, V5_DOMAIN_UNDER_SAMPLED),
+            "B": _domain_stat(0, 0, 30, V5_DOMAIN_UNCOVERED),
+        }
+        r = _v5_compute_domain_score(stats, {"A": 0.5, "B": 0.5})
+        self.assertAlmostEqual(r["F"], r["D"])
+        self.assertIsNone(r["weakest_domain"])
+
+    def test_no_official_weights_skips_gap(self):
+        r = _v5_compute_domain_score({}, {})
+        self.assertFalse(r["domain_gap_triggered"])
+
+    def test_uncovered_domains_list_populated(self):
+        stats = {
+            "A": _domain_stat(50, 40, 25, V5_DOMAIN_RELIABLY_SAMPLED),
+            "B": _domain_stat(0,  0,  5,  V5_DOMAIN_UNCOVERED),
+        }
+        r = _v5_compute_domain_score(stats, {"A": 0.8, "B": 0.2})
+        self.assertIn("B", r["uncovered_domains"])
+
+
+# ---------------------------------------------------------------------------
+# J. Difficulty evidence analysis
+# ---------------------------------------------------------------------------
+
+def _diff_rows_weights(counts, correct_counts=None, base_id=0):
+    """Build rows+weights for difficulty analysis. counts={'easy':n,...}"""
+    rows, wts = [], {}
+    rid = base_id
+    for diff, n in counts.items():
+        correct = (correct_counts or {}).get(diff, n)
+        for i in range(n):
+            rid += 1
+            rows.append({"id": rid, "question_id": f"qd{rid}",
+                         "difficulty": diff, "is_correct": i < correct})
+            wts[str(rid)] = 1.0
+    return rows, wts
+
+
+class TestDifficultyAnalysis(unittest.TestCase):
+
+    def test_activates_at_exactly_90_pct(self):
+        # 90 recognized + 10 unknown = 100 rows → 90% exactly
+        rows, wts = _diff_rows_weights({"easy": 30, "medium": 30, "hard": 30})
+        for i in range(10):
+            rid = 1000 + i
+            rows.append({"id": rid, "question_id": f"qu{rid}",
+                         "difficulty": "unknown_level", "is_correct": True})
+            wts[str(rid)] = 1.0
+        r = _v5_compute_difficulty_analysis(rows, wts)
+        self.assertTrue(r["data_available"])
+        self.assertAlmostEqual(r["metadata_coverage"], 0.90, places=10)
+
+    def test_not_active_at_89_pct(self):
+        # 89 recognized + 11 unknown = 100 → 89%
+        rows, wts = _diff_rows_weights({"easy": 30, "medium": 30, "hard": 29})
+        for i in range(11):
+            rid = 1000 + i
+            rows.append({"id": rid, "question_id": f"qu{rid}",
+                         "difficulty": "unknown_level", "is_correct": True})
+            wts[str(rid)] = 1.0
+        r = _v5_compute_difficulty_analysis(rows, wts)
+        self.assertFalse(r["data_available"])
+        self.assertFalse(r["cap_active"])
+
+    def test_hard_sufficient_at_exactly_10(self):
+        rows, wts = _diff_rows_weights({"easy": 5, "medium": 10, "hard": 10})
+        r = _v5_compute_difficulty_analysis(rows, wts)
+        self.assertTrue(r["data_available"])
+        self.assertTrue(r["hard_sufficient"])
+        self.assertFalse(r["cap_active"])
+
+    def test_hard_not_sufficient_at_9_99(self):
+        # 10 hard rows each with weight 0.999 → effective_total = 9.99 < 10
+        rows, wts = [], {}
+        for i in range(10):
+            rid = i + 1
+            rows.append({"id": rid, "question_id": f"qh{rid}",
+                         "difficulty": "hard", "is_correct": True})
+            wts[str(rid)] = 0.999
+        for i in range(10):
+            rid = 100 + i
+            rows.append({"id": rid, "question_id": f"qe{rid}",
+                         "difficulty": "easy", "is_correct": True})
+            wts[str(rid)] = 0.6    # 6.0 ≥ 5 → easy sufficient
+        for i in range(10):
+            rid = 200 + i
+            rows.append({"id": rid, "question_id": f"qm{rid}",
+                         "difficulty": "medium", "is_correct": True})
+            wts[str(rid)] = 1.0    # 10.0 → medium sufficient
+        r = _v5_compute_difficulty_analysis(rows, wts)
+        self.assertTrue(r["data_available"])
+        self.assertFalse(r["hard_sufficient"])
+        self.assertTrue(r["cap_active"])
+
+    def test_cap_active_false_when_hard_sufficient(self):
+        rows, wts = _diff_rows_weights({"easy": 5, "medium": 10, "hard": 10})
+        r = _v5_compute_difficulty_analysis(rows, wts)
+        self.assertFalse(r["cap_active"])
+
+    def test_no_metadata_no_cap(self):
+        r = _v5_compute_difficulty_analysis([], {})
+        self.assertFalse(r["cap_active"])
+        self.assertAlmostEqual(r["confidence_fraction"], 0.0)
+
+    def test_confidence_fraction_max_1_when_all_sufficient(self):
+        rows, wts = _diff_rows_weights({"easy": 10, "medium": 10, "hard": 10})
+        r = _v5_compute_difficulty_analysis(rows, wts)
+        self.assertAlmostEqual(r["confidence_fraction"], 1.0)
+
+
+# ---------------------------------------------------------------------------
+# K. Cognitive evidence analysis
+# ---------------------------------------------------------------------------
+
+def _cog_rows_weights(level_counts, base_id=0):
+    rows, wts = [], {}
+    rid = base_id
+    for lv, n in level_counts.items():
+        for _ in range(n):
+            rid += 1
+            rows.append({"id": rid, "question_id": f"qc{rid}",
+                         "cognitive_level": lv, "is_correct": True})
+            wts[str(rid)] = 1.0
+    return rows, wts
+
+
+class TestCognitiveAnalysis(unittest.TestCase):
+
+    def test_activates_at_exactly_90_pct(self):
+        # 18 recognized + 2 unknown = 20 rows → 90%
+        rows, wts = _cog_rows_weights(
+            {"recall": 5, "understanding": 5, "application": 5, "analysis": 3})
+        for i in range(2):
+            rid = 2000 + i
+            rows.append({"id": rid, "question_id": f"qu{rid}",
+                         "cognitive_level": "badlevel", "is_correct": True})
+            wts[str(rid)] = 1.0
+        r = _v5_compute_cognitive_analysis(rows, wts, 60)
+        self.assertTrue(r["data_available"])
+        self.assertAlmostEqual(r["metadata_coverage"], 0.90, places=10)
+
+    def test_not_active_at_89_pct(self):
+        # 89 recognized + 11 unknown = 100 rows → 89%
+        rows, wts = [], {}
+        levels = ["recall", "application", "analysis", "judgment", "understanding"]
+        for i in range(89):
+            rid = i + 1
+            rows.append({"id": rid, "question_id": f"q{rid}",
+                         "cognitive_level": levels[i % 5], "is_correct": True})
+            wts[str(rid)] = 1.0
+        for i in range(11):
+            rid = 1000 + i
+            rows.append({"id": rid, "question_id": f"qu{rid}",
+                         "cognitive_level": "unknown_level", "is_correct": True})
+            wts[str(rid)] = 1.0
+        r = _v5_compute_cognitive_analysis(rows, wts, 60)
+        self.assertFalse(r["data_available"])
+
+    def test_higher_order_target_for_60_questions(self):
+        # max(10, floor(60 * 0.30)) = max(10, 18) = 18
+        rows, wts = _cog_rows_weights({"application": 20, "recall": 40})
+        r = _v5_compute_cognitive_analysis(rows, wts, 60)
+        self.assertEqual(r["higher_order_target"], 18)
+
+    def test_higher_order_target_minimum_10(self):
+        # max(10, floor(25 * 0.30)) = max(10, 7) = 10
+        rows, wts = _cog_rows_weights({"application": 5, "recall": 20})
+        r = _v5_compute_cognitive_analysis(rows, wts, 25)
+        self.assertEqual(r["higher_order_target"], 10)
+
+    def test_cap_active_when_ho_below_target(self):
+        # target=18 for 60q; 17 ho rows → cap active
+        rows, wts = _cog_rows_weights({"application": 17, "recall": 43})
+        r = _v5_compute_cognitive_analysis(rows, wts, 60)
+        self.assertTrue(r["data_available"])
+        self.assertTrue(r["cap_active"])
+
+    def test_cap_not_active_at_exactly_target(self):
+        # 18 ho rows → cap not active
+        rows, wts = _cog_rows_weights({"application": 18, "recall": 42})
+        r = _v5_compute_cognitive_analysis(rows, wts, 60)
+        self.assertTrue(r["data_available"])
+        self.assertFalse(r["cap_active"])
+
+    def test_no_metadata_no_cap(self):
+        r = _v5_compute_cognitive_analysis([], {}, 60)
+        self.assertFalse(r["cap_active"])
+        self.assertAlmostEqual(r["confidence_fraction"], 0.0)
+
+    def test_confidence_fraction_at_exactly_target(self):
+        rows, wts = _cog_rows_weights({"application": 18, "recall": 42})
+        r = _v5_compute_cognitive_analysis(rows, wts, 60)
+        self.assertAlmostEqual(r["confidence_fraction"], 1.0)
+
+
+# ---------------------------------------------------------------------------
+# L. Trend helper
+# ---------------------------------------------------------------------------
+
+class TestTrend(unittest.TestCase):
+
+    def test_yoyo_trend_is_declining(self):
+        # [45, 90, 50]: delta = 50 - mean(45, 90) = -17.5 → Declining; clamped adj = -4.0
+        r = _v5_compute_trend([45.0, 90.0, 50.0])
+        self.assertAlmostEqual(r["trend_delta"],      -17.5)
+        self.assertAlmostEqual(r["trend_adjustment"],  -4.0)   # clamped at V5_TREND_CLAMP_MIN
+        self.assertEqual(r["trend_label"], "Declining")
+
+    def test_stable_trend(self):
+        # [70, 75, 73]: delta = 73 - 72.5 = 0.5 → Stable
+        r = _v5_compute_trend([70.0, 75.0, 73.0])
+        self.assertAlmostEqual(r["trend_delta"], 0.5)
+        self.assertEqual(r["trend_label"], "Stable")
+
+    def test_improving_trend(self):
+        # [50, 60, 85]: delta = 85 - 55 = 30 → Improving; clamped adj = +2.0
+        r = _v5_compute_trend([50.0, 60.0, 85.0])
+        self.assertAlmostEqual(r["trend_delta"], 30.0)
+        self.assertAlmostEqual(r["trend_adjustment"], 2.0)
+        self.assertEqual(r["trend_label"], "Improving")
+
+    def test_exactly_minus_2_is_declining(self):
+        # [80, 70, 73]: delta = 73 - 75 = -2 → Declining
+        r = _v5_compute_trend([80.0, 70.0, 73.0])
+        self.assertAlmostEqual(r["trend_delta"], -2.0)
+        self.assertEqual(r["trend_label"], "Declining")
+
+    def test_exactly_plus_2_is_improving(self):
+        # [50, 60, 67]: delta = 67 - 55 = 12 → Improving
+        r = _v5_compute_trend([50.0, 60.0, 67.0])
+        self.assertEqual(r["trend_label"], "Improving")
+
+    def test_four_scores_formula(self):
+        # [60, 70, 80, 85]: mean(last 2)=82.5, mean(earlier 2)=65 → delta=17.5
+        r = _v5_compute_trend([60.0, 70.0, 80.0, 85.0])
+        self.assertAlmostEqual(r["trend_delta"], 17.5)
+
+    def test_five_scores_formula(self):
+        # [60, 65, 70, 75, 80]: mean(last 2)=77.5, mean(earlier 3)=65 → delta=12.5
+        r = _v5_compute_trend([60.0, 65.0, 70.0, 75.0, 80.0])
+        self.assertAlmostEqual(r["trend_delta"], 12.5)
+
+    def test_adjustment_clamped_positive(self):
+        r = _v5_compute_trend([50.0, 60.0, 100.0])
+        self.assertAlmostEqual(r["trend_adjustment"], V5_TREND_CLAMP_MAX)
+
+    def test_adjustment_clamped_negative(self):
+        r = _v5_compute_trend([90.0, 80.0, 40.0])
+        self.assertAlmostEqual(r["trend_adjustment"], V5_TREND_CLAMP_MIN)
+
+    def test_fewer_than_3_scores_zero_delta(self):
+        self.assertAlmostEqual(_v5_compute_trend([80.0])["trend_delta"], 0.0)
+        self.assertAlmostEqual(_v5_compute_trend([80.0, 85.0])["trend_delta"], 0.0)
+
+
+# ---------------------------------------------------------------------------
+# M. Staleness helper
+# ---------------------------------------------------------------------------
+
+class TestStaleness(unittest.TestCase):
+
+    def _now(self):
+        return _utc(2026, 6, 1, 12)
+
+    def _ago(self, days):
+        return self._now() - timedelta(days=days)
+
+    def test_current_at_0_days(self):
+        self.assertEqual(_v5_compute_staleness(self._ago(0), self._now())["state"], V5_STALENESS_CURRENT)
+
+    def test_current_at_90_days(self):
+        self.assertEqual(_v5_compute_staleness(self._ago(90), self._now())["state"], V5_STALENESS_CURRENT)
+
+    def test_aging_at_91_days(self):
+        self.assertEqual(_v5_compute_staleness(self._ago(91), self._now())["state"], V5_STALENESS_AGING)
+
+    def test_aging_at_180_days(self):
+        self.assertEqual(_v5_compute_staleness(self._ago(180), self._now())["state"], V5_STALENESS_AGING)
+
+    def test_old_at_181_days(self):
+        self.assertEqual(_v5_compute_staleness(self._ago(181), self._now())["state"], V5_STALENESS_OLD)
+
+    def test_old_at_365_days(self):
+        self.assertEqual(_v5_compute_staleness(self._ago(365), self._now())["state"], V5_STALENESS_OLD)
+
+    def test_stale_at_366_days(self):
+        self.assertEqual(_v5_compute_staleness(self._ago(366), self._now())["state"], V5_STALENESS_STALE)
+
+    def test_unknown_when_no_datetime(self):
+        r = _v5_compute_staleness(None)
+        self.assertEqual(r["state"], V5_STALENESS_UNKNOWN)
+        self.assertIsNone(r["age_days"])
+
+    def test_not_classified_as_current_when_missing(self):
+        self.assertNotEqual(_v5_compute_staleness(None)["state"], V5_STALENESS_CURRENT)
+
+    def test_age_days_returned_correctly(self):
+        self.assertEqual(_v5_compute_staleness(self._ago(120), self._now())["age_days"], 120)
+
+
+# ---------------------------------------------------------------------------
+# N. Score caps
+# ---------------------------------------------------------------------------
+
+class TestScoreCaps(unittest.TestCase):
+
+    def _cap(self, score=90.0, passing=65.0, staleness="current",
+             domain_gap=False, domain_floor=False, diff=False, cog=False):
+        return _v5_apply_score_caps(score, passing, staleness,
+                                    domain_gap, domain_floor, diff, cog)
+
+    def test_no_caps_no_guardrail(self):
+        r = self._cap(score=80.0, staleness=V5_STALENESS_CURRENT)
+        self.assertAlmostEqual(r["final_score"], 80.0)
+        self.assertFalse(r["guardrail_applied"])
+        self.assertIsNone(r["guardrail_cap"])
+
+    def test_aging_cap(self):
+        # 65 + 7 = 72
+        r = self._cap(score=90.0, passing=65.0, staleness=V5_STALENESS_AGING)
+        self.assertAlmostEqual(r["final_score"], 72.0)
+        self.assertTrue(r["guardrail_applied"])
+
+    def test_old_cap(self):
+        # 65 - 3 = 62
+        r = self._cap(score=90.0, passing=65.0, staleness=V5_STALENESS_OLD)
+        self.assertAlmostEqual(r["final_score"], 62.0)
+
+    def test_stale_cap_zero(self):
+        r = self._cap(score=90.0, staleness=V5_STALENESS_STALE)
+        self.assertAlmostEqual(r["final_score"], 0.0)
+
+    def test_domain_gap_cap(self):
+        # 65 - 3 = 62
+        r = self._cap(score=90.0, passing=65.0, domain_gap=True)
+        self.assertAlmostEqual(r["final_score"], 62.0)
+
+    def test_domain_floor_cap(self):
+        # max(65-5, 50) = max(60, 50) = 60
+        r = self._cap(score=90.0, passing=65.0, domain_floor=True)
+        self.assertAlmostEqual(r["final_score"], 60.0)
+
+    def test_domain_floor_cap_min_50(self):
+        # max(50-5, 50) = max(45, 50) = 50
+        r = self._cap(score=90.0, passing=50.0, domain_floor=True)
+        self.assertAlmostEqual(r["final_score"], 50.0)
+
+    def test_difficulty_cap(self):
+        # 65 - 1 = 64
+        r = self._cap(score=90.0, passing=65.0, diff=True)
+        self.assertAlmostEqual(r["final_score"], 64.0)
+
+    def test_cognitive_cap(self):
+        # 65 + 7 = 72
+        r = self._cap(score=90.0, passing=65.0, cog=True)
+        self.assertAlmostEqual(r["final_score"], 72.0)
+
+    def test_multiple_caps_lowest_wins(self):
+        # aging=72, domain_gap=62 → guardrail=62
+        r = self._cap(score=90.0, passing=65.0,
+                      staleness=V5_STALENESS_AGING, domain_gap=True)
+        self.assertAlmostEqual(r["final_score"], 62.0)
+        self.assertEqual(len(r["applied_caps"]), 2)
+
+    def test_score_below_cap_not_raised(self):
+        # score 50 < aging cap 72 → final stays 50, guardrail not applied
+        r = self._cap(score=50.0, passing=65.0, staleness=V5_STALENESS_AGING)
+        self.assertAlmostEqual(r["final_score"], 50.0)
+        self.assertFalse(r["guardrail_applied"])
+
+    def test_applied_caps_lists_all_applicable(self):
+        r = self._cap(score=90.0, passing=65.0, domain_gap=True, diff=True)
+        reasons = [c["reason"] for c in r["applied_caps"]]
+        self.assertIn("domain_gap", reasons)
+        self.assertIn("difficulty_insufficient", reasons)
+
+
+# ---------------------------------------------------------------------------
+# O. Confidence helper
+# ---------------------------------------------------------------------------
+
+class TestConfidence(unittest.TestCase):
+
+    def _perfect_domain_stats(self, domains):
+        return {
+            d: {"effective_correct": 48.0, "effective_total": 60.0, "percent": 80.0,
+                "expected_domain_questions": 30, "evidence_state": V5_DOMAIN_RELIABLY_SAMPLED}
+            for d in domains
+        }
+
+    def test_components_total_exactly_100_at_maximum(self):
+        """All components at max → score = 100."""
+        verified = [_attempt(i + 1, completed_at=f"2026-01-{i+1:02d}T10:00:00Z")
+                    for i in range(5)]
+        history = [{"id": i, "question_id": f"q{i}", "exam_attempt_id": 1}
+                   for i in range(600)]
+        nw = {"A": 0.5, "B": 0.5}
+        ds = self._perfect_domain_stats(nw)
+        r = _v5_compute_confidence(
+            verified_attempts=verified,
+            history_rows=history,
+            domain_stats=ds,
+            normalized_weights=nw,
+            difficulty_analysis={"confidence_fraction": 1.0},
+            cognitive_analysis={"confidence_fraction": 1.0},
+            staleness_state=V5_STALENESS_CURRENT,
+            age_days=0,
+            captured_bank_size=600,
+            live_bank_size=None,
+            expected_question_count=60,
+        )
+        self.assertAlmostEqual(r["score"], 100.0, places=1)
+
+    def test_coverage_target_bank_840_gives_600(self):
+        r = _v5_compute_confidence(
+            verified_attempts=[_attempt(1)], history_rows=[],
+            domain_stats={}, normalized_weights={},
+            difficulty_analysis={"confidence_fraction": 0.0},
+            cognitive_analysis={"confidence_fraction": 0.0},
+            staleness_state=V5_STALENESS_CURRENT, age_days=0,
+            captured_bank_size=840, live_bank_size=None, expected_question_count=60,
+        )
+        self.assertEqual(r["coverage_target"], 600)
+
+    def test_coverage_target_bank_1200_gives_600(self):
+        r = _v5_compute_confidence(
+            verified_attempts=[_attempt(1)], history_rows=[],
+            domain_stats={}, normalized_weights={},
+            difficulty_analysis={"confidence_fraction": 0.0},
+            cognitive_analysis={"confidence_fraction": 0.0},
+            staleness_state=V5_STALENESS_CURRENT, age_days=0,
+            captured_bank_size=1200, live_bank_size=None, expected_question_count=60,
+        )
+        self.assertEqual(r["coverage_target"], 600)
+
+    def test_unknown_recency_gives_zero_recency_pts(self):
+        r = _v5_compute_confidence(
+            verified_attempts=[], history_rows=[],
+            domain_stats={}, normalized_weights={},
+            difficulty_analysis={"confidence_fraction": 0.0},
+            cognitive_analysis={"confidence_fraction": 0.0},
+            staleness_state=V5_STALENESS_UNKNOWN, age_days=None,
+            captured_bank_size=None, live_bank_size=None, expected_question_count=60,
+        )
+        self.assertAlmostEqual(r["recency_pts"], 0.0)
+
+    def test_no_metadata_difficulty_cognitive_pts_zero(self):
+        r = _v5_compute_confidence(
+            verified_attempts=[], history_rows=[],
+            domain_stats={}, normalized_weights={},
+            difficulty_analysis={"confidence_fraction": 0.0},
+            cognitive_analysis={"confidence_fraction": 0.0},
+            staleness_state=V5_STALENESS_CURRENT, age_days=0,
+            captured_bank_size=None, live_bank_size=None, expected_question_count=60,
+        )
+        self.assertAlmostEqual(r["difficulty_pts"], 0.0)
+        self.assertAlmostEqual(r["cognitive_pts"],  0.0)
+
+    def test_bank_fallback_used_when_captured_none(self):
+        r = _v5_compute_confidence(
+            verified_attempts=[], history_rows=[],
+            domain_stats={}, normalized_weights={},
+            difficulty_analysis={"confidence_fraction": 0.0},
+            cognitive_analysis={"confidence_fraction": 0.0},
+            staleness_state=V5_STALENESS_CURRENT, age_days=0,
+            captured_bank_size=None, live_bank_size=500, expected_question_count=60,
+        )
+        self.assertTrue(r["bank_fallback_used"])
+
+    def test_bank_fallback_not_used_when_captured_present(self):
+        r = _v5_compute_confidence(
+            verified_attempts=[], history_rows=[],
+            domain_stats={}, normalized_weights={},
+            difficulty_analysis={"confidence_fraction": 0.0},
+            cognitive_analysis={"confidence_fraction": 0.0},
+            staleness_state=V5_STALENESS_CURRENT, age_days=0,
+            captured_bank_size=600, live_bank_size=500, expected_question_count=60,
+        )
+        self.assertFalse(r["bank_fallback_used"])
+
+    def test_component_scores_non_negative_and_sum_lte_100(self):
+        verified = [_attempt(i + 1, completed_at=f"2026-01-{i+1:02d}T10:00:00Z")
+                    for i in range(3)]
+        r = _v5_compute_confidence(
+            verified_attempts=verified, history_rows=[],
+            domain_stats={}, normalized_weights={},
+            difficulty_analysis={"confidence_fraction": 0.5},
+            cognitive_analysis={"confidence_fraction": 0.5},
+            staleness_state=V5_STALENESS_AGING, age_days=120,
+            captured_bank_size=600, live_bank_size=None, expected_question_count=60,
+        )
+        for key in ("mock_volume_pts", "breadth_pts", "recency_pts",
+                    "domain_pts", "difficulty_pts", "cognitive_pts"):
+            self.assertGreaterEqual(r[key], 0.0, msg=key)
+        total = sum(r[k] for k in ("mock_volume_pts", "breadth_pts", "recency_pts",
+                                   "domain_pts", "difficulty_pts", "cognitive_pts"))
+        self.assertLessEqual(total, 100.01)
+
+
+# ---------------------------------------------------------------------------
 # F. Constants sanity
 # ---------------------------------------------------------------------------
 
@@ -969,6 +1724,18 @@ class TestConstants(unittest.TestCase):
         self.assertAlmostEqual(V5_FAMILY_DISCOUNT[1], 1.00)
         self.assertAlmostEqual(V5_FAMILY_DISCOUNT[2], 0.70)
         self.assertAlmostEqual(V5_FAMILY_DISCOUNT_FLOOR, 0.50)
+
+    def test_confidence_components_sum_to_100(self):
+        total = (V5_CONF_MOCK_VOLUME_PTS + V5_CONF_BREADTH_PTS + V5_CONF_RECENCY_PTS +
+                 V5_CONF_DOMAIN_PTS + V5_CONF_DIFFICULTY_PTS + V5_CONF_COGNITIVE_PTS)
+        self.assertEqual(total, 100)
+
+    def test_dr_weights_sum_to_1(self):
+        self.assertAlmostEqual(V5_DR_DOMAIN_WEIGHT + V5_DR_FLOOR_WEIGHT, 1.0)
+
+    def test_staleness_boundaries_ordered(self):
+        self.assertLess(V5_STALENESS_CURRENT_MAX_DAYS, V5_STALENESS_AGING_MAX_DAYS)
+        self.assertLess(V5_STALENESS_AGING_MAX_DAYS,   V5_STALENESS_OLD_MAX_DAYS)
 
 
 if __name__ == "__main__":

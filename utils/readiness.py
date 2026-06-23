@@ -57,6 +57,84 @@ V5_QUESTION_DISCOUNT_DEFAULT = 0.00
 V5_FAMILY_DISCOUNT = {1: 1.00, 2: 0.70}     # rank >= 3 → 0.50
 V5_FAMILY_DISCOUNT_FLOOR = 0.50
 
+# ---------------------------------------------------------------------------
+# V5 Batch 2 constants — scoring-analysis helpers
+# ---------------------------------------------------------------------------
+
+# DR formula weights (DR = V5_DR_DOMAIN_WEIGHT * D + V5_DR_FLOOR_WEIGHT * F)
+V5_DR_DOMAIN_WEIGHT = 0.70
+V5_DR_FLOOR_WEIGHT  = 0.30
+
+# Domain evidence-state strings
+V5_DOMAIN_UNCOVERED            = "uncovered"
+V5_DOMAIN_UNDER_SAMPLED        = "under_sampled"
+V5_DOMAIN_SUFFICIENTLY_SAMPLED = "sufficiently_sampled"
+V5_DOMAIN_RELIABLY_SAMPLED     = "reliably_sampled"
+
+# Domain gap/floor thresholds
+V5_DOMAIN_GAP_WEIGHT_THRESHOLD  = 0.10   # uncovered domain triggers gap when weight >= this
+V5_DOMAIN_FLOOR_SCORE_THRESHOLD = 40.0   # floor triggers when weakest reliable domain < this
+V5_DOMAIN_MIN_QUESTIONS         = 5      # floor for expected_domain_questions
+
+# Difficulty tiers and minimum effective-total thresholds
+V5_DIFFICULTY_LEVELS         = {"easy", "medium", "hard"}
+V5_DIFFICULTY_EASY_MIN       = 5
+V5_DIFFICULTY_MEDIUM_MIN     = 10
+V5_DIFFICULTY_HARD_MIN       = 10
+V5_DIFFICULTY_EASY_CONF_WT   = 0.25   # weight in confidence_fraction
+V5_DIFFICULTY_MEDIUM_CONF_WT = 0.35
+V5_DIFFICULTY_HARD_CONF_WT   = 0.40
+
+# Cognitive levels and higher-order target
+V5_COGNITIVE_LEVELS        = {"recall", "understanding", "application", "analysis", "judgment"}
+V5_COGNITIVE_HIGHER_ORDER  = {"application", "analysis", "judgment"}
+V5_COGNITIVE_HO_MULTIPLIER = 0.30   # fraction of expected_question_count
+V5_COGNITIVE_HO_MIN        = 10     # floor for higher_order_target
+
+# Trend computation
+V5_TREND_COEFFICIENT         = 0.25
+V5_TREND_CLAMP_MIN           = -4.0
+V5_TREND_CLAMP_MAX           = 2.0
+V5_TREND_IMPROVING_THRESHOLD = 2.0
+V5_TREND_DECLINING_THRESHOLD = -2.0
+
+# Staleness state names
+V5_STALENESS_CURRENT = "current"
+V5_STALENESS_AGING   = "aging"
+V5_STALENESS_OLD     = "old"
+V5_STALENESS_STALE   = "stale"
+V5_STALENESS_UNKNOWN = "unknown"
+
+# Staleness age-boundary inclusive upper bounds (days)
+V5_STALENESS_CURRENT_MAX_DAYS = 90
+V5_STALENESS_AGING_MAX_DAYS   = 180
+V5_STALENESS_OLD_MAX_DAYS     = 365
+
+# Score-cap offsets from passing_score (or absolute value for stale)
+V5_CAP_AGING_OFFSET        = 7      # passing + 7
+V5_CAP_OLD_OFFSET          = -3     # passing - 3
+V5_CAP_STALE_VALUE         = 0.0    # hard cap at 0
+V5_CAP_DOMAIN_GAP_OFFSET   = -3     # passing - 3
+V5_CAP_DOMAIN_FLOOR_OFFSET = -5     # passing - 5  (floored at 50)
+V5_CAP_DOMAIN_FLOOR_MIN    = 50.0
+V5_CAP_DIFFICULTY_OFFSET   = -1     # passing - 1
+V5_CAP_COGNITIVE_OFFSET    = 7      # passing + 7
+
+# Confidence component points (must sum to 100)
+V5_CONF_MOCK_VOLUME_PTS = 30
+V5_CONF_BREADTH_PTS     = 25
+V5_CONF_RECENCY_PTS     = 20
+V5_CONF_DOMAIN_PTS      = 15
+V5_CONF_DIFFICULTY_PTS  = 5
+V5_CONF_COGNITIVE_PTS   = 5
+
+# Coverage-target multiplier (bank * this for breadth denominator)
+V5_CONF_COVERAGE_MOCK_COUNT = 10   # min(bank_size, expected_q * 10)
+
+# Confidence label thresholds
+V5_CONF_HIGH_THRESHOLD   = 70
+V5_CONF_MEDIUM_THRESHOLD = 40
+
 
 # ---------------------------------------------------------------------------
 # Primitive helpers
@@ -595,6 +673,582 @@ def v5_assign_evidence_weights(
         "family_data_available":      family_data_available,
         "cross_mock_repeat_fraction": cross_mock_repeat_fraction,
         "effective_target_sample":    effective_target_sample,
+    }
+
+
+# ---------------------------------------------------------------------------
+# V5 Batch 2 — scoring-analysis helpers
+# ---------------------------------------------------------------------------
+
+def _v5_normalize_domain_weights(
+    domain_weights: Optional[Dict[str, Any]]
+) -> Dict[str, float]:
+    """Normalize domain weights to sum to 1.0.
+
+    Accepts percentages (e.g. 25.0) or decimals (e.g. 0.25).
+    Ignores invalid, null, negative, and zero values.
+    Preserves official domain names exactly as supplied.
+    Returns an empty dict when no valid weights exist.
+    """
+    if not domain_weights or not isinstance(domain_weights, dict):
+        return {}
+    raw: Dict[str, float] = {}
+    for name, value in domain_weights.items():
+        if value is None:
+            continue
+        try:
+            w = float(value)
+        except (TypeError, ValueError):
+            continue
+        if w <= 0:
+            continue
+        raw[str(name)] = w
+    total = sum(raw.values())
+    if total <= 0:
+        return {}
+    return {k: v / total for k, v in raw.items()}
+
+
+def _v5_build_domain_stats(
+    target_rows: List[Dict[str, Any]],
+    row_weights: Dict[str, float],
+    expected_question_count: int,
+    normalized_weights: Dict[str, float],
+) -> Dict[str, dict]:
+    """Build weighted domain statistics for each official domain.
+
+    Rows whose category/domain does not match any official domain are ignored
+    for scoring purposes (unmapped).  They do not distort official stats.
+
+    Returns dict mapping official domain name → stats dict with keys:
+        effective_correct, effective_total, percent,
+        expected_domain_questions, evidence_state.
+    """
+    norm_to_official: Dict[str, str] = {
+        str(d).strip().lower(): d for d in normalized_weights
+    }
+
+    eff_correct: Dict[str, float] = {d: 0.0 for d in normalized_weights}
+    eff_total:   Dict[str, float] = {d: 0.0 for d in normalized_weights}
+
+    for row in target_rows:
+        row_id = str(row.get("id", id(row)))
+        weight = row_weights.get(row_id, 0.0)
+        if weight <= 0:
+            continue
+        cat = str(row.get("domain") or row.get("category") or "").strip().lower()
+        official = norm_to_official.get(cat)
+        if official is None:
+            continue
+        eff_total[official] += weight
+        if bool(row.get("is_correct")):
+            eff_correct[official] += weight
+
+    result: Dict[str, dict] = {}
+    for domain, nw in normalized_weights.items():
+        et = eff_total[domain]
+        ec = eff_correct[domain]
+        expected_dq = max(V5_DOMAIN_MIN_QUESTIONS, round(expected_question_count * nw))
+        percent = 100.0 * ec / et if et > 0 else 0.0
+
+        if et == 0:
+            state = V5_DOMAIN_UNCOVERED
+        elif et < expected_dq:
+            state = V5_DOMAIN_UNDER_SAMPLED
+        elif et < 2 * expected_dq:
+            state = V5_DOMAIN_SUFFICIENTLY_SAMPLED
+        else:
+            state = V5_DOMAIN_RELIABLY_SAMPLED
+
+        result[domain] = {
+            "effective_correct":         ec,
+            "effective_total":           et,
+            "percent":                   percent,
+            "expected_domain_questions": expected_dq,
+            "evidence_state":            state,
+        }
+    return result
+
+
+def _v5_compute_domain_score(
+    domain_stats: Dict[str, dict],
+    normalized_weights: Dict[str, float],
+) -> Dict[str, Any]:
+    """Compute V5 domain score DR = 0.70 * D + 0.30 * F.
+
+    D = official-weighted accuracy, renormalized over domains with evidence.
+    F = weakest sufficiently/reliably sampled domain score (or D when none qualifies).
+    domain_gap triggers when an uncovered official domain has weight >= 10 %.
+    domain_floor triggers when the weakest reliable domain score < 40 %.
+    """
+    have_official = bool(normalized_weights)
+
+    domains_with_evidence = {
+        d: s for d, s in domain_stats.items() if s["effective_total"] > 0
+    }
+
+    if not domains_with_evidence:
+        D = 0.0
+    elif have_official:
+        wsum = sum(normalized_weights.get(d, 0.0) for d in domains_with_evidence)
+        D = 0.0 if wsum <= 0 else sum(
+            normalized_weights.get(d, 0.0) / wsum * s["percent"]
+            for d, s in domains_with_evidence.items()
+        )
+    else:
+        n = len(domains_with_evidence)
+        D = sum(s["percent"] for s in domains_with_evidence.values()) / n
+
+    uncovered = [
+        d for d, s in domain_stats.items()
+        if s["evidence_state"] == V5_DOMAIN_UNCOVERED
+    ]
+
+    domain_gap_triggered = have_official and any(
+        normalized_weights.get(d, 0.0) >= V5_DOMAIN_GAP_WEIGHT_THRESHOLD
+        for d in uncovered
+    )
+
+    qualified = {
+        d: s for d, s in domain_stats.items()
+        if s["evidence_state"] in (V5_DOMAIN_SUFFICIENTLY_SAMPLED, V5_DOMAIN_RELIABLY_SAMPLED)
+    }
+
+    if not qualified:
+        F = D
+        weakest_domain = None
+        weakest_score = None
+        domain_floor_triggered = False
+    else:
+        weakest_domain = min(qualified, key=lambda d: qualified[d]["percent"])
+        weakest_score = qualified[weakest_domain]["percent"]
+        F = weakest_score
+        domain_floor_triggered = weakest_score < V5_DOMAIN_FLOOR_SCORE_THRESHOLD
+
+    DR = V5_DR_DOMAIN_WEIGHT * D + V5_DR_FLOOR_WEIGHT * F
+
+    return {
+        "D":                      D,
+        "F":                      F,
+        "DR":                     DR,
+        "weakest_domain":         weakest_domain,
+        "weakest_score":          weakest_score,
+        "uncovered_domains":      uncovered,
+        "domain_gap_triggered":   domain_gap_triggered,
+        "domain_floor_triggered": domain_floor_triggered,
+    }
+
+
+def _v5_compute_difficulty_analysis(
+    target_rows: List[Dict[str, Any]],
+    row_weights: Dict[str, float],
+) -> Dict[str, Any]:
+    """Analyse difficulty-tier evidence in target_rows.
+
+    Data activates when >= 90 % of rows carry a recognized difficulty value
+    (easy / medium / hard).  cap_active = data_available AND hard not sufficient.
+    confidence_fraction is the weighted completeness of all three tiers.
+    """
+    _zero: Dict[str, Any] = {
+        "metadata_coverage":      0.0,
+        "data_available":         False,
+        "easy_effective_total":   0.0,
+        "medium_effective_total": 0.0,
+        "hard_effective_total":   0.0,
+        "easy_accuracy":          0.0,
+        "medium_accuracy":        0.0,
+        "hard_accuracy":          0.0,
+        "easy_sufficient":        False,
+        "medium_sufficient":      False,
+        "hard_sufficient":        False,
+        "cap_active":             False,
+        "confidence_fraction":    0.0,
+    }
+    total = len(target_rows)
+    if total == 0:
+        return dict(_zero)
+
+    recognized = sum(
+        1 for r in target_rows
+        if str(r.get("difficulty") or "").strip().lower() in V5_DIFFICULTY_LEVELS
+    )
+    coverage = recognized / total
+
+    if coverage < V5_METADATA_THRESHOLD:
+        out = dict(_zero)
+        out["metadata_coverage"] = coverage
+        return out
+
+    tc: Dict[str, float] = {"easy": 0.0, "medium": 0.0, "hard": 0.0}
+    tt: Dict[str, float] = {"easy": 0.0, "medium": 0.0, "hard": 0.0}
+    for row in target_rows:
+        row_id = str(row.get("id", id(row)))
+        w = row_weights.get(row_id, 0.0)
+        d = str(row.get("difficulty") or "").strip().lower()
+        if d not in V5_DIFFICULTY_LEVELS:
+            continue
+        tt[d] += w
+        if bool(row.get("is_correct")):
+            tc[d] += w
+
+    et = tt["easy"]; mt = tt["medium"]; ht = tt["hard"]
+    ea = 100.0 * tc["easy"]   / et if et > 0 else 0.0
+    ma = 100.0 * tc["medium"] / mt if mt > 0 else 0.0
+    ha = 100.0 * tc["hard"]   / ht if ht > 0 else 0.0
+
+    e_ok = et >= V5_DIFFICULTY_EASY_MIN
+    m_ok = mt >= V5_DIFFICULTY_MEDIUM_MIN
+    h_ok = ht >= V5_DIFFICULTY_HARD_MIN
+
+    conf_frac = (
+        V5_DIFFICULTY_EASY_CONF_WT   * min(et / V5_DIFFICULTY_EASY_MIN,   1.0) +
+        V5_DIFFICULTY_MEDIUM_CONF_WT * min(mt / V5_DIFFICULTY_MEDIUM_MIN, 1.0) +
+        V5_DIFFICULTY_HARD_CONF_WT   * min(ht / V5_DIFFICULTY_HARD_MIN,   1.0)
+    )
+
+    return {
+        "metadata_coverage":      coverage,
+        "data_available":         True,
+        "easy_effective_total":   et,
+        "medium_effective_total": mt,
+        "hard_effective_total":   ht,
+        "easy_accuracy":          ea,
+        "medium_accuracy":        ma,
+        "hard_accuracy":          ha,
+        "easy_sufficient":        e_ok,
+        "medium_sufficient":      m_ok,
+        "hard_sufficient":        h_ok,
+        "cap_active":             not h_ok,
+        "confidence_fraction":    conf_frac,
+    }
+
+
+def _v5_compute_cognitive_analysis(
+    target_rows: List[Dict[str, Any]],
+    row_weights: Dict[str, float],
+    expected_question_count: int,
+) -> Dict[str, Any]:
+    """Analyse cognitive-level evidence in target_rows.
+
+    Recognized levels: recall, understanding, application, analysis, judgment.
+    Higher-order:      application, analysis, judgment.
+    Data activates when >= 90 % of rows carry a recognized cognitive value.
+    cap_active = data_available AND higher_order_effective_total < higher_order_target.
+    higher_order_target = max(10, floor(expected_question_count * 0.30)).
+    """
+    ho_target = max(V5_COGNITIVE_HO_MIN,
+                    math.floor(expected_question_count * V5_COGNITIVE_HO_MULTIPLIER))
+
+    _zero: Dict[str, Any] = {
+        "metadata_coverage":            0.0,
+        "data_available":               False,
+        "level_effective_totals":       {lv: 0.0 for lv in V5_COGNITIVE_LEVELS},
+        "level_accuracies":             {lv: 0.0 for lv in V5_COGNITIVE_LEVELS},
+        "higher_order_effective_total": 0.0,
+        "higher_order_accuracy":        0.0,
+        "higher_order_target":          ho_target,
+        "cap_active":                   False,
+        "confidence_fraction":          0.0,
+    }
+
+    total = len(target_rows)
+    if total == 0:
+        return dict(_zero)
+
+    recognized = sum(
+        1 for r in target_rows
+        if str(r.get("cognitive_level") or "").strip().lower() in V5_COGNITIVE_LEVELS
+    )
+    coverage = recognized / total
+
+    if coverage < V5_METADATA_THRESHOLD:
+        out = dict(_zero)
+        out["metadata_coverage"] = coverage
+        out["level_effective_totals"] = {lv: 0.0 for lv in V5_COGNITIVE_LEVELS}
+        out["level_accuracies"]       = {lv: 0.0 for lv in V5_COGNITIVE_LEVELS}
+        return out
+
+    lc: Dict[str, float] = {lv: 0.0 for lv in V5_COGNITIVE_LEVELS}
+    lt: Dict[str, float] = {lv: 0.0 for lv in V5_COGNITIVE_LEVELS}
+    for row in target_rows:
+        row_id = str(row.get("id", id(row)))
+        w = row_weights.get(row_id, 0.0)
+        lv = str(row.get("cognitive_level") or "").strip().lower()
+        if lv not in V5_COGNITIVE_LEVELS:
+            continue
+        lt[lv] += w
+        if bool(row.get("is_correct")):
+            lc[lv] += w
+
+    level_acc = {
+        lv: (100.0 * lc[lv] / lt[lv] if lt[lv] > 0 else 0.0)
+        for lv in V5_COGNITIVE_LEVELS
+    }
+    ho_total   = sum(lt[lv] for lv in V5_COGNITIVE_HIGHER_ORDER)
+    ho_correct = sum(lc[lv] for lv in V5_COGNITIVE_HIGHER_ORDER)
+    ho_acc     = 100.0 * ho_correct / ho_total if ho_total > 0 else 0.0
+    conf_frac  = min(ho_total / ho_target, 1.0)
+
+    return {
+        "metadata_coverage":            coverage,
+        "data_available":               True,
+        "level_effective_totals":       lt,
+        "level_accuracies":             level_acc,
+        "higher_order_effective_total": ho_total,
+        "higher_order_accuracy":        ho_acc,
+        "higher_order_target":          ho_target,
+        "cap_active":                   ho_total < ho_target,
+        "confidence_fraction":          conf_frac,
+    }
+
+
+def _v5_compute_trend(scores: List[float]) -> Dict[str, Any]:
+    """Compute trend delta, adjustment, and label from recent mock scores.
+
+    3 scores:   delta = newest - mean(first two)
+    4-5 scores: delta = mean(last two) - mean(all earlier scores)
+    <3 scores:  delta = 0.0 (insufficient evidence)
+
+    Adjustment: clamp(0.25 * delta, -4.0, +2.0)
+    Labels: Improving >= 2, Declining <= -2, Stable otherwise.
+    """
+    n = len(scores)
+    if n < 3:
+        delta = 0.0
+    elif n == 3:
+        delta = scores[2] - statistics.mean(scores[:2])
+    else:
+        delta = statistics.mean(scores[-2:]) - statistics.mean(scores[:-2])
+
+    adjustment = max(V5_TREND_CLAMP_MIN,
+                     min(V5_TREND_CLAMP_MAX, V5_TREND_COEFFICIENT * delta))
+
+    if delta >= V5_TREND_IMPROVING_THRESHOLD:
+        label = "Improving"
+    elif delta <= V5_TREND_DECLINING_THRESHOLD:
+        label = "Declining"
+    else:
+        label = "Stable"
+
+    return {
+        "trend_delta":      delta,
+        "trend_adjustment": adjustment,
+        "trend_label":      label,
+    }
+
+
+def _v5_compute_staleness(
+    newest_verified_dt: Optional[datetime],
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Classify the age of the latest verified mock.
+
+    States (inclusive boundaries in days):
+        current: 0–90
+        aging:   91–180
+        old:     181–365
+        stale:   > 365
+        unknown: datetime is None
+
+    Missing data is never classified as current.
+    """
+    if newest_verified_dt is None:
+        return {"state": V5_STALENESS_UNKNOWN, "age_days": None}
+
+    reference = now if now is not None else datetime.now(timezone.utc)
+    age_days  = (reference - newest_verified_dt).days
+
+    if age_days <= V5_STALENESS_CURRENT_MAX_DAYS:
+        state = V5_STALENESS_CURRENT
+    elif age_days <= V5_STALENESS_AGING_MAX_DAYS:
+        state = V5_STALENESS_AGING
+    elif age_days <= V5_STALENESS_OLD_MAX_DAYS:
+        state = V5_STALENESS_OLD
+    else:
+        state = V5_STALENESS_STALE
+
+    return {"state": state, "age_days": age_days}
+
+
+def _v5_apply_score_caps(
+    score: float,
+    passing_score: float,
+    staleness_state: str,
+    domain_gap: bool,
+    domain_floor: bool,
+    difficulty_cap: bool,
+    cognitive_cap: bool,
+) -> Dict[str, Any]:
+    """Apply score caps; the lowest (most restrictive) cap wins.
+
+    Staleness caps: aging → passing+7, old → passing-3, stale → 0.
+    Domain gap:     passing-3.
+    Domain floor:   max(passing-5, 50).
+    Difficulty:     passing-1.
+    Cognitive:      passing+7.
+
+    Returns final_score, applied_caps (all applicable), guardrail_applied, guardrail_cap.
+    """
+    caps: List[Tuple[str, float]] = []
+
+    if staleness_state == V5_STALENESS_AGING:
+        caps.append(("aging_staleness",       passing_score + V5_CAP_AGING_OFFSET))
+    elif staleness_state == V5_STALENESS_OLD:
+        caps.append(("old_staleness",         passing_score + V5_CAP_OLD_OFFSET))
+    elif staleness_state == V5_STALENESS_STALE:
+        caps.append(("stale",                 V5_CAP_STALE_VALUE))
+
+    if domain_gap:
+        caps.append(("domain_gap",            passing_score + V5_CAP_DOMAIN_GAP_OFFSET))
+    if domain_floor:
+        caps.append(("domain_floor",          max(passing_score + V5_CAP_DOMAIN_FLOOR_OFFSET,
+                                                  V5_CAP_DOMAIN_FLOOR_MIN)))
+    if difficulty_cap:
+        caps.append(("difficulty_insufficient", passing_score + V5_CAP_DIFFICULTY_OFFSET))
+    if cognitive_cap:
+        caps.append(("cognitive_insufficient",  passing_score + V5_CAP_COGNITIVE_OFFSET))
+
+    applied_caps = [{"reason": r, "cap": c} for r, c in caps]
+
+    if not caps:
+        return {
+            "final_score":     round(score, 2),
+            "applied_caps":    [],
+            "guardrail_applied": False,
+            "guardrail_cap":   None,
+        }
+
+    _, guardrail_cap = min(caps, key=lambda x: x[1])
+    final_score      = min(score, guardrail_cap)
+
+    return {
+        "final_score":     round(final_score, 2),
+        "applied_caps":    applied_caps,
+        "guardrail_applied": score > guardrail_cap,
+        "guardrail_cap":   guardrail_cap,
+    }
+
+
+def _v5_recency_fraction(age_days: Optional[int], staleness_state: str) -> float:
+    """Return 0.0–1.0 recency fraction for the confidence recency component.
+
+    age <= 30:   1.0
+    31–90:       linear from 1.0 down to 0.70
+    91–180:      linear from 0.70 down to 0.30
+    181–365:     linear from 0.30 down to 0.0
+    > 365:       0.0
+    unknown:     0.0
+    """
+    if staleness_state == V5_STALENESS_UNKNOWN or age_days is None:
+        return 0.0
+    if age_days <= 30:
+        return 1.0
+    if age_days <= 90:
+        return 1.0 - (age_days - 30) / 60.0 * 0.30
+    if age_days <= 180:
+        return 0.70 - (age_days - 90) / 90.0 * 0.40
+    if age_days <= 365:
+        return 0.30 - (age_days - 180) / 185.0 * 0.30
+    return 0.0
+
+
+def _v5_compute_confidence(
+    verified_attempts: List[Dict[str, Any]],
+    history_rows: List[Dict[str, Any]],
+    domain_stats: Dict[str, dict],
+    normalized_weights: Dict[str, float],
+    difficulty_analysis: Dict[str, Any],
+    cognitive_analysis: Dict[str, Any],
+    staleness_state: str,
+    age_days: Optional[int],
+    captured_bank_size: Optional[int],
+    live_bank_size: Optional[int],
+    expected_question_count: int,
+) -> Dict[str, Any]:
+    """Compute V5 confidence score (0–100 points) from six components.
+
+    Components and maximum points:
+        verified mock volume:    30  (scales to V5_MAX_SCORING_MOCKS)
+        unique-question breadth: 25  (distinct qids vs coverage_target)
+        recency:                 20  (age-based linear decay)
+        domain sufficiency:      15  (official-weighted per-domain fraction)
+        difficulty evidence:      5  (difficulty confidence_fraction)
+        cognitive evidence:       5  (cognitive confidence_fraction)
+
+    coverage_target = min(bank_size, expected_q * 10).
+    If captured_bank_size is absent, falls back to live_bank_size.
+    """
+    # 1. Verified mock volume (30 pts)
+    vol_frac = min(len(verified_attempts) / V5_MAX_SCORING_MOCKS, 1.0)
+    mock_volume_pts = vol_frac * V5_CONF_MOCK_VOLUME_PTS
+
+    # 2. Unique-question breadth (25 pts)
+    bank_size = captured_bank_size
+    bank_fallback_used = (bank_size is None)
+    if bank_size is None:
+        bank_size = live_bank_size
+
+    coverage_target: Optional[int] = None
+    breadth_pts = 0.0
+    if bank_size is not None and bank_size > 0:
+        coverage_target = min(bank_size, expected_question_count * V5_CONF_COVERAGE_MOCK_COUNT)
+        distinct_qids = len({
+            r.get("question_id") for r in history_rows if r.get("question_id") is not None
+        })
+        breadth_frac = min(distinct_qids / coverage_target, 1.0) if coverage_target > 0 else 0.0
+        breadth_pts  = breadth_frac * V5_CONF_BREADTH_PTS
+
+    # 3. Recency (20 pts)
+    recency_pts = _v5_recency_fraction(age_days, staleness_state) * V5_CONF_RECENCY_PTS
+
+    # 4. Domain sufficiency (15 pts) — official-weighted average of per-domain fraction
+    domain_pts = 0.0
+    if domain_stats and normalized_weights:
+        wsum = sum(normalized_weights.values())
+        if wsum > 0:
+            df = 0.0
+            for domain, stats in domain_stats.items():
+                w    = normalized_weights.get(domain, 0.0) / wsum
+                et   = stats["effective_total"]
+                edq  = stats["expected_domain_questions"]
+                st   = stats["evidence_state"]
+                if st == V5_DOMAIN_UNCOVERED:
+                    f = 0.0
+                elif st == V5_DOMAIN_UNDER_SAMPLED:
+                    f = 0.5 * et / edq if edq > 0 else 0.0
+                elif st == V5_DOMAIN_SUFFICIENTLY_SAMPLED:
+                    f = 0.5 + 0.5 * (et - edq) / edq if edq > 0 else 0.5
+                else:  # reliably_sampled
+                    f = 1.0
+                df += w * f
+            domain_pts = df * V5_CONF_DOMAIN_PTS
+
+    # 5. Difficulty evidence (5 pts)
+    diff_pts = difficulty_analysis.get("confidence_fraction", 0.0) * V5_CONF_DIFFICULTY_PTS
+
+    # 6. Cognitive evidence (5 pts)
+    cog_pts = cognitive_analysis.get("confidence_fraction", 0.0) * V5_CONF_COGNITIVE_PTS
+
+    total = min(mock_volume_pts + breadth_pts + recency_pts + domain_pts + diff_pts + cog_pts,
+                100.0)
+
+    label = (
+        "High"   if total >= V5_CONF_HIGH_THRESHOLD else
+        "Medium" if total >= V5_CONF_MEDIUM_THRESHOLD else
+        "Low"
+    )
+
+    return {
+        "score":              round(total, 2),
+        "label":              label,
+        "mock_volume_pts":    round(mock_volume_pts, 4),
+        "breadth_pts":        round(breadth_pts, 4),
+        "recency_pts":        round(recency_pts, 4),
+        "domain_pts":         round(domain_pts, 4),
+        "difficulty_pts":     round(diff_pts, 4),
+        "cognitive_pts":      round(cog_pts, 4),
+        "coverage_target":    coverage_target,
+        "bank_fallback_used": bank_fallback_used,
     }
 
 
