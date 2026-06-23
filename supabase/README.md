@@ -18,4 +18,5 @@
 
 | File | Status | Notes |
 |---|---|---|
-| `20260623000000_v44_question_version_foundation.sql` | Ready — not yet applied | FK type verified as `integer` (int4). Test against non-production before applying to production. |
+| `20260623000000_v44_question_version_foundation.sql` | Ready — not yet applied | FK type verified as `integer` (int4). Must be applied before Phase 2. |
+| `20260623182200_v44_backfill_question_versions.sql` | Ready — not yet applied | Requires Phase 1 tables to exist. Idempotent. Safe to re-run. |
