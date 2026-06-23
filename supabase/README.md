@@ -21,3 +21,4 @@
 | `20260623000000_v44_question_version_foundation.sql` | Ready — not yet applied | FK type verified as `integer` (int4). Must be applied before Phase 2. |
 | `20260623182200_v44_backfill_question_versions.sql` | Ready — not yet applied | Requires Phase 1 tables to exist. Idempotent. Safe to re-run. |
 | `20260623191900_v44_create_question_version_rpc.sql` | Ready — not yet applied | Requires Phase 1 tables. Service-role / admin only. No publishing. |
+| `20260623192800_v44_approve_publish_question_version_rpc.sql` | Ready — not yet applied | Requires Phase 1 tables. Approval + publish RPCs. service_role only. |
