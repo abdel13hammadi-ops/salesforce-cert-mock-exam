@@ -24,8 +24,10 @@ from utils.version import APP_VERSION
 
 try:
     from utils.readiness import calculate_readiness, readiness_methodology_text
+    from utils.readiness_persistence import extract_captured_bank_size
 except Exception:
     calculate_readiness = None
+    extract_captured_bank_size = None  # type: ignore[assignment]
     def readiness_methodology_text() -> str:  # type: ignore[misc]
         return ""
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
@@ -266,7 +268,8 @@ def fetch_user_attempts(user_email: str, exam_name: Optional[str] = None) -> Lis
             .table("exam_attempts")
             .select(
                 "id,user_email,mode,category,score,total_questions,correct_count,correct_answers,"
-                "started_at,completed_at,domain_breakdown,difficulty_breakdown,exam_name,language_code"
+                "started_at,completed_at,domain_breakdown,difficulty_breakdown,exam_name,language_code,"
+                "eligible_question_bank_size"
             )
             .ilike("user_email", user_email)
         )
@@ -593,6 +596,7 @@ def render_logged_in_dashboard(email: str) -> None:
             question_bank_total=safe_int(question_health.get("approved_questions"), 0),
             question_attempts=daily_readiness_question_attempts,
             time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
+            captured_bank_size=extract_captured_bank_size(daily_readiness_attempts) if extract_captured_bank_size else None,
         )
         daily_sprint_domain = get_daily_sprint_domain(daily_readiness, domain_df)
         render_daily_sprint_card(selected_exam, daily_sprint_domain, premium)
@@ -612,6 +616,7 @@ def render_logged_in_dashboard(email: str) -> None:
             question_bank_total=safe_int(question_health.get("approved_questions"), 0),
             question_attempts=readiness_question_attempts,
             time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
+            captured_bank_size=extract_captured_bank_size(readiness_attempts) if extract_captured_bank_size else None,
         )
         full_mocks = safe_int(readiness.get("eligible_mock_count"), len(readiness_attempts))
         required_mocks = safe_int(readiness.get("required_mock_count"), 3)

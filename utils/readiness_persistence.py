@@ -91,6 +91,28 @@ def build_attempt_metadata(question: dict) -> dict:
 # ── Eligible bank size ──────────────────────────────────────────────────────────
 
 
+def extract_captured_bank_size(attempts: list) -> Optional[int]:
+    """Return the eligible_question_bank_size from the newest attempt that carries a positive value.
+
+    Expects attempts sorted newest-first (as returned by both pages' attempt fetchers).
+    Returns None when no attempt carries a valid positive bank size, which preserves
+    the existing question_bank_total fallback behavior inside calculate_readiness.
+
+    Never raises.
+    """
+    for attempt in (attempts or []):
+        raw = attempt.get("eligible_question_bank_size")
+        if raw is None:
+            continue
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return v
+    return None
+
+
 def fetch_eligible_mock_bank_size(
     supabase, exam_name: str, language_code: str
 ) -> int:

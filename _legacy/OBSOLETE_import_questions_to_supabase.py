@@ -1,3 +1,20 @@
+"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  OBSOLETE — DO NOT USE AGAINST PRODUCTION                                   ║
+║                                                                              ║
+║  This script bypasses the supported admin RPC safety path                   ║
+║  (admin_import_questions_batch_v1) and writes directly to the database via  ║
+║  raw SQL (SQLAlchemy + SUPABASE_DB_URL).                                     ║
+║                                                                              ║
+║  It is retained here for historical reference only.                          ║
+║                                                                              ║
+║  The current supported import workflow is:                                   ║
+║    pages/Admin_Import.py  →  RPC: admin_import_questions_batch_v1           ║
+║                                                                              ║
+║  DO NOT execute this file. DO NOT reference it from any application code.   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+"""
+
 import json
 from pathlib import Path
 import os

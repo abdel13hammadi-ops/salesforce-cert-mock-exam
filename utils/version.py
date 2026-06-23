@@ -6,4 +6,4 @@ To update for any code change:
   3. All pages import from here â€” one edit updates every page simultaneously.
 """
 
-APP_VERSION = "V42_READINESS_V5_VERIFIED_EVIDENCE"
+APP_VERSION = "V43_ACCESS_AND_READINESS_INTEGRATION"

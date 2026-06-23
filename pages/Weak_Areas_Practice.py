@@ -18,7 +18,6 @@ from utils.access_control import (
 
 from utils.version import APP_VERSION
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 
 st.set_page_config(page_title="Weak Areas Practice", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()

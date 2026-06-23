@@ -10,7 +10,7 @@ import os
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
-from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code
+from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code, PAID_STATUS_VALUES
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.version import APP_VERSION
 import streamlit.components.v1 as components
@@ -393,9 +393,6 @@ def get_selected_exam_name():
 
 def get_selected_language_code():
     return st.session_state.get("selected_language_code") or DEFAULT_LANGUAGE_CODE
-
-
-PAID_STATUS_VALUES = {"active", "paid", "trialing"}
 
 
 def get_user_subscription_status(email):

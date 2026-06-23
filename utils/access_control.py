@@ -26,7 +26,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from supabase import create_client
 
-PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed"}
+PAID_STATUS_VALUES = {"active", "paid", "premium", "subscribed", "trialing"}
 EXPIRED_STATUS_VALUES = {"expired", "cancelled", "canceled", "past_due", "unpaid"}
 FREE_STATUS = "free"
 SESSION_PARAM = "fr_session"

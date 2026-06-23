@@ -13,6 +13,7 @@ from utils.access_control import (
     get_supabase_client,
 )
 from utils.readiness import calculate_readiness, readiness_methodology_text
+from utils.readiness_persistence import extract_captured_bank_size
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.version import APP_VERSION
 
@@ -198,7 +199,8 @@ def load_attempts(user_email: str, exam_name: str | None = None) -> Dict[str, An
             .table("exam_attempts")
             .select(
                 "id,user_email,mode,category,score,total_questions,correct_count,correct_answers,"
-                "started_at,completed_at,domain_breakdown,difficulty_breakdown,exam_name,language_code"
+                "started_at,completed_at,domain_breakdown,difficulty_breakdown,exam_name,language_code,"
+                "eligible_question_bank_size"
             )
             .ilike("user_email", user_email)
         )
@@ -515,6 +517,7 @@ readiness = calculate_readiness(
     question_bank_total=question_bank_total,
     question_attempts=readiness_question_attempts,
     time_limit_minutes=_safe_int(cert.get("time_limit_minutes"), 105),
+    captured_bank_size=extract_captured_bank_size(readiness_attempts),
 )
 
 full_mocks_completed = _safe_int(readiness.get("eligible_mock_count"), len(readiness_attempts))
