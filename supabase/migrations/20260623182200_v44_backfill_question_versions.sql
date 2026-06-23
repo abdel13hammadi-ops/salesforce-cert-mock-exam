@@ -39,18 +39,49 @@ BEGIN;
 --
 -- Inserts one baseline row per question that has no existing version row.
 -- Idempotency: WHERE NOT EXISTS (... question_versions WHERE question_id = q.id)
--- ensures no duplicate is created if the migration is re-run.
+-- in the CTE ensures no duplicate is created if the migration is re-run.
 --
 -- version_number: uses questions.content_version when it is a positive integer,
 -- otherwise falls back to 1.
+--
+-- effective_select_count: computed once in the CTE and used in both the
+-- inserted select_count column and the content_hash:
+--   * questions.select_count when it is positive
+--   * otherwise COUNT(answer_options where is_correct = true) for that question
+--   * GREATEST(..., 1) guarantees the result is always >= 1, satisfying
+--     CHECK (select_count > 0) even when no correct options exist
 --
 -- content_hash: deterministic md5 over question content fields plus an ordered
 -- aggregate of answer options.  Uses control-character separators (SOH = 0x01,
 -- STX = 0x02, ETX = 0x03) that are extremely unlikely to appear in question
 -- or option text, preventing hash collisions caused by adjacent-field boundary
--- ambiguity.
+-- ambiguity.  The hash uses effective_select_count (not the raw column) so
+-- the hash is consistent with the stored value.
 -- ---------------------------------------------------------------------------
 
+WITH questions_to_backfill AS (
+    SELECT
+        q.*,
+        GREATEST(
+            CASE
+                WHEN q.select_count IS NOT NULL AND q.select_count > 0
+                THEN q.select_count
+                ELSE (
+                    SELECT COUNT(*)::integer
+                    FROM public.answer_options ao
+                    WHERE ao.question_id = q.id
+                      AND ao.is_correct = true
+                )
+            END,
+            1
+        ) AS effective_select_count
+    FROM public.questions q
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM public.question_versions qv
+        WHERE qv.question_id = q.id
+    )
+)
 INSERT INTO public.question_versions (
     id,
     question_id,
@@ -88,23 +119,25 @@ SELECT
     q.cognitive_level,
     q.concept_key,
     q.question_type,
-    q.select_count,
+    q.effective_select_count,  -- computed; satisfies CHECK (select_count > 0)
     q.language_code,
 
     -- Deterministic content hash.
     -- Inputs: all content fields + ordered answer options.
     -- Separators: SOH (x01) between fields, STX (x02) between option fields,
     --             ETX (x03) between option rows.
+    -- effective_select_count is used here to keep the hash consistent with
+    -- the value written to the select_count column above.
     md5(
-        COALESCE(q.question_text,  '')        || E'\x01' ||
-        COALESCE(q.explanation,    '')        || E'\x01' ||
-        COALESCE(q.category,       '')        || E'\x01' ||
-        COALESCE(q.difficulty,     '')        || E'\x01' ||
-        COALESCE(q.question_type,  '')        || E'\x01' ||
-        COALESCE(q.select_count::text, '')    || E'\x01' ||
-        COALESCE(q.language_code,  '')        || E'\x01' ||
-        COALESCE(q.cognitive_level,'')        || E'\x01' ||
-        COALESCE(q.concept_key,    '')        || E'\x01' ||
+        COALESCE(q.question_text,  '')              || E'\x01' ||
+        COALESCE(q.explanation,    '')              || E'\x01' ||
+        COALESCE(q.category,       '')              || E'\x01' ||
+        COALESCE(q.difficulty,     '')              || E'\x01' ||
+        COALESCE(q.question_type,  '')              || E'\x01' ||
+        q.effective_select_count::text              || E'\x01' ||
+        COALESCE(q.language_code,  '')              || E'\x01' ||
+        COALESCE(q.cognitive_level,'')              || E'\x01' ||
+        COALESCE(q.concept_key,    '')              || E'\x01' ||
         COALESCE(
             (
                 SELECT string_agg(
@@ -130,12 +163,7 @@ SELECT
         'backfill_source',          'questions'
     )
 
-FROM public.questions q
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM public.question_versions qv
-    WHERE qv.question_id = q.id
-);
+FROM questions_to_backfill q;
 
 -- ---------------------------------------------------------------------------
 -- Step 2 — Backfill question_option_versions
