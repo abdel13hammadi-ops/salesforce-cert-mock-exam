@@ -976,7 +976,7 @@ class TestReadinessFormulaUnchanged(unittest.TestCase):
 
     def test_readiness_version_constant_unchanged(self):
         from utils.readiness import READINESS_VERSION
-        self.assertEqual(READINESS_VERSION, "READINESS_V4_PERFORMANCE_ANCHORED")
+        self.assertEqual(READINESS_VERSION, "READINESS_V5_VERIFIED_EVIDENCE")
 
     def test_locked_result_has_expected_keys(self):
         from utils.readiness import calculate_readiness

@@ -22,7 +22,7 @@ import statistics
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-READINESS_VERSION = "READINESS_V4_PERFORMANCE_ANCHORED"
+READINESS_VERSION = "READINESS_V5_VERIFIED_EVIDENCE"
 
 EMA_ALPHA = 0.40
 REQUIRED_FULL_MOCKS = 3
@@ -700,7 +700,7 @@ def _v5_normalize_domain_weights(
             w = float(value)
         except (TypeError, ValueError):
             continue
-        if w <= 0:
+        if not math.isfinite(w) or w <= 0:
             continue
         raw[str(name)] = w
     total = sum(raw.values())
@@ -1184,7 +1184,7 @@ def _v5_compute_confidence(
 
     # 2. Unique-question breadth (25 pts)
     bank_size = captured_bank_size
-    bank_fallback_used = (bank_size is None)
+    bank_fallback_used = (bank_size is None)   # True when captured_bank_size absent
     if bank_size is None:
         bank_size = live_bank_size
 
@@ -1594,17 +1594,29 @@ def readiness_color(score: float, passing_score: float) -> str:
 # Empty / locked result template
 # ---------------------------------------------------------------------------
 
-def _empty_result(reason: str, eligible_mock_count: int = 0) -> Dict[str, Any]:
+def _empty_result(
+    reason: str,
+    eligible_mock_count: int = 0,
+    expected_question_count: int = 60,
+) -> Dict[str, Any]:
+    ho_target = max(
+        V5_COGNITIVE_HO_MIN,
+        math.floor(expected_question_count * V5_COGNITIVE_HO_MULTIPLIER),
+    )
     return {
+        # Eligibility
         "is_locked": True,
         "eligible_mock_count": eligible_mock_count,
         "required_mock_count": REQUIRED_FULL_MOCKS,
         "mocks_remaining": max(REQUIRED_FULL_MOCKS - eligible_mock_count, 0),
+        # Score
         "score": 0.0,
         "raw_score": 0.0,
+        "hard_capped_score": 0.0,
         "label": "Readiness Locked",
         "color": "gray",
         "recommendation": reason,
+        # V4 diagnostic keys
         "recent_accuracy": 0.0,
         "domain_score": 0.0,
         "domain_robustness": 0.0,
@@ -1615,6 +1627,7 @@ def _empty_result(reason: str, eligible_mock_count: int = 0) -> Dict[str, Any]:
         "trend_slope": 0.0,
         "trend_adjustment": 0.0,
         "trend_label": "Stable",
+        # Pacing
         "pacing_status": "Insufficient Timing Data",
         "timing_completeness": 0.0,
         "fast_incorrect_rate": 0.0,
@@ -1622,6 +1635,7 @@ def _empty_result(reason: str, eligible_mock_count: int = 0) -> Dict[str, Any]:
         "median_time_per_question": 0.0,
         "target_time_per_question": 0.0,
         "timed_questions": 0,
+        # Confidence
         "confidence_score": 0.0,
         "confidence_label": "Low",
         "confidence": "Low",
@@ -1629,7 +1643,7 @@ def _empty_result(reason: str, eligible_mock_count: int = 0) -> Dict[str, Any]:
         "question_attempt_completeness": 0.0,
         "domain_sample_sufficiency": 0.0,
         "coverage_percent": 0.0,
-        # backward-compatible keys
+        # Backward-compatible keys
         "accuracy_score": 0.0,
         "coverage_score": 0.0,
         "domain_balance_score": 0.0,
@@ -1642,10 +1656,45 @@ def _empty_result(reason: str, eligible_mock_count: int = 0) -> Dict[str, Any]:
         "full_mock_count": eligible_mock_count,
         "mock_scores_used": [],
         "guardrail_applied": False,
-        "guardrail_cap": 0.0,
+        "guardrail_cap": None,
         "domain_scores": {},
         "strong_domains": [],
         "weak_domains": [],
+        # V5 fields
+        "formula_version": READINESS_VERSION,
+        "verified_mock_count": 0,
+        "legacy_mock_count": 0,
+        "invalid_mock_count": 0,
+        "verified_attempt_ids": [],
+        "legacy_attempt_ids": [],
+        "trend_delta": 0.0,
+        "staleness_state": V5_STALENESS_UNKNOWN,
+        "staleness_days": None,
+        "staleness_locked": False,
+        "domain_states": {},
+        "domain_gap_triggered": False,
+        "domain_floor_triggered": False,
+        "uncovered_domains": [],
+        "difficulty_metadata_coverage": 0.0,
+        "difficulty_data_available": False,
+        "difficulty_cap_active": False,
+        "difficulty_effective_totals": {},
+        "difficulty_accuracies": {},
+        "cognitive_metadata_coverage": 0.0,
+        "cognitive_data_available": False,
+        "cognitive_cap_active": False,
+        "cognitive_effective_totals": {},
+        "cognitive_accuracies": {},
+        "higher_order_effective_total": 0.0,
+        "higher_order_accuracy": 0.0,
+        "higher_order_target": ho_target,
+        "cross_mock_repeat_fraction": 0.0,
+        "family_data_available": False,
+        "effective_target_sample": 0.0,
+        "captured_bank_size_used": 0,
+        "bank_size_fallback_used": False,
+        "coverage_target": 0,
+        "applied_score_caps": [],
     }
 
 
@@ -1661,155 +1710,355 @@ def calculate_readiness(
     question_bank_total: Optional[int] = None,
     question_attempts: Optional[List[Dict[str, Any]]] = None,
     time_limit_minutes: int = 105,
+    captured_bank_size: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Calculate V38 performance-anchored readiness.
+    """Calculate V5 READINESS_V5_VERIFIED_EVIDENCE readiness.
 
     Returns a dict with readiness score, diagnostics, confidence, and backward-
     compatible keys so existing Dashboard/My_Progress display code still works.
+    Only verified paid mocks (child rows present and consistent) unlock and
+    enter the score.  Legacy and invalid attempts appear in diagnostics only.
     """
+    # ── 0. Normalize inputs ────────────────────────────────────────────────
     attempts = attempts or []
     question_attempts = question_attempts or []
     passing_score = _safe_float(passing_score, 65.0)
     expected_question_count = _safe_int(expected_question_count, 60) or 60
     time_limit_minutes = _safe_int(time_limit_minutes, 105) or 105
     bank_total = _safe_int(question_bank_total, 0) if question_bank_total is not None else 0
+    bank_total_or_none: Optional[int] = bank_total if bank_total > 0 else None
 
-    eligible_count = full_mock_count(attempts, expected_question_count)
-    is_locked = eligible_count < REQUIRED_FULL_MOCKS
+    # ── 1. Grade every attempt ─────────────────────────────────────────────
+    graded = v5_grade_all_attempts(attempts, question_attempts, expected_question_count)
+    verified_list    = graded["verified"]
+    legacy_list      = graded["legacy"]
+    invalid_list     = graded["invalid"]
+    verified_mock_count = len(verified_list)
+    legacy_mock_count   = len(legacy_list)
+    invalid_mock_count  = len(invalid_list)
+    verified_attempt_ids = graded["verified_ids"] or []
+    legacy_attempt_ids   = graded["legacy_ids"]   or []
 
-    # Always build domain stats (needed for locked diagnostics and Daily Sprint)
-    domain_stats = _build_domain_stats(question_attempts, attempts)
-    observed_domains = list(domain_stats.keys())
-    weights = _normalize_weights(domain_weights, observed_domains)
+    # ── 2. Pacing (all QAs regardless of grade) ────────────────────────────
+    pacing = _compute_pacing_diagnostics(
+        question_attempts, time_limit_minutes, expected_question_count
+    )
+
+    # ── 3. V4 domain stats for backward-compat domain_scores / weak_domains ─
+    v4_domain_stats = _build_domain_stats(question_attempts, attempts)
+    sorted_v4 = sorted(v4_domain_stats.items(), key=lambda x: x[1].get("percent", 0.0))
+    weak_domains   = [n for n, d in sorted_v4[:3]  if d.get("total", 0) > 0]
+    strong_domains = [n for n, d in sorted_v4[-3:]][::-1] if sorted_v4 else []
     total_attempted = sum(_safe_int(a.get("total_questions"), 0) for a in attempts)
 
-    sorted_domains = sorted(domain_stats.items(), key=lambda x: x[1].get("percent", 0.0))
-    weak_domains = [n for n, d in sorted_domains[:3] if d.get("total", 0) > 0]
-    strong_domains = [n for n, d in sorted_domains[-3:]][::-1] if sorted_domains else []
-
-    pacing = _compute_pacing_diagnostics(question_attempts, time_limit_minutes, expected_question_count)
-
-    if is_locked:
-        conf = _compute_confidence(attempts, question_attempts, bank_total, expected_question_count, domain_stats, weights)
+    # ── 4. Lock check ──────────────────────────────────────────────────────
+    if verified_mock_count < REQUIRED_FULL_MOCKS:
         result = _empty_result(
-            f"Complete {REQUIRED_FULL_MOCKS} full paid mock exams to unlock readiness. "
-            f"You have {eligible_count} of {REQUIRED_FULL_MOCKS} required.",
-            eligible_count,
+            f"Complete {REQUIRED_FULL_MOCKS} verified full paid mock exams to unlock "
+            f"readiness.  You have {verified_mock_count} of {REQUIRED_FULL_MOCKS} required.",
+            verified_mock_count,
+            expected_question_count=expected_question_count,
         )
-        result.update(conf)
         result.update(pacing)
-        result["domain_scores"] = domain_stats
-        result["weak_domains"] = weak_domains
-        result["strong_domains"] = strong_domains
-        result["total_attempted"] = total_attempted
+        result["domain_scores"]          = v4_domain_stats
+        result["weak_domains"]           = weak_domains
+        result["strong_domains"]         = strong_domains
+        result["total_attempted"]        = total_attempted
+        result["verified_mock_count"]    = verified_mock_count
+        result["legacy_mock_count"]      = legacy_mock_count
+        result["invalid_mock_count"]     = invalid_mock_count
+        result["verified_attempt_ids"]   = verified_attempt_ids
+        result["legacy_attempt_ids"]     = legacy_attempt_ids
+        result["full_mock_count"]        = verified_mock_count
+        result["eligible_mock_count"]    = verified_mock_count
+        result["formula_version"]        = READINESS_VERSION
         return result
 
-    # ------------------------------------------------------------------
-    # V38 readiness calculation — unlocked path
-    # ------------------------------------------------------------------
+    # ── 5. Sort verified oldest → newest (V5 deterministic order) ──────────
+    sorted_verified = sorted(verified_list, key=v5_attempt_sort_key)
 
-    recent = _select_recent_mocks(attempts, MAX_RECENT_MOCKS)
-    scores = [_clamp(_safe_float(a.get("score"), 0.0)) for a in recent]
+    # ── 6. Scoring and history windows ─────────────────────────────────────
+    scoring_window: List[Dict[str, Any]] = sorted_verified[-V5_MAX_SCORING_MOCKS:]
+    history_window: List[Dict[str, Any]] = sorted_verified[-V5_MAX_REPEAT_HISTORY_MOCKS:]
 
-    # A. Recent mock accuracy (EMA, alpha=0.40)
+    # ── 7. Attempt datetime map (for repeat-weight helper) ──────────────────
+    attempt_dt_map: Dict[int, datetime] = {}
+    for a in history_window:
+        aid = v5_parse_attempt_id(a)
+        adt = v5_parse_attempt_datetime(a)
+        if aid is not None and adt is not None:
+            attempt_dt_map[aid] = adt
+
+    # ── 8. Filter child rows to scoring / history windows ───────────────────
+    scoring_ids: set = {v5_parse_attempt_id(a) for a in scoring_window} - {None}
+    history_ids: set = {v5_parse_attempt_id(a) for a in history_window} - {None}
+
+    target_rows  = [
+        r for r in question_attempts
+        if _v5_parse_strict_int(r.get("exam_attempt_id")) in scoring_ids
+    ]
+    history_rows = [
+        r for r in question_attempts
+        if _v5_parse_strict_int(r.get("exam_attempt_id")) in history_ids
+    ]
+
+    # ── 9. Repeat-evidence weights ─────────────────────────────────────────
+    evidence = v5_assign_evidence_weights(target_rows, history_rows, attempt_dt_map)
+    row_weights                = evidence["weights"]
+    cross_mock_repeat_fraction = evidence["cross_mock_repeat_fraction"]
+    family_data_available      = evidence["family_data_available"]
+    effective_target_sample    = evidence["effective_target_sample"]
+
+    # ── 10. EMA on scoring-window scores (oldest → newest) ─────────────────
+    scores = [_clamp(_safe_float(a.get("score"), 0.0)) for a in scoring_window]
     A = _compute_ema(scores, EMA_ALPHA)
 
-    # B+C. Weighted domain accuracy D and domain robustness DR
-    D, DR, weakest_reliable_domain, weakest_score = _compute_domain_score(
-        domain_stats, weights, expected_question_count
+    # ── 11. V5 domain analysis ─────────────────────────────────────────────
+    normalized_weights = _v5_normalize_domain_weights(domain_weights)
+    domain_stats_v5 = _v5_build_domain_stats(
+        target_rows, row_weights, expected_question_count, normalized_weights
     )
-    if not domain_stats:
-        D = A
-        DR = A
+    domain_result = _v5_compute_domain_score(domain_stats_v5, normalized_weights)
 
-    # D. Performance base
+    has_domain_evidence = any(
+        s["effective_total"] > 0 for s in domain_stats_v5.values()
+    )
+    if has_domain_evidence:
+        D                  = domain_result["D"]
+        F                  = domain_result["F"]
+        DR                 = domain_result["DR"]
+        weakest_domain_v5  = domain_result["weakest_domain"]
+        weakest_score_v5   = domain_result["weakest_score"]
+        domain_gap_triggered   = domain_result["domain_gap_triggered"]
+        domain_floor_triggered = domain_result["domain_floor_triggered"]
+        uncovered_domains      = domain_result["uncovered_domains"]
+    else:
+        D = F = DR = A
+        weakest_domain_v5      = None
+        weakest_score_v5       = None
+        domain_gap_triggered   = False
+        domain_floor_triggered = False
+        uncovered_domains      = []
+
+    # ── 12. Performance base ───────────────────────────────────────────────
     Base = 0.80 * A + 0.20 * DR
 
-    # E. Consistency penalty
+    # ── 13. Consistency penalty ────────────────────────────────────────────
     SD = statistics.pstdev(scores) if len(scores) > 1 else 0.0
     consistency_penalty = min(8.0, max(0.0, (SD - 5.0) * 0.25))
 
-    # F. Trend adjustment
-    if len(scores) >= 2:
-        deltas = [scores[i + 1] - scores[i] for i in range(len(scores) - 1)]
-        slope = sum(deltas) / len(deltas)
-    else:
-        slope = 0.0
-    trend_adjustment = _clamp(0.30 * slope, -6.0, 4.0)
-    trend_label = "Improving" if slope >= 2.0 else ("Declining" if slope <= -2.0 else "Stable")
+    # ── 14. V5 trend ──────────────────────────────────────────────────────
+    trend_result    = _v5_compute_trend(scores)
+    trend_delta     = trend_result["trend_delta"]
+    trend_adjustment = trend_result["trend_adjustment"]
+    trend_label     = trend_result["trend_label"]
+    trend_slope     = trend_delta   # backward compat alias
 
-    # G. Final score — hard cap: readiness cannot exceed A+5
-    uncapped = Base - consistency_penalty + trend_adjustment
-    final_score = round(_clamp(min(uncapped, A + 5.0)), 2)
+    # ── 15. Raw and hard-capped score ─────────────────────────────────────
+    raw_score        = Base - consistency_penalty + trend_adjustment
+    hard_capped_score = min(raw_score, A + 5.0)
 
-    # Confidence (separate axis, computed over recent eligible mocks)
-    conf = _compute_confidence(
-        recent, question_attempts, bank_total, expected_question_count, domain_stats, weights
+    # ── 16. Staleness ─────────────────────────────────────────────────────
+    newest_dt      = v5_parse_attempt_datetime(scoring_window[-1])
+    stale_result   = _v5_compute_staleness(newest_dt)
+    staleness_state = stale_result["state"]
+    staleness_days  = stale_result["age_days"]
+    staleness_locked = staleness_state == V5_STALENESS_STALE
+
+    # ── 17. Difficulty and cognitive evidence analysis ─────────────────────
+    difficulty_analysis = _v5_compute_difficulty_analysis(target_rows, row_weights)
+    cognitive_analysis  = _v5_compute_cognitive_analysis(
+        target_rows, row_weights, expected_question_count
+    )
+    difficulty_cap_active = difficulty_analysis["cap_active"]
+    cognitive_cap_active  = cognitive_analysis["cap_active"]
+
+    # ── 18. Score caps ─────────────────────────────────────────────────────
+    caps_result = _v5_apply_score_caps(
+        hard_capped_score,
+        passing_score,
+        staleness_state,
+        domain_gap_triggered,
+        domain_floor_triggered,
+        difficulty_cap_active,
+        cognitive_cap_active,
     )
 
-    label = readiness_label(final_score, passing_score, is_locked=False)
+    # ── 19. Final score and label ──────────────────────────────────────────
+    if staleness_locked:
+        final_score      = 0.0
+        label            = "Evidence Stale"
+        is_locked        = True
+        staleness_locked_flag = True
+    else:
+        final_score      = round(_clamp(caps_result["final_score"]), 2)
+        is_locked        = False
+        staleness_locked_flag = False
+        label            = readiness_label(final_score, passing_score)
 
-    if final_score < passing_score:
+    # ── 20. V5 confidence ─────────────────────────────────────────────────
+    conf = _v5_compute_confidence(
+        verified_attempts   = history_window,
+        history_rows        = history_rows,
+        domain_stats        = domain_stats_v5,
+        normalized_weights  = normalized_weights,
+        difficulty_analysis = difficulty_analysis,
+        cognitive_analysis  = cognitive_analysis,
+        staleness_state     = staleness_state,
+        age_days            = staleness_days,
+        captured_bank_size  = captured_bank_size,
+        live_bank_size      = bank_total_or_none,
+        expected_question_count = expected_question_count,
+    )
+
+    # ── 21. Backward-compat counters ───────────────────────────────────────
+    unique_questions_seen = len({
+        r.get("question_id") for r in history_rows
+        if r.get("question_id") is not None
+    })
+
+    expected_linked = sum(
+        _safe_int(a.get("total_questions"), 0) for a in history_window
+    )
+    unique_pairs = len({
+        (str(r.get("exam_attempt_id")), str(r.get("question_id")))
+        for r in history_rows
+        if r.get("exam_attempt_id") is not None and r.get("question_id") is not None
+    })
+    completeness = min(unique_pairs / expected_linked, 1.0) if expected_linked > 0 else 0.0
+
+    domain_sample_sufficiency = 0.0
+    if domain_stats_v5 and normalized_weights:
+        wsum = sum(normalized_weights.values())
+        if wsum > 0:
+            for _d, _s in domain_stats_v5.items():
+                _w   = normalized_weights.get(_d, 0.0) / wsum
+                _edq = _s["expected_domain_questions"]
+                domain_sample_sufficiency += _w * min(
+                    _s["effective_total"] / _edq, 1.0
+                ) if _edq > 0 else 0.0
+
+    # ── 22. Recommendation ────────────────────────────────────────────────
+    if staleness_locked_flag:
+        recommendation = (
+            "Your most recent verified mock exam is over a year old. "
+            "Take a new full paid mock exam to restore readiness."
+        )
+    elif final_score < passing_score:
         focus = weak_domains[0] if weak_domains else "your weakest domains"
         recommendation = (
             f"Your readiness is below the passing benchmark. "
             f"Focus next on {focus}, then retake a full mock exam."
         )
-    elif weakest_reliable_domain:
+    elif weakest_domain_v5:
         recommendation = (
-            f"You are trending exam-ready, but {weakest_reliable_domain} remains your "
+            f"You are trending exam-ready, but {weakest_domain_v5} remains your "
             f"highest-risk area. Strengthen it before scheduling."
         )
     else:
         recommendation = (
-            "You are trending exam-ready. Take another full mock exam to confirm consistency."
+            "You are trending exam-ready. "
+            "Take another full mock exam to confirm consistency."
         )
 
+    # ── 23. Assemble return payload ────────────────────────────────────────
     return {
         # Eligibility
-        "is_locked": False,
-        "eligible_mock_count": eligible_count,
+        "is_locked":           is_locked,
+        "eligible_mock_count": verified_mock_count,
         "required_mock_count": REQUIRED_FULL_MOCKS,
-        "mocks_remaining": 0,
+        "mocks_remaining":     0,
+        "full_mock_count":     verified_mock_count,
         # Score
-        "score": final_score,
-        "raw_score": round(_clamp(uncapped), 2),
-        "label": label,
-        "color": readiness_color(final_score, passing_score),
-        "recommendation": recommendation,
-        # V38 diagnostic keys
-        "recent_accuracy": round(A, 2),
-        "domain_score": round(D, 2),
-        "domain_robustness": round(DR, 2),
-        "weakest_reliable_domain": weakest_reliable_domain,
-        "weakest_reliable_domain_score": weakest_score,
-        "consistency_standard_deviation": round(SD, 2),
-        "consistency_penalty": round(consistency_penalty, 2),
-        "trend_slope": round(slope, 2),
-        "trend_adjustment": round(trend_adjustment, 2),
-        "trend_label": trend_label,
+        "score":            final_score,
+        "raw_score":        round(_clamp(raw_score), 2),
+        "hard_capped_score": round(hard_capped_score, 2),
+        "label":            label,
+        "color":            "gray" if staleness_locked_flag else readiness_color(final_score, passing_score),
+        "recommendation":   recommendation,
+        # V4-compat diagnostic keys
+        "recent_accuracy":                  round(A,  2),
+        "domain_score":                     round(D,  2),
+        "domain_robustness":                round(DR, 2),
+        "weakest_reliable_domain":          weakest_domain_v5,
+        "weakest_reliable_domain_score":    round(weakest_score_v5, 2) if weakest_score_v5 is not None else 0.0,
+        "consistency_standard_deviation":   round(SD, 2),
+        "consistency_penalty":              round(consistency_penalty, 2),
+        "trend_slope":                      round(trend_slope, 2),
+        "trend_adjustment":                 round(trend_adjustment, 2),
+        "trend_label":                      trend_label,
         # Pacing (diagnostics only)
         **pacing,
-        # Confidence (separate axis)
-        **conf,
-        # Domain lists (Daily Sprint uses weak_domains[0])
-        "domain_scores": domain_stats,
-        "weak_domains": weak_domains,
+        # Confidence keys
+        "confidence_score":  conf["score"],
+        "confidence_label":  conf["label"],
+        "confidence":        conf["label"],
+        # Backward-compat coverage / completeness
+        "unique_questions_seen":        unique_questions_seen,
+        "question_attempt_completeness": round(completeness, 3),
+        "domain_sample_sufficiency":    round(domain_sample_sufficiency, 3),
+        "coverage_percent":             round((unique_questions_seen / bank_total) * 100, 2) if bank_total > 0 else 0.0,
+        # Domain
+        "domain_scores": v4_domain_stats,
+        "domain_states": domain_stats_v5,
+        "weak_domains":  weak_domains,
         "strong_domains": strong_domains,
-        # Backward-compatible keys — values are kept for compat but no longer score contributors
-        "accuracy_score": round(A, 2),
-        "recent_mock_score": round(A, 2),
-        "domain_balance_score": round(DR, 2),
+        # Backward-compatible score keys
+        "accuracy_score":        round(A,  2),
+        "recent_mock_score":     round(A,  2),
+        "domain_balance_score":  round(DR, 2),
         "weighted_domain_score": round(DR, 2),
-        "coverage_score": 0.0,       # removed from score formula; kept for compat
-        "pacing_score": 0.0,         # removed from score formula; kept for compat
-        "consistency_score": 0.0,
+        "coverage_score":        0.0,
+        "pacing_score":          0.0,
+        "consistency_score":     0.0,
         "practice_volume_score": 0.0,
-        "total_attempted": total_attempted,
-        "full_mock_count": eligible_count,
-        "mock_scores_used": list(reversed(scores[-5:])),
-        "guardrail_applied": False,
-        "guardrail_cap": 0.0,
+        "total_attempted":   total_attempted,
+        "mock_scores_used":  list(reversed(scores)),
+        # Guardrail
+        "guardrail_applied": caps_result["guardrail_applied"],
+        "guardrail_cap":     caps_result["guardrail_cap"],
+        "applied_score_caps": caps_result["applied_caps"],
+        # V5 diagnostics
+        "formula_version":        READINESS_VERSION,
+        "verified_mock_count":    verified_mock_count,
+        "legacy_mock_count":      legacy_mock_count,
+        "invalid_mock_count":     invalid_mock_count,
+        "verified_attempt_ids":   verified_attempt_ids,
+        "legacy_attempt_ids":     legacy_attempt_ids,
+        "trend_delta":            trend_delta,
+        "staleness_state":        staleness_state,
+        "staleness_days":         staleness_days,
+        "staleness_locked":       staleness_locked_flag,
+        "domain_gap_triggered":   domain_gap_triggered,
+        "domain_floor_triggered": domain_floor_triggered,
+        "uncovered_domains":      uncovered_domains,
+        "difficulty_metadata_coverage": difficulty_analysis["metadata_coverage"],
+        "difficulty_data_available":    difficulty_analysis["data_available"],
+        "difficulty_cap_active":        difficulty_cap_active,
+        "difficulty_effective_totals":  {
+            "easy":   difficulty_analysis["easy_effective_total"],
+            "medium": difficulty_analysis["medium_effective_total"],
+            "hard":   difficulty_analysis["hard_effective_total"],
+        },
+        "difficulty_accuracies": {
+            "easy":   difficulty_analysis["easy_accuracy"],
+            "medium": difficulty_analysis["medium_accuracy"],
+            "hard":   difficulty_analysis["hard_accuracy"],
+        },
+        "cognitive_metadata_coverage":      cognitive_analysis["metadata_coverage"],
+        "cognitive_data_available":         cognitive_analysis["data_available"],
+        "cognitive_cap_active":             cognitive_cap_active,
+        "cognitive_effective_totals":       cognitive_analysis["level_effective_totals"],
+        "cognitive_accuracies":             cognitive_analysis["level_accuracies"],
+        "higher_order_effective_total":     cognitive_analysis["higher_order_effective_total"],
+        "higher_order_accuracy":            cognitive_analysis["higher_order_accuracy"],
+        "higher_order_target":              cognitive_analysis["higher_order_target"],
+        "cross_mock_repeat_fraction":       cross_mock_repeat_fraction,
+        "family_data_available":            family_data_available,
+        "effective_target_sample":          effective_target_sample,
+        "captured_bank_size_used":          captured_bank_size or 0,
+        "bank_size_fallback_used":          conf["bank_fallback_used"],
+        "coverage_target":                  conf["coverage_target"] or 0,
     }
 
 
