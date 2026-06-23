@@ -30,6 +30,33 @@ MAX_RECENT_MOCKS = 5
 QUESTION_TIME_CAP_SECONDS = 300.0
 QUESTION_TIME_MIN_SECONDS = 1.0  # below this = instrumentation noise, ignored
 
+# ---------------------------------------------------------------------------
+# V5 constants  (helpers below are additive; calculate_readiness still runs V4)
+# ---------------------------------------------------------------------------
+
+# Attempt grade strings — use these constants everywhere so callers never
+# compare against bare string literals.
+GRADE_VERIFIED = "verified"
+GRADE_LEGACY   = "legacy"
+GRADE_INVALID  = "invalid"
+
+# Window sizes
+V5_MAX_SCORING_MOCKS = 5        # EMA / consistency / trend window
+V5_MAX_REPEAT_HISTORY_MOCKS = 10  # repeat-discount look-back
+
+# Metadata-availability gate: fraction of rows that must carry a recognized
+# value before the component is considered available at all.
+V5_METADATA_THRESHOLD = 0.90
+
+# Question-level repeat-discount weights (by occurrence rank across history).
+V5_QUESTION_DISCOUNT = {1: 1.00, 2: 0.25}   # rank >= 3 → 0.00
+V5_QUESTION_DISCOUNT_DEFAULT = 0.00
+
+# Family-level repeat-discount weights (by distinct-mock rank for the family).
+# Activated only when family_data_available == True.
+V5_FAMILY_DISCOUNT = {1: 1.00, 2: 0.70}     # rank >= 3 → 0.50
+V5_FAMILY_DISCOUNT_FLOOR = 0.50
+
 
 # ---------------------------------------------------------------------------
 # Primitive helpers
@@ -97,7 +124,482 @@ def _valid_weight(value: Any) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# Eligibility
+# V5 pure helpers — datetime, grading, weighting
+# (calculate_readiness still uses the V4 path; these are additive)
+# ---------------------------------------------------------------------------
+
+def v5_parse_attempt_datetime(attempt: Dict[str, Any]) -> Optional[datetime]:
+    """Return a timezone-aware UTC datetime for the attempt's readiness timestamp.
+
+    Priority: completed_at > started_at.
+    Supports ISO 8601 with Z suffix or explicit UTC offsets (+00:00, -05:00, …).
+    Returns None when both fields are absent, empty, or unparseable.
+    Never falls back to the attempt ID.
+    """
+    for field in ("completed_at", "started_at"):
+        raw = attempt.get(field)
+        if not raw:
+            continue
+        ts = str(raw).strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _v5_parse_strict_int(value: Any) -> Optional[int]:
+    """Strict integer parser used everywhere a numeric ID is required.
+
+    Accepts:
+    - int (but NOT bool, which is a subclass of int in Python)
+    - digit-only strings after stripping whitespace (optionally with a leading minus)
+
+    Rejects:
+    - bool (True / False)
+    - float values such as 10.0
+    - float strings such as "10.0", "10.9"
+    - scientific-notation strings such as "1e2"
+    - UUIDs and any other non-digit text
+    - None
+
+    Returns None for every rejected value; never raises.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):          # bool subclasses int; must be checked first
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):         # raw float (e.g. 10.0) is rejected
+        return None
+    s = str(value).strip()
+    # Allow an optional leading minus then only decimal digits — no dots, no 'e'
+    check = s.lstrip("-")
+    if not check or not check.isdigit():
+        return None
+    try:
+        return int(s)
+    except (ValueError, OverflowError):
+        return None
+
+
+def v5_parse_attempt_id(attempt: Dict[str, Any]) -> Optional[int]:
+    """Return the attempt's numeric ID as an int, or None when absent/non-numeric.
+
+    Delegates to _v5_parse_strict_int so the same rules apply throughout.
+    """
+    return _v5_parse_strict_int(attempt.get("id"))
+
+
+def v5_attempt_sort_key(attempt: Dict[str, Any]) -> Tuple[datetime, int]:
+    """Return (parsed_datetime, numeric_id) for deterministic chronological sort.
+
+    Raises ValueError when the attempt lacks either a valid datetime or a
+    numeric ID, so callers know it cannot be used as readiness evidence.
+    """
+    dt = v5_parse_attempt_datetime(attempt)
+    if dt is None:
+        raise ValueError(
+            f"Attempt {attempt.get('id')!r} has no parseable readiness timestamp "
+            f"(completed_at={attempt.get('completed_at')!r}, "
+            f"started_at={attempt.get('started_at')!r})"
+        )
+    numeric_id = v5_parse_attempt_id(attempt)
+    if numeric_id is None:
+        raise ValueError(
+            f"Attempt has no numeric ID (id={attempt.get('id')!r})"
+        )
+    return (dt, numeric_id)
+
+
+def v5_is_historical_attempt(
+    attempt: Dict[str, Any],
+    target_dt: datetime,
+    target_id: int,
+) -> bool:
+    """Return True iff the attempt is on or before the target (completed_at, id) cursor.
+
+    Rules (frozen requirements §2):
+    - attempt_datetime < target_datetime          → True
+    - attempt_datetime == target_datetime
+      AND numeric attempt_id <= target_id         → True
+    - attempt_datetime > target_datetime          → False
+    - unparseable timestamp or non-numeric ID     → False  (never silently included)
+
+    target_dt must be timezone-aware UTC.
+    """
+    attempt_dt = v5_parse_attempt_datetime(attempt)
+    if attempt_dt is None:
+        return False
+    attempt_num_id = v5_parse_attempt_id(attempt)
+    if attempt_num_id is None:
+        return False
+
+    if attempt_dt < target_dt:
+        return True
+    if attempt_dt == target_dt:
+        return attempt_num_id <= target_id
+    return False
+
+
+# ---------------------------------------------------------------------------
+# V5 attempt grading
+# ---------------------------------------------------------------------------
+
+def _v5_normalize_correct_count(attempt: Dict[str, Any]) -> Optional[int]:
+    """Return the canonical correct-answers count from parent row, or None.
+
+    Prefers correct_count; falls back to correct_answers when it holds a
+    numeric value.  Returns None when neither is available.
+    """
+    for field in ("correct_count", "correct_answers"):
+        raw = attempt.get(field)
+        if raw is None:
+            continue
+        try:
+            v = int(float(raw))
+            return v
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def v5_grade_attempt(
+    attempt: Dict[str, Any],
+    child_rows: List[Dict[str, Any]],
+    expected_question_count: int,
+) -> str:
+    """Return GRADE_VERIFIED, GRADE_LEGACY, or GRADE_INVALID for one attempt.
+
+    INVALID conditions (any one → INVALID):
+    - mode != "Paid Mock Exam" (case-insensitive)
+    - total_questions < expected_question_count
+    - score is missing, < 0, or > 100
+    - no parseable readiness timestamp (completed_at then started_at)
+    - no numeric attempt ID
+
+    VERIFIED requires (all must hold):
+    - parent passes INVALID checks (i.e., eligible)
+    - len(child_rows) == total_questions exactly
+    - distinct non-null question_ids == total_questions exactly
+    - when correct_count (or correct_answers fallback) is present,
+      sum(is_correct) == correct_count exactly
+
+    LEGACY: eligible parent but any verification check fails.
+    """
+    # ── INVALID gate ──────────────────────────────────────────────────────────
+    mode = str(attempt.get("mode") or "").strip().lower()
+    if mode != "paid mock exam":
+        return GRADE_INVALID
+
+    total_q = _safe_int(attempt.get("total_questions"), 0)
+    if total_q < int(expected_question_count or 60):
+        return GRADE_INVALID
+
+    score_raw = attempt.get("score")
+    if score_raw is None:
+        return GRADE_INVALID
+    try:
+        score = float(score_raw)
+    except (TypeError, ValueError):
+        return GRADE_INVALID
+    if score < 0.0 or score > 100.0:
+        return GRADE_INVALID
+
+    if v5_parse_attempt_datetime(attempt) is None:
+        return GRADE_INVALID
+
+    if v5_parse_attempt_id(attempt) is None:
+        return GRADE_INVALID
+
+    # ── VERIFIED checks ───────────────────────────────────────────────────────
+    if len(child_rows) != total_q:
+        return GRADE_LEGACY
+
+    distinct_qids = {
+        row.get("question_id")
+        for row in child_rows
+        if row.get("question_id") is not None
+    }
+    if len(distinct_qids) != total_q:
+        return GRADE_LEGACY
+
+    expected_correct = _v5_normalize_correct_count(attempt)
+    if expected_correct is not None:
+        actual_correct = sum(1 for r in child_rows if bool(r.get("is_correct")))
+        if actual_correct != expected_correct:
+            return GRADE_LEGACY
+
+    return GRADE_VERIFIED
+
+
+def v5_grade_all_attempts(
+    attempts: List[Dict[str, Any]],
+    question_attempts: List[Dict[str, Any]],
+    expected_question_count: int,
+) -> Dict[str, Any]:
+    """Grade every attempt in the list; return structured result without mutating inputs.
+
+    Groups child rows by numeric exam_attempt_id, then calls v5_grade_attempt
+    for each attempt.
+
+    Returns a dict with:
+        verified:     list of attempt dicts (copies, grade key added)
+        legacy:       list of attempt dicts (copies, grade key added)
+        invalid:      list of attempt dicts (copies, grade key added)
+        verified_ids: list of numeric attempt IDs (int)
+        legacy_ids:   list of numeric attempt IDs (int)
+    """
+    # Index child rows by strictly-parsed exam_attempt_id.
+    # int(float(...)) is intentionally NOT used here: "1.0" must not map to 1.
+    children_by_id: Dict[int, List[Dict[str, Any]]] = {}
+    for row in (question_attempts or []):
+        eid = _v5_parse_strict_int(row.get("exam_attempt_id"))
+        if eid is None:
+            continue  # invalid ID — do not attach to any parent
+        children_by_id.setdefault(eid, []).append(row)
+
+    verified: List[Dict[str, Any]] = []
+    legacy:   List[Dict[str, Any]] = []
+    invalid:  List[Dict[str, Any]] = []
+
+    for attempt in (attempts or []):
+        numeric_id = v5_parse_attempt_id(attempt)
+        child_rows = children_by_id.get(numeric_id, []) if numeric_id is not None else []
+        grade = v5_grade_attempt(attempt, child_rows, expected_question_count)
+        copy = dict(attempt, grade=grade)
+        if grade == GRADE_VERIFIED:
+            verified.append(copy)
+        elif grade == GRADE_LEGACY:
+            legacy.append(copy)
+        else:
+            invalid.append(copy)
+
+    return {
+        "verified":     verified,
+        "legacy":       legacy,
+        "invalid":      invalid,
+        "verified_ids": [v5_parse_attempt_id(a) for a in verified],
+        "legacy_ids":   [v5_parse_attempt_id(a) for a in legacy],
+    }
+
+
+# ---------------------------------------------------------------------------
+# V5 repeat-evidence weights
+# ---------------------------------------------------------------------------
+
+def _v5_parse_row_sort_key(
+    row: Dict[str, Any],
+    attempt_dt_map: Dict[int, datetime],
+) -> Tuple[datetime, int, int]:
+    """Return (row_datetime, numeric_exam_attempt_id, numeric_row_id) for ordering.
+
+    Row ordering priority (frozen requirements §7):
+    1. parsed answered_at when valid
+    2. parent attempt datetime (from attempt_dt_map)
+    3. numeric exam_attempt_id
+    4. numeric row ID
+    """
+    # answered_at
+    answered_raw = row.get("answered_at")
+    row_dt: Optional[datetime] = None
+    if answered_raw:
+        ts = str(answered_raw).strip().replace("Z", "+00:00")
+        try:
+            row_dt = datetime.fromisoformat(ts)
+            if row_dt.tzinfo is None:
+                row_dt = row_dt.replace(tzinfo=timezone.utc)
+            row_dt = row_dt.astimezone(timezone.utc)
+        except (ValueError, TypeError):
+            row_dt = None
+
+    # Strict exam_attempt_id for attempt_dt_map lookup and sort position.
+    # Fallback 0 is used only as a sort sentinel — not for grouping.
+    eid_parsed = _v5_parse_strict_int(row.get("exam_attempt_id"))
+    eid = eid_parsed if eid_parsed is not None else 0
+    if row_dt is None:
+        row_dt = attempt_dt_map.get(eid, datetime.min.replace(tzinfo=timezone.utc))
+
+    # Strict row ID, fallback 0 as sort sentinel.
+    rid_parsed = _v5_parse_strict_int(row.get("id"))
+    rid = rid_parsed if rid_parsed is not None else 0
+
+    return (row_dt, eid, rid)
+
+
+def v5_assign_evidence_weights(
+    target_rows: List[Dict[str, Any]],
+    history_rows: List[Dict[str, Any]],
+    attempt_dt_map: Dict[int, datetime],
+) -> Dict[str, Any]:
+    """Compute per-row evidence weights for the target scoring rows.
+
+    Parameters
+    ----------
+    target_rows:
+        Question-attempt rows for the latest V5_MAX_SCORING_MOCKS (5) verified
+        mocks.  Weights are returned only for these rows.
+    history_rows:
+        Question-attempt rows for the latest V5_MAX_REPEAT_HISTORY_MOCKS (10)
+        verified mocks.  Used to establish prior-exposure counts.
+    attempt_dt_map:
+        {numeric_attempt_id → UTC datetime} for all relevant verified attempts,
+        used as the answered_at fallback in sort ordering.
+
+    Returns
+    -------
+    dict with:
+        weights:                    {row_id_str → float}  — target rows only
+        family_data_available:      bool
+        cross_mock_repeat_fraction: float
+        effective_target_sample:    float  (sum of weights for target rows)
+
+    Discount rules
+    ──────────────
+    Question-level (by chronological occurrence rank across history):
+        1st  →  1.00
+        2nd  →  0.25
+        3rd+ →  0.00
+
+    Family-level (active only when ≥90 % of history rows carry a non-null
+    question_family_id; by distinct mock rank for the family):
+        1st mock containing family  →  1.00
+        2nd mock                    →  0.70
+        3rd+ mock                   →  0.50
+
+    Final weight = question_discount × family_discount.
+
+    A target row not found in the bounded history receives weight 0.0
+    (no fabricated exposure rank).
+    """
+    _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+    # ── Step 1: Enforce V5_MAX_REPEAT_HISTORY_MOCKS boundary ─────────────────
+    # Collect all distinct valid mock IDs present in history_rows.
+    all_history_mock_ids: set = set()
+    for row in history_rows:
+        eid = _v5_parse_strict_int(row.get("exam_attempt_id"))
+        if eid is not None:
+            all_history_mock_ids.add(eid)
+
+    # Sort distinct mocks oldest-to-newest:
+    #   primary key  = UTC datetime from attempt_dt_map (EPOCH when absent)
+    #   secondary key = numeric ID so that ID 9 sorts before ID 10 when tied
+    sorted_mock_ids = sorted(
+        all_history_mock_ids,
+        key=lambda m: (attempt_dt_map.get(m, _EPOCH), m),
+    )
+
+    # Retain only the latest V5_MAX_REPEAT_HISTORY_MOCKS distinct mocks.
+    bounded_mock_ids: set = set(sorted_mock_ids[-V5_MAX_REPEAT_HISTORY_MOCKS:])
+
+    # Filter history rows to the bounded window; rows with invalid IDs are dropped.
+    bounded_history = [
+        row for row in history_rows
+        if _v5_parse_strict_int(row.get("exam_attempt_id")) in bounded_mock_ids
+    ]
+
+    # ── Step 2: Family-data availability (over bounded history only) ──────────
+    total_history = len(bounded_history)
+    family_populated = sum(
+        1 for r in bounded_history if r.get("question_family_id") is not None
+    )
+    family_data_available = (
+        total_history > 0
+        and (family_populated / total_history) >= V5_METADATA_THRESHOLD
+    )
+
+    # ── Step 3: Sort bounded history chronologically ───────────────────────────
+    sorted_history = sorted(
+        bounded_history,
+        key=lambda r: _v5_parse_row_sort_key(r, attempt_dt_map),
+    )
+
+    # ── Step 4: Per-row question rank (rank at the time each row appears) ──────
+    qid_seen_count: Dict[Any, int] = {}
+    row_question_rank: Dict[str, int] = {}  # str(row["id"]) → rank within bounded window
+    for row in sorted_history:
+        qid = row.get("question_id")
+        row_id = str(row.get("id", id(row)))
+        if qid is None:
+            continue
+        qid_seen_count[qid] = qid_seen_count.get(qid, 0) + 1
+        row_question_rank[row_id] = qid_seen_count[qid]
+
+    # ── Step 5: Family-mock rank (chronological order of distinct mocks per family) ──
+    family_mock_rank: Dict[Tuple[Any, int], int] = {}
+    if family_data_available:
+        family_seen_mocks: Dict[Any, List[int]] = {}
+        for row in sorted_history:
+            fid = row.get("question_family_id")
+            if fid is None:
+                continue
+            eid = _v5_parse_strict_int(row.get("exam_attempt_id"))
+            if eid is None:
+                continue
+            seen = family_seen_mocks.setdefault(fid, [])
+            if eid not in seen:
+                seen.append(eid)
+            family_mock_rank[(fid, eid)] = seen.index(eid) + 1
+
+    # ── Step 6: Cross-mock repeat fraction (from bounded history) ─────────────
+    qid_mock_sets: Dict[Any, set] = {}
+    for row in bounded_history:
+        qid = row.get("question_id")
+        if qid is None:
+            continue
+        eid = _v5_parse_strict_int(row.get("exam_attempt_id"))
+        if eid is None:
+            continue
+        qid_mock_sets.setdefault(qid, set()).add(eid)
+    all_unique_qids = len(qid_mock_sets)
+    cross_mock_repeated = sum(1 for s in qid_mock_sets.values() if len(s) > 1)
+    cross_mock_repeat_fraction = (
+        cross_mock_repeated / all_unique_qids if all_unique_qids > 0 else 0.0
+    )
+
+    # ── Step 7: Assign weights for target rows ────────────────────────────────
+    weights: Dict[str, float] = {}
+    for row in target_rows:
+        row_id = str(row.get("id", id(row)))
+
+        if row_id not in row_question_rank:
+            # Target row is outside the bounded history window.
+            # Assign weight 0.0 — no fabricated exposure rank.
+            weights[row_id] = 0.0
+            continue
+
+        q_rank = row_question_rank[row_id]
+        q_discount = V5_QUESTION_DISCOUNT.get(q_rank, V5_QUESTION_DISCOUNT_DEFAULT)
+
+        f_discount = 1.0
+        if family_data_available:
+            fid = row.get("question_family_id")
+            if fid is not None:
+                eid = _v5_parse_strict_int(row.get("exam_attempt_id"))
+                if eid is None:
+                    eid = -1  # sentinel — will not match any family_mock_rank entry
+                f_rank = family_mock_rank.get((fid, eid), 1)
+                f_discount = V5_FAMILY_DISCOUNT.get(f_rank, V5_FAMILY_DISCOUNT_FLOOR)
+
+        weights[row_id] = q_discount * f_discount
+
+    effective_target_sample = sum(weights.values())
+
+    return {
+        "weights":                    weights,
+        "family_data_available":      family_data_available,
+        "cross_mock_repeat_fraction": cross_mock_repeat_fraction,
+        "effective_target_sample":    effective_target_sample,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Eligibility  (V4 — unchanged)
 # ---------------------------------------------------------------------------
 
 def _parse_sort_value(attempt: Dict[str, Any]) -> str:
