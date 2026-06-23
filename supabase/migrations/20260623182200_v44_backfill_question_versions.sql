@@ -143,17 +143,44 @@ WHERE NOT EXISTS (
 -- Copies answer_options rows into option-version rows for every legacy_backfill
 -- version, whether created in this run or a previous run.
 --
+-- Display-order strategy: ROW_NUMBER() partitioned by question_version_id,
+-- ordered by:
+--   1. CASE WHEN ao.display_order > 0 THEN ao.display_order END ASC NULLS LAST
+--      — honours existing positive display_order; NULL and non-positive values
+--      (the defect that caused the previous rollback) sort to the end
+--   2. ao.option_label ASC  — stable alphabetical tie-breaker
+--   3. ao.id ASC            — stable final tie-breaker (integer PK)
+-- Result: contiguous integers starting at 1 per version, always positive,
+-- always unique within a version, never NULL.  Satisfies both
+-- CHECK (display_order > 0) and UNIQUE (question_version_id, display_order).
+--
 -- Idempotency: ON CONFLICT (question_version_id, option_label) DO NOTHING
 -- targets the existing unique constraint question_option_versions_unique_label.
 -- Each source answer_options row is evaluated independently:
 --   * no existing versioned option for that label  → row is inserted
 --   * versioned option already exists for that label → row is silently skipped
---
--- This means a partially populated question_option_versions set (e.g. from a
--- previous interrupted run) is repaired on re-run: missing options are
+-- A partially populated version is repaired on re-run: missing options are
 -- inserted while already-present options are skipped without error.
 -- ---------------------------------------------------------------------------
 
+WITH options_ranked AS (
+    SELECT
+        qv.id           AS question_version_id,
+        ao.option_label,
+        ao.option_text,
+        ao.is_correct,
+        ROW_NUMBER() OVER (
+            PARTITION BY qv.id
+            ORDER BY
+                CASE WHEN ao.display_order > 0 THEN ao.display_order END ASC NULLS LAST,
+                ao.option_label ASC,
+                ao.id           ASC
+        ) AS computed_display_order
+    FROM public.question_versions qv
+    JOIN public.answer_options ao
+        ON ao.question_id = qv.question_id
+    WHERE qv.source_type = 'legacy_backfill'
+)
 INSERT INTO public.question_option_versions (
     id,
     question_version_id,
@@ -164,15 +191,12 @@ INSERT INTO public.question_option_versions (
 )
 SELECT
     gen_random_uuid(),
-    qv.id,
-    ao.option_label,
-    ao.option_text,
-    ao.is_correct,
-    COALESCE(ao.display_order, 0)
-FROM public.question_versions qv
-JOIN public.answer_options ao
-    ON ao.question_id = qv.question_id
-WHERE qv.source_type = 'legacy_backfill'
+    question_version_id,
+    option_label,
+    option_text,
+    is_correct,
+    computed_display_order
+FROM options_ranked
 ON CONFLICT (question_version_id, option_label) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
