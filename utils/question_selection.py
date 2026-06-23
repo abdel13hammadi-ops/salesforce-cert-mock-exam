@@ -456,7 +456,14 @@ def build_question_attempt_rows(
     Pure function: no network, no Streamlit.  ``answers`` is keyed by the
     question's positional index (matching the app's session_state.answers).
     No question text or secrets are ever included.
+
+    Each row includes immutable metadata captured from the question exactly as
+    shown to the student (cognitive_level, concept_key, question_family_id,
+    question_content_version, question_external_key, metadata_source,
+    metadata_capture_version).  Missing fields become NULL in the database.
     """
+    from utils.readiness_persistence import build_attempt_metadata  # noqa: PLC0415
+
     time_spent_by_index = time_spent_by_index or {}
     rows: list = []
     for idx, q in enumerate(questions):
@@ -467,7 +474,7 @@ def build_question_attempt_rows(
             time_spent = int(raw_ts) if raw_ts is not None else None
         except (TypeError, ValueError):
             time_spent = None
-        rows.append({
+        row = {
             "exam_attempt_id": exam_attempt_id,
             "question_id": q.get("id"),
             "user_email": user_email,
@@ -480,7 +487,9 @@ def build_question_attempt_rows(
             "is_correct": set(selected) == set(correct),
             "time_spent_seconds": time_spent,
             "answered_at": answered_at_iso,
-        })
+        }
+        row.update(build_attempt_metadata(q))
+        rows.append(row)
     return rows
 
 

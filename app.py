@@ -603,7 +603,12 @@ def fetch_question_bank(exam_name, language_code, free_mock_only=False):
 
     questions_query = (
         supabase.table("questions")
-        .select("id, exam_name, language_code, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status, free_mock_exam, free_sample_order, practice_eligible, question_family_id")
+        .select(
+            "id, exam_name, language_code, category, difficulty, question_text, "
+            "question_type, select_count, explanation, is_active, is_exam_eligible, "
+            "quality_status, free_mock_exam, free_sample_order, practice_eligible, "
+            "question_family_id, cognitive_level, concept_key, content_version, external_key"
+        )
         .eq("exam_name", exam_name)
         .eq("language_code", language_code)
         .eq("is_active", True)
@@ -683,6 +688,11 @@ def fetch_question_bank(exam_name, language_code, free_mock_only=False):
             # V40: used by repeat-resistant selection waterfall
             "practice_eligible": bool(q.get("practice_eligible", True)),
             "question_family_id": q.get("question_family_id"),
+            # Prospective metadata — captured at attempt time in question_attempts rows
+            "cognitive_level": q.get("cognitive_level"),
+            "concept_key": q.get("concept_key"),
+            "content_version": q.get("content_version"),
+            "external_key": q.get("external_key"),
         })
 
     meta = {
@@ -1591,6 +1601,11 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
         return True, None
 
     # 3) PARENT INSERT — only reached when no parent exists for this submission.
+    # Eligible bank size: use the value loaded when the question bank was fetched
+    # (cached in bank_meta). Falls back to 0 if metadata is absent.
+    bank_meta = st.session_state.get("bank_meta") or {}
+    eligible_bank_size = int(bank_meta.get("total_bank_questions") or 0)
+
     payload = {
         "user_email": user_email,
         "mode": mode,
@@ -1604,6 +1619,7 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
         "language_code": SELECTED_LANGUAGE_CODE,
         "started_at": started_at.isoformat(),
         "completed_at": completed_at.isoformat(),
+        "eligible_question_bank_size": eligible_bank_size,
     }
 
     log_parent_insert_start()
@@ -1998,6 +2014,29 @@ else:
         st.session_state.attempt_save_error = None if saved else save_error
         log_save_state_transition(from_state=saving_state, to_state=final_state)
         st.session_state.submission_save_state = final_state
+
+        # ── READINESS SNAPSHOT (secondary; only after paid mock save succeeds) ──
+        # Persisted AFTER parent + child verification passes.  Failure is logged
+        # and reported but does NOT change the primary save state; the retry button
+        # re-enters this block and the upsert is idempotent.
+        if saved and st.session_state.get("exam_access_type") == "paid":
+            attempt_id_for_snapshot = st.session_state.get("current_exam_attempt_id")
+            if attempt_id_for_snapshot is not None:
+                from utils.readiness_persistence import compute_and_persist_readiness_snapshot  # noqa: PLC0415
+                bank_meta = st.session_state.get("bank_meta") or {}
+                snap_bank_size = int(bank_meta.get("total_bank_questions") or 0)
+                snap_ok, snap_err = compute_and_persist_readiness_snapshot(
+                    get_supabase_client(),
+                    user_email=get_current_user_email() or "",
+                    exam_name=SELECTED_EXAM_NAME,
+                    exam_attempt_id=attempt_id_for_snapshot,
+                    eligible_bank_size=snap_bank_size,
+                    on_error=_capture_exception_safe,
+                )
+                if not snap_ok:
+                    _capture_exception_safe(
+                        RuntimeError(f"Readiness snapshot failed: {snap_err}")
+                    )
 
     save_state = st.session_state.get("submission_save_state", "idle")
 

@@ -847,6 +847,7 @@ def test_paid_duplicate_parent_backfills_missing_child_rows():
 # written by pages/Practice_By_Category.build_question_attempt_rows().
 
 PROVEN_QUESTION_ATTEMPT_COLUMNS = {
+    # Core identity / scoring columns (original proven set)
     "exam_attempt_id",
     "question_id",
     "user_email",
@@ -859,6 +860,14 @@ PROVEN_QUESTION_ATTEMPT_COLUMNS = {
     "is_correct",
     "time_spent_seconds",
     "answered_at",
+    # Prospective metadata columns added by the readiness-milestone implementation
+    "cognitive_level",
+    "concept_key",
+    "question_family_id",
+    "question_content_version",
+    "question_external_key",
+    "metadata_source",
+    "metadata_capture_version",
 }
 
 

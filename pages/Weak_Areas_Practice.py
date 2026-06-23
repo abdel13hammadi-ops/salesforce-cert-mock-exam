@@ -153,7 +153,12 @@ def fetch_attempts(user_email, exam_name, language_code):
 def fetch_question_bank(exam_name, language_code):
     q_response = (
         get_supabase_client().table("questions")
-        .select("id, exam_name, language_code, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status")
+        .select(
+            "id, exam_name, language_code, category, difficulty, question_text, "
+            "question_type, select_count, explanation, is_active, is_exam_eligible, "
+            "quality_status, question_family_id, cognitive_level, concept_key, "
+            "content_version, external_key"
+        )
         .eq("exam_name", exam_name)
         .eq("language_code", language_code)
         .eq("is_active", True)
@@ -200,6 +205,12 @@ def fetch_question_bank(exam_name, language_code):
             "explanation": q.get("explanation") or "No explanation available.",
             "options": [{"id": str(o["id"]), "text": o.get("option_text") or "", "is_correct": bool(o.get("is_correct"))} for o in opts],
             "correct_ids": correct_ids,
+            # Prospective metadata — captured at attempt time
+            "question_family_id": q.get("question_family_id"),
+            "cognitive_level": q.get("cognitive_level"),
+            "concept_key": q.get("concept_key"),
+            "content_version": q.get("content_version"),
+            "external_key": q.get("external_key"),
         })
     return normalized
 
@@ -294,12 +305,13 @@ def option_texts_by_id(question, ids):
 
 
 def build_question_attempt_rows(exam_attempt_id, user_email, questions, answers):
+    from utils.readiness_persistence import build_attempt_metadata  # noqa: PLC0415
     question_times = st.session_state.get("weak_question_time_spent") or {}
     rows = []
     for idx, q in enumerate(questions or []):
         selected_ids = [str(v) for v in (answers.get(idx, []) if answers else [])]
         correct_ids = [str(v) for v in q.get("correct_ids", [])]
-        rows.append({
+        row = {
             "exam_attempt_id": exam_attempt_id,
             "question_id": int(q.get("id")),
             "user_email": user_email,
@@ -312,7 +324,9 @@ def build_question_attempt_rows(exam_attempt_id, user_email, questions, answers)
             "is_correct": is_correct(selected_ids, correct_ids),
             "time_spent_seconds": _clamped_seconds(question_times.get(idx, 0)),
             "answered_at": datetime.now(timezone.utc).isoformat(),
-        })
+        }
+        row.update(build_attempt_metadata(q))
+        rows.append(row)
     return rows
 
 
