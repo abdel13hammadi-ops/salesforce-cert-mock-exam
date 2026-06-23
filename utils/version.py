@@ -1,4 +1,4 @@
-﻿"""Single source of truth for the application build version.
+"""Single source of truth for the application build version.
 
 To update for any code change:
   1. Increment the numeric prefix (V32 â†’ V33, etc.).
@@ -7,4 +7,3 @@ To update for any code change:
 """
 
 APP_VERSION = "V41_READINESS_DATA_FOUNDATION"
-
