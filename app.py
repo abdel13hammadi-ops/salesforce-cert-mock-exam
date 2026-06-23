@@ -603,7 +603,7 @@ def fetch_question_bank(exam_name, language_code, free_mock_only=False):
 
     questions_query = (
         supabase.table("questions")
-        .select("id, exam_name, language_code, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status, free_mock_exam, free_sample_order")
+        .select("id, exam_name, language_code, category, difficulty, question_text, question_type, select_count, explanation, is_active, is_exam_eligible, quality_status, free_mock_exam, free_sample_order, practice_eligible, question_family_id")
         .eq("exam_name", exam_name)
         .eq("language_code", language_code)
         .eq("is_active", True)
@@ -680,6 +680,9 @@ def fetch_question_bank(exam_name, language_code, free_mock_only=False):
             "explanation": q.get("explanation") or "",
             "free_mock_exam": bool(q.get("free_mock_exam")),
             "free_sample_order": q.get("free_sample_order"),
+            # V40: used by repeat-resistant selection waterfall
+            "practice_eligible": bool(q.get("practice_eligible", True)),
+            "question_family_id": q.get("question_family_id"),
         })
 
     meta = {
@@ -728,18 +731,158 @@ def select_by_difficulty(pool, count):
     return selected[:count]
 
 
-def generate_paid_exam_questions(bank, category_counts):
-    selected = []
+def load_paid_mock_history(supabase, user_email: str, exam_name: str) -> dict:
+    """Load paid full-mock history for V40 repeat-resistant selection.
+
+    Executes two queries:
+      1. exam_attempts  – all completed Paid Mock Exam rows for this user/exam,
+                          ordered by completed_at DESC.
+      2. question_attempts – question-level exposure rows linked to those attempt IDs.
+
+    Returns the history context dict produced by build_history_context().
+    Raises on Supabase errors so the caller (_load_paid_mock_history_safe) can
+    catch and fall back gracefully.
+    """
+    from utils.question_selection import build_history_context
+
+    _empty: dict = {
+        "seen_question_ids": set(),
+        "exposure_count": {},
+        "last_seen": {},
+        "recent_attempt_ids": set(),
+        "recent_question_ids": set(),
+    }
+
+    # Query 1 – all completed paid mock attempts, most-recent first
+    attempts_result = (
+        supabase.table("exam_attempts")
+        .select("id, completed_at")
+        .eq("user_email", user_email)
+        .eq("exam_name", exam_name)
+        .eq("mode", "Paid Mock Exam")
+        .not_("completed_at", "is", "null")
+        .order("completed_at", desc=True)
+        .execute()
+    )
+    all_attempts = attempts_result.data or []
+
+    if not all_attempts:
+        return _empty
+
+    attempt_ids = [a["id"] for a in all_attempts if a.get("id") is not None]
+    if not attempt_ids:
+        return _empty
+
+    # Lookup: attempt_id → completed_at used as fallback when answered_at is null
+    attempt_ts: dict = {
+        str(a["id"]): a.get("completed_at") or ""
+        for a in all_attempts
+        if a.get("id") is not None
+    }
+
+    # Query 2 – question exposure rows; the per-question timestamp column is answered_at
+    raw_qa_rows: list = []
+    chunk_size = 100
+    for i in range(0, len(attempt_ids), chunk_size):
+        chunk = attempt_ids[i : i + chunk_size]
+        qa_result = (
+            supabase.table("question_attempts")
+            .select("question_id, exam_attempt_id, answered_at")
+            .in_("exam_attempt_id", chunk)
+            .execute()
+        )
+        raw_qa_rows.extend(qa_result.data or [])
+
+    # Remap to the field name expected by build_history_context ("completed_at").
+    # answered_at is preferred; fall back to the parent attempt's completed_at
+    # when answered_at is null so last-seen tracking still works.
+    exposure_rows = [
+        {
+            "question_id": row.get("question_id"),
+            "exam_attempt_id": row.get("exam_attempt_id"),
+            "completed_at": (
+                row.get("answered_at")
+                or attempt_ts.get(str(row.get("exam_attempt_id") or ""), "")
+            ),
+        }
+        for row in raw_qa_rows
+    ]
+
+    return build_history_context(all_attempts, exposure_rows, recent_attempt_count=2)
+
+
+def _load_paid_mock_history_safe(exam_name: str):
+    """Wrap load_paid_mock_history with full error isolation.
+
+    Returns:
+        dict  – valid history context (may be all-empty for a first-time user)
+        None  – on any failure; callers must fall back to legacy selection
+    """
+    user_email = get_current_user_email()
+    if not user_email:
+        return {
+            "seen_question_ids": set(),
+            "exposure_count": {},
+            "last_seen": {},
+            "recent_attempt_ids": set(),
+            "recent_question_ids": set(),
+        }
+    try:
+        supabase = get_supabase_client()
+        return load_paid_mock_history(supabase, user_email, exam_name)
+    except Exception:
+        # History is non-critical. Return None to signal failure; the caller
+        # will fall back to the legacy difficulty-based selection without
+        # surfacing any error or sensitive detail to the user.
+        return None
+
+
+def generate_paid_exam_questions(bank, category_counts, history=None):
+    """Select questions for a paid full mock exam.
+
+    When ``history`` is a valid dict (including an empty-history dict for a
+    first-time user), the V40 repeat-resistant waterfall is applied within each
+    domain quota.  When ``history`` is None (history-load failure), selection
+    falls back to the legacy difficulty-based algorithm so exam generation is
+    never blocked by a history failure.
+
+    Difficulty (V40): per-domain difficulty targets remain the authority.  In
+    the V40 path the waterfall ranking is applied *within* each difficulty
+    bucket (see select_questions_for_domain); the legacy fallback path keeps
+    select_by_difficulty().  In both paths the 8–10 multiple-answer balancing
+    step now reuses the same V40 ranking/history rules when choosing
+    replacements, so it can no longer reintroduce duplicate ids or families.
+    """
+    from utils.question_selection import select_paid_mock_questions, balance_multi_select
+
     by_category = defaultdict(list)
     for q in bank:
         by_category[q["category"]].append(q)
 
-    missing = []
-    for category, required_count in category_counts.items():
-        pool = by_category.get(category, [])
-        if len(pool) < required_count:
-            missing.append(f"{category}: need {required_count}, found {len(pool)}")
-        selected.extend(select_by_difficulty(pool, required_count))
+    # A valid (possibly empty) history dict so balancing can rank replacements
+    # even when history loading failed.
+    history_for_ranking = history if history is not None else {
+        "seen_question_ids": set(),
+        "exposure_count": {},
+        "last_seen": {},
+        "recent_attempt_ids": set(),
+        "recent_question_ids": set(),
+    }
+
+    if history is not None:
+        # V40 waterfall path (difficulty preserved inside the selector).
+        result = select_paid_mock_questions(bank, category_counts, history)
+        selected = result["selected"]
+        missing = result["missing"]
+    else:
+        # Legacy difficulty-based path (fallback when history load failed).
+        selected = []
+        missing = []
+        for category, required_count in category_counts.items():
+            pool = by_category.get(category, [])
+            if len(pool) < required_count:
+                missing.append(f"{category}: need {required_count}, found {len(pool)}")
+            selected.extend(select_by_difficulty(pool, required_count))
 
     if missing:
         st.error("Not enough questions in one or more categories for this certification/language:")
@@ -747,45 +890,10 @@ def generate_paid_exam_questions(bank, category_counts):
             st.write(f"- {item}")
         st.stop()
 
-    min_multi = 8
-    max_multi = 10
-    multi_count = sum(1 for q in selected if q.get("type") == "multiple")
-
-    if multi_count < min_multi:
-        selected_ids = {q["id"] for q in selected}
-        for idx, q in enumerate(list(selected)):
-            if multi_count >= min_multi:
-                break
-            if q.get("type") == "multiple":
-                continue
-            same_category_multi = [
-                candidate for candidate in by_category[q["category"]]
-                if candidate.get("type") == "multiple" and candidate["id"] not in selected_ids
-            ]
-            if same_category_multi:
-                replacement = random.choice(same_category_multi)
-                selected_ids.remove(q["id"])
-                selected_ids.add(replacement["id"])
-                selected[idx] = replacement
-                multi_count += 1
-
-    if multi_count > max_multi:
-        selected_ids = {q["id"] for q in selected}
-        for idx, q in enumerate(list(selected)):
-            if multi_count <= max_multi:
-                break
-            if q.get("type") != "multiple":
-                continue
-            same_category_single = [
-                candidate for candidate in by_category[q["category"]]
-                if candidate.get("type") == "single" and candidate["id"] not in selected_ids
-            ]
-            if same_category_single:
-                replacement = random.choice(same_category_single)
-                selected_ids.remove(q["id"])
-                selected_ids.add(replacement["id"])
-                selected[idx] = replacement
-                multi_count -= 1
+    # 8–10 multiple-answer balancing, V40-aware (same-category, waterfall-ranked,
+    # id-unique, family-unique where inventory allows; 1-for-1 swaps preserve the
+    # exact per-domain and total counts).
+    selected = balance_multi_select(selected, by_category, history_for_ranking)
 
     random.shuffle(selected)
     return selected
@@ -840,9 +948,14 @@ def ensure_exam_generated(exam_access_type, exam_name, language_code, category_c
         st.session_state.submitted = False
         st.session_state.started = False
         st.session_state.review_mode = False
-        st.session_state.attempt_saved = False
         st.session_state.exam_access_type = exam_access_type
         st.session_state.exam_key = exam_key
+        # A different exam set invalidates any in-flight submission snapshot/id.
+        st.session_state.submission_save_state = "idle"
+        st.session_state.submission_snapshot = None
+        st.session_state.current_exam_attempt_id = None
+        st.session_state.attempt_save_error = None
+        st.session_state.save_retry_requested = False
 
     restored_questions = apply_pending_exam_state_if_valid(bank, exam_key)
     if restored_questions:
@@ -850,7 +963,11 @@ def ensure_exam_generated(exam_access_type, exam_name, language_code, category_c
 
     if "all_questions" not in st.session_state or not st.session_state.all_questions:
         if exam_access_type == "paid":
-            st.session_state.all_questions = generate_paid_exam_questions(bank, category_counts)
+            # V40: load history; None signals failure → legacy fallback inside generator
+            history = _load_paid_mock_history_safe(exam_name)
+            st.session_state.all_questions = generate_paid_exam_questions(
+                bank, category_counts, history=history
+            )
         else:
             st.session_state.all_questions = generate_free_mock_questions(bank, category_counts)
 
@@ -874,8 +991,13 @@ defaults = {
     "randomize_questions": True,
     "randomize_choices": True,
     "choice_orders": {},
-    "attempt_saved": False,
-    "attempt_save_checked": False,
+    # Submission-persistence state machine (replaces the old attempt_save_checked
+    # boolean). See utils/exam_submission.py.
+    "submission_save_state": "idle",
+    "submission_snapshot": None,
+    "current_exam_attempt_id": None,
+    "attempt_save_error": None,
+    "save_retry_requested": False,
 }
 
 for key, value in defaults.items():
@@ -1006,6 +1128,12 @@ def persist_exam_state_to_query(questions=None):
         # Carry the certified exam duration so it survives browser reload and the
         # exemption block can validate elapsed time even before EXAM_MINUTES resolves.
         "time_limit_minutes": int(st.session_state.get("exam_time_limit_minutes") or EXAM_MINUTES_DEFAULT),
+        # Carry the persistence state machine + parent id so a full browser
+        # refresh after submission reuses the same parent (no duplicate parent
+        # even beyond the 45-second recent-match window) and does not re-save an
+        # already-saved attempt.
+        "save_state": st.session_state.get("submission_save_state") or "idle",
+        "attempt_id": st.session_state.get("current_exam_attempt_id"),
     }
     _set_exam_state_query_value(_encode_exam_state_for_query(state))
 
@@ -1073,6 +1201,14 @@ def apply_pending_exam_state_if_valid(bank, exam_key):
     st.session_state.marked = set(i for i in (state.get("marked") or []) if isinstance(i, int) and 0 <= i < len(restored_questions))
     st.session_state.choice_orders = _restore_choice_orders(state, restored_questions)
     st.session_state.all_questions = restored_questions
+    # Restore the persistence state machine + parent id so a refresh after
+    # submission reuses the same parent and never re-inserts a duplicate.
+    restored_attempt_id = state.get("attempt_id")
+    if restored_attempt_id is not None:
+        st.session_state.current_exam_attempt_id = restored_attempt_id
+    restored_save_state = state.get("save_state")
+    if restored_save_state in {"idle", "saving", "saved", "failed"}:
+        st.session_state.submission_save_state = restored_save_state
     # Restore exam duration so the exemption block can validate remaining time on
     # reruns that follow this restoration (e.g. the 1-second autorefresh).
     # Route the untrusted URL value through the hardened validator: it rejects
@@ -1168,7 +1304,11 @@ if not st.session_state.get("started", False):
         st.session_state.current_question = 0
         st.session_state.submitted = False
         st.session_state.review_mode = False
-        st.session_state.attempt_saved = False
+        st.session_state.submission_save_state = "idle"
+        st.session_state.submission_snapshot = None
+        st.session_state.current_exam_attempt_id = None
+        st.session_state.attempt_save_error = None
+        st.session_state.save_retry_requested = False
         st.session_state.exam_key = None
         st.rerun()
 
@@ -1242,13 +1382,155 @@ def plain_breakdown(stats):
     }
 
 
-def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficulty_breakdown):
+def _capture_exception_safe(exc):
+    """Forward an exception to Sentry without ever raising. No payloads/PII."""
+    try:
+        import sentry_sdk
+        sentry_sdk.capture_exception(exc)
+    except Exception:
+        pass
+
+
+def _reset_submission_state():
+    """Clear all submission-persistence state for a genuinely new exam."""
+    st.session_state.submission_save_state = "idle"
+    st.session_state.submission_snapshot = None
+    st.session_state.current_exam_attempt_id = None
+    st.session_state.attempt_save_error = None
+    st.session_state.save_retry_requested = False
+
+
+def _capture_submission_snapshot():
+    """Freeze the exact scored questions/answers at submission time.
+
+    The snapshot is the single source of truth for scoring, persistence, and the
+    results UI, so later session mutation or question-bank regeneration can never
+    change what was scored or what gets saved.
+    """
+    from utils.exam_submission import build_submission_snapshot
+    snapshot = build_submission_snapshot(
+        st.session_state.get("all_questions") or [],
+        st.session_state.get("answers") or {},
+        submitted_at_iso=datetime.now(timezone.utc).isoformat(),
+        exam_name=SELECTED_EXAM_NAME,
+        language_code=SELECTED_LANGUAGE_CODE,
+        mode=st.session_state.get("exam_access_type", "unknown"),
+    )
+    st.session_state.submission_snapshot = snapshot
+    st.session_state.submission_save_state = "idle"
+    st.session_state.attempt_save_error = None
+    st.session_state.save_retry_requested = False
+    return snapshot
+
+
+def _save_question_attempts_batch(
+    supabase,
+    exam_attempt_id,
+    user_email: str,
+    completed_at,
+    questions,
+    answers,
+    total_questions=None,
+):
+    """Persist one question_attempts row per question for a completed paid mock.
+
+    ``questions`` and ``answers`` must be the immutable scored snapshot passed
+    by the caller — this function never reads from st.session_state so that a
+    stale or cleared session cannot silently produce zero child rows.
+
+    Idempotent: rows are upserted on the (exam_attempt_id, question_id) unique
+    constraint in chunks of 50, so a Streamlit rerun repairs missing/partial
+    rows instead of duplicating or skipping them.  The final saved row count is
+    verified against the expected total; a wrong count returns a safe error.
+
+    Returns (ok: bool, error: Optional[str]).  Never raises.
+    """
+    from utils.question_selection import build_question_attempt_rows, persist_question_attempts
+    from utils.paid_mock_diagnostics import (
+        log_batch_enter,
+        log_batch_question_ids,
+        log_batch_rows_built,
+    )
+
+    questions = list(questions or [])
+    answers = dict(answers or {})
+
+    log_batch_enter(
+        passed_question_count=len(questions),
+        answer_count=len(answers),
+        expected_count=total_questions,
+    )
+
+    if not questions:
+        _capture_exception_safe(
+            RuntimeError("_save_question_attempts_batch called with empty questions list")
+        )
+        return False, "Detailed question results could not be saved. Please try again."
+
+    qids = [q.get("id") for q in questions]
+    log_batch_question_ids(
+        distinct_count=len({qid for qid in qids if qid is not None}),
+        null_count=sum(1 for qid in qids if qid is None),
+    )
+
+    rows = build_question_attempt_rows(
+        questions,
+        answers,
+        exam_attempt_id=exam_attempt_id,
+        user_email=user_email,
+        default_exam_name=SELECTED_EXAM_NAME,
+        default_language_code=SELECTED_LANGUAGE_CODE,
+        answered_at_iso=completed_at.isoformat(),
+        time_spent_by_index=st.session_state.get("question_time_spent") or {},
+    )
+
+    log_batch_rows_built(built_count=len(rows))
+
+    expected = int(total_questions) if total_questions is not None else len(rows)
+
+    return persist_question_attempts(
+        supabase,
+        rows,
+        exam_attempt_id=exam_attempt_id,
+        expected_count=expected,
+        chunk_size=50,
+        on_error=_capture_exception_safe,
+    )
+
+
+def _persist_children_and_report(supabase, attempt_id, user_email, completed_at, questions, answers, total_questions):
+    """Persist child rows for a known parent id and emit the result event."""
+    from utils.paid_mock_diagnostics import log_child_persistence_call, log_save_exam_attempt_result
+    log_child_persistence_call(attempt_id=attempt_id, passed_question_count=len(list(questions or [])))
+    result = _save_question_attempts_batch(
+        supabase, attempt_id, user_email, completed_at,
+        questions, answers, total_questions
+    )
+    log_save_exam_attempt_result(success=result[0], error_category=type(result[1]).__name__ if result[1] else None)
+    return result
+
+
+def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficulty_breakdown, *, questions, answers):
+    # TRUE call boundary: this is the very first statement so a "save_exam_attempt
+    # was entered" signal is emitted before any early return can hide it.
+    from utils.paid_mock_diagnostics import (
+        log_duplicate_guard_result,
+        log_parent_id_resolved,
+        log_parent_id_reused,
+        log_parent_insert_complete,
+        log_parent_insert_start,
+        log_save_exam_attempt_enter,
+        log_save_exam_attempt_result,
+    )
+
+    mode = "Paid Mock Exam" if st.session_state.get("exam_access_type") == "paid" else "Free Mock Exam"
+    log_save_exam_attempt_enter(mode=mode)
+
     user_email = get_current_user_email()
     if not user_email:
         return False, "No account email saved. Open the Account page and save your email first."
 
     supabase = get_supabase_client()
-    mode = "Paid Mock Exam" if st.session_state.get("exam_access_type") == "paid" else "Free Mock Exam"
     completed_at = datetime.now(timezone.utc)
 
     try:
@@ -1256,11 +1538,24 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
     except Exception:
         started_at = completed_at
 
-    # Streamlit can rerun the script during/after query-param updates. Without an
-    # idempotency guard, one final submission can create two exam_attempts rows.
-    # We do not have an attempt_uuid column yet, so use a short recent-match guard.
-    recent_cutoff = (completed_at - timedelta(seconds=45)).isoformat()
+    is_paid = (mode == "Paid Mock Exam")
 
+    # 1) PARENT ID REUSE — the authoritative guard against duplicate parents.
+    # If this submission already created a parent (any prior rerun/retry), reuse
+    # that exact id and retry ONLY child persistence. This never depends on the
+    # 45-second window, so a delayed retry still repairs the same parent.
+    if is_paid:
+        reused_id = st.session_state.get("current_exam_attempt_id")
+        if reused_id is not None:
+            log_parent_id_reused(attempt_id=reused_id)
+            return _persist_children_and_report(
+                supabase, reused_id, user_email, completed_at, questions, answers, total_questions
+            )
+
+    # 2) DUPLICATE GUARD (fallback) — recent-match lookup for the case where the
+    # stored id was lost. Still avoids a second parent within the window.
+    recent_cutoff = (completed_at - timedelta(seconds=45)).isoformat()
+    existing_attempt_id = None
     try:
         existing = (
             supabase.table("exam_attempts")
@@ -1272,16 +1567,30 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
             .eq("total_questions", int(total_questions))
             .eq("correct_answers", int(correct))
             .gte("completed_at", recent_cutoff)
+            .order("completed_at", desc=True)
             .limit(1)
             .execute()
         )
-        if getattr(existing, "data", None):
-            return True, None
+        existing_rows = getattr(existing, "data", None) or []
+        if existing_rows:
+            existing_attempt_id = existing_rows[0].get("id")
     except Exception:
         # Do not block saving if the duplicate check fails. The insert error handler below
         # will still catch real write failures.
         pass
 
+    log_duplicate_guard_result(existing_attempt_id=existing_attempt_id)
+
+    if existing_attempt_id is not None:
+        if is_paid:
+            # Store the recovered id so every later retry reuses it (Step 1).
+            st.session_state.current_exam_attempt_id = existing_attempt_id
+            return _persist_children_and_report(
+                supabase, existing_attempt_id, user_email, completed_at, questions, answers, total_questions
+            )
+        return True, None
+
+    # 3) PARENT INSERT — only reached when no parent exists for this submission.
     payload = {
         "user_email": user_email,
         "mode": mode,
@@ -1297,11 +1606,71 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
         "completed_at": completed_at.isoformat(),
     }
 
+    log_parent_insert_start()
     try:
-        supabase.table("exam_attempts").insert(payload).execute()
-        return True, None
+        insert_result = supabase.table("exam_attempts").insert(payload).execute()
     except Exception as exc:
-        return False, str(exc)
+        _capture_exception_safe(exc)
+        log_save_exam_attempt_result(success=False, error_category="parent_insert_exception")
+        return False, "Your exam score could not be saved. Please try again."
+
+    log_parent_insert_complete(returned_data_count=len(getattr(insert_result, "data", None) or []))
+
+    # Free mocks do not track per-question rows; parent insert is enough.
+    if not is_paid:
+        return True, None
+
+    # Use the returned id; fall back to a recent-match lookup if the insert
+    # response did not include one, so child rows can still be attached.
+    from utils.question_selection import resolve_exam_attempt_id
+    attempt_id = resolve_exam_attempt_id(
+        insert_result,
+        recover_fn=lambda: _recover_recent_attempt_id(
+            supabase, user_email, mode, total_questions, correct, recent_cutoff
+        ),
+    )
+
+    log_parent_id_resolved(attempt_id=attempt_id)
+
+    if attempt_id is None:
+        # Parent is saved, but we cannot locate its id to attach child rows.
+        # Preserve the parent; a later rerun can backfill via the guard above.
+        log_save_exam_attempt_result(success=False, error_category="attempt_id_unresolved")
+        return False, "Your attempt was saved, but detailed question results could not be linked yet."
+
+    # STORE THE PARENT ID IMMEDIATELY so a child-write failure (or any rerun)
+    # reuses this exact parent and never inserts a second one.
+    st.session_state.current_exam_attempt_id = attempt_id
+
+    return _persist_children_and_report(
+        supabase, attempt_id, user_email, completed_at, questions, answers, total_questions
+    )
+
+
+def _recover_recent_attempt_id(supabase, user_email, mode, total_questions, correct, recent_cutoff):
+    """Best-effort lookup of a just-saved exam_attempts.id via recent match.
+
+    Used only when an insert response did not return the id. Never raises.
+    """
+    try:
+        result = (
+            supabase.table("exam_attempts")
+            .select("id")
+            .eq("user_email", user_email)
+            .eq("exam_name", SELECTED_EXAM_NAME)
+            .eq("language_code", SELECTED_LANGUAGE_CODE)
+            .eq("mode", mode)
+            .eq("total_questions", int(total_questions))
+            .eq("correct_answers", int(correct))
+            .gte("completed_at", recent_cutoff)
+            .order("completed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(result, "data", None) or []
+        return rows[0].get("id") if rows else None
+    except Exception:
+        return None
 
 
 def reset_exam():
@@ -1391,8 +1760,7 @@ if not st.session_state.started:
             st.session_state.current_question = 0
             st.session_state.review_mode = False
             st.session_state.submitted = False
-            st.session_state.attempt_saved = False
-            st.session_state.attempt_save_checked = False
+            _reset_submission_state()
             persist_exam_state_to_query(questions)
             st.rerun()
     with col_regen:
@@ -1407,6 +1775,7 @@ elif not st.session_state.submitted:
 
     if remaining <= 0:
         st.session_state.submitted = True
+        _capture_submission_snapshot()
         st.rerun()
 
     mins = int(remaining // 60)
@@ -1472,6 +1841,7 @@ elif not st.session_state.submitted:
         with col2:
             if st.button("Final Submit", type="primary"):
                 st.session_state.submitted = True
+                _capture_submission_snapshot()
                 persist_exam_state_to_query(questions)
                 st.rerun()
 
@@ -1558,37 +1928,90 @@ elif not st.session_state.submitted:
                 st.rerun()
 
 else:
-    correct = 0
-    for i, q in enumerate(questions):
-        if is_correct(st.session_state.answers.get(i, []), q["answers"]):
-            correct += 1
+    from utils.exam_submission import (
+        STATE_FAILED,
+        STATE_SAVED,
+        plan_persistence,
+        resolve_final_state,
+        snapshot_distinct_question_ids,
+        snapshot_question_count,
+    )
+    from utils.paid_mock_diagnostics import (
+        log_results_persistence_branch_enter,
+        log_save_call_after,
+        log_save_call_before,
+        log_save_call_exception,
+        log_save_state_transition,
+        log_submission_snapshot_ready,
+    )
 
-    score = round((correct / len(questions)) * 100, 2)
+    log_results_persistence_branch_enter()
 
-    domain_stats = calculate_breakdown("category")
-    difficulty_stats = calculate_breakdown("difficulty")
-    domain_breakdown_json = plain_breakdown(domain_stats)
-    difficulty_breakdown_json = plain_breakdown(difficulty_stats)
+    # ── IMMUTABLE SNAPSHOT ────────────────────────────────────────────────────
+    # The snapshot is captured at submit time. If we somehow reached results
+    # without one (e.g. restored mid-flight), capture it now from current state.
+    if not st.session_state.get("submission_snapshot"):
+        _capture_submission_snapshot()
+    snapshot = st.session_state.get("submission_snapshot") or {}
 
-    if not st.session_state.get("attempt_save_checked", False):
-        # Set this before the write. Query-param updates and Streamlit reruns can happen
-        # around result rendering; the flag must already be set before any insert attempt.
-        st.session_state.attempt_save_checked = True
-        saved, save_error = save_exam_attempt(
-            score=score,
-            correct=correct,
-            total_questions=len(questions),
-            domain_breakdown=domain_breakdown_json,
-            difficulty_breakdown=difficulty_breakdown_json,
-        )
-        st.session_state.attempt_saved = saved
-        st.session_state.attempt_save_error = save_error
+    snap_questions = snapshot.get("questions") or []
+    snap_answers = snapshot.get("answers") or {}
+    score = snapshot.get("score", 0.0)
+    correct = snapshot.get("correct", 0)
+    total = snapshot.get("total", len(snap_questions))
+    domain_breakdown_json = snapshot.get("domain_breakdown") or {}
+    difficulty_breakdown_json = snapshot.get("difficulty_breakdown") or {}
 
+    log_submission_snapshot_ready(
+        question_count=snapshot_question_count(snapshot),
+        answer_count=len(snap_answers),
+        distinct_question_count=snapshot_distinct_question_ids(snapshot),
+    )
+
+    # ── PERSISTENCE (runs BEFORE any results UI) ──────────────────────────────
+    # No component, metric, query-param write, or other UI call may sit between
+    # this state check and the actual save call.
+    current_state = st.session_state.get("submission_save_state", "idle")
+    retry_requested = bool(st.session_state.pop("save_retry_requested", False))
+    action, saving_state = plan_persistence(current_state, retry_requested)
+
+    if action == "run":
+        st.session_state.submission_save_state = saving_state
+        log_save_state_transition(from_state=current_state, to_state=saving_state)
+        log_save_call_before()
+        try:
+            saved, save_error = save_exam_attempt(
+                score=score,
+                correct=correct,
+                total_questions=total,
+                domain_breakdown=domain_breakdown_json,
+                difficulty_breakdown=difficulty_breakdown_json,
+                questions=snap_questions,
+                answers=snap_answers,
+            )
+        except Exception as exc:  # never let a raw DB error reach the user
+            _capture_exception_safe(exc)
+            log_save_call_exception(exc=exc)
+            saved, save_error = False, "Your result could not be saved. Use Retry Saving Result below."
+        log_save_call_after(success=saved)
+        final_state = resolve_final_state(saved)
+        st.session_state.attempt_save_error = None if saved else save_error
+        log_save_state_transition(from_state=saving_state, to_state=final_state)
+        st.session_state.submission_save_state = final_state
+
+    save_state = st.session_state.get("submission_save_state", "idle")
+
+    # Sync the resolved parent id + save state into the URL (a query-param write,
+    # intentionally AFTER persistence) so a later browser refresh reuses the same
+    # parent and skips re-saving an already-saved attempt.
+    persist_exam_state_to_query(snap_questions)
+
+    # ── RESULTS UI (only after persistence resolves) ──────────────────────────
     st.header("Exam Results")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Score", f"{score}%")
-    c2.metric("Correct", f"{correct} / {len(questions)}")
+    c2.metric("Correct", f"{correct} / {total}")
     c3.metric("Passing Score", f"{PASSING_SCORE}%")
 
     if score >= PASSING_SCORE:
@@ -1596,18 +2019,27 @@ else:
     else:
         st.error("FAIL")
 
-    if st.session_state.get("attempt_saved"):
+    if save_state == STATE_SAVED:
         st.success("Attempt saved to progress tracking ✅")
-    elif st.session_state.get("attempt_save_error"):
-        st.warning("Attempt was scored, but it was not saved to Supabase. Check exam_attempts columns if this continues.")
+    elif save_state == STATE_FAILED:
+        # Visible, safe error (no raw DB message) + an explicit repair action.
+        st.warning(
+            st.session_state.get("attempt_save_error")
+            or "Attempt was scored, but saving to Supabase did not fully complete."
+        )
+        if st.button("Retry Saving Result", type="primary"):
+            from utils.paid_mock_diagnostics import log_save_retry_requested
+            log_save_retry_requested()
+            st.session_state.save_retry_requested = True
+            st.rerun()
 
     st.divider()
     st.header("Performance Breakdown")
 
     st.subheader("By Domain")
     for domain in CATEGORY_COUNTS.keys():
-        data = domain_stats.get(domain, {"correct": 0, "total": 0})
-        if data["total"] == 0:
+        data = domain_breakdown_json.get(domain, {"correct": 0, "total": 0})
+        if data.get("total", 0) == 0:
             continue
         percent = round((data["correct"] / data["total"]) * 100, 2)
         st.write(f"**{domain}:** {data['correct']} / {data['total']} correct ({percent}%)")
@@ -1615,8 +2047,8 @@ else:
     if st.session_state.get("exam_access_type") == "paid":
         st.subheader("By Difficulty")
         for difficulty in ["easy", "medium", "hard"]:
-            data = difficulty_stats.get(difficulty, {"correct": 0, "total": 0})
-            if data["total"] == 0:
+            data = difficulty_breakdown_json.get(difficulty, {"correct": 0, "total": 0})
+            if data.get("total", 0) == 0:
                 continue
             percent = round((data["correct"] / data["total"]) * 100, 2)
             st.write(f"**{format_diff(difficulty)}:** {data['correct']} / {data['total']} correct ({percent}%)")
@@ -1626,8 +2058,8 @@ else:
 
     review_filter = st.radio("Review filter:", ["All Questions", "Incorrect Only", "Correct Only"], horizontal=True)
 
-    for i, q in enumerate(questions):
-        user_answer = st.session_state.answers.get(i, [])
+    for i, q in enumerate(snap_questions):
+        user_answer = snap_answers.get(i, [])
         correct_answers = q["answers"]
         result_correct = is_correct(user_answer, correct_answers)
 

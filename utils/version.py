@@ -6,4 +6,4 @@ To update for any code change:
   3. All pages import from here — one edit updates every page simultaneously.
 """
 
-APP_VERSION = "V39_QUESTION_ROLE_ENFORCEMENT"
+APP_VERSION = "V40_REPEAT_RESISTANT_PAID_MOCKS"

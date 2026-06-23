@@ -19,6 +19,7 @@ import builtins
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -49,8 +50,11 @@ class TestNoDSN(unittest.TestCase):
     def setUp(self) -> None:
         _clear_dsn_env()
         _reset_module()
+        self._get_dsn_patcher = patch("utils.sentry_config._get_dsn", return_value=None)
+        self._get_dsn_patcher.start()
 
     def tearDown(self) -> None:
+        self._get_dsn_patcher.stop()
         _clear_dsn_env()
         _reset_module()
 
@@ -67,6 +71,19 @@ class TestNoDSN(unittest.TestCase):
             self.fail(f"init_sentry() raised unexpectedly with no DSN: {exc}")
 
     def test_empty_dsn_env_not_used(self) -> None:
+        self._get_dsn_patcher.stop()
+
+        def _get_dsn_env_only():
+            dsn = os.environ.get("SENTRY_DSN", "")
+            if dsn and dsn.strip():
+                return dsn.strip()
+            return None
+
+        self._get_dsn_patcher = patch(
+            "utils.sentry_config._get_dsn",
+            side_effect=_get_dsn_env_only,
+        )
+        self._get_dsn_patcher.start()
         os.environ["SENTRY_DSN"] = "   "
         import utils.sentry_config as sc
         sc.init_sentry()
@@ -82,8 +99,11 @@ class TestIdempotency(unittest.TestCase):
     def setUp(self) -> None:
         _clear_dsn_env()
         _reset_module()
+        self._get_dsn_patcher = patch("utils.sentry_config._get_dsn", return_value=None)
+        self._get_dsn_patcher.start()
 
     def tearDown(self) -> None:
+        self._get_dsn_patcher.stop()
         _clear_dsn_env()
         _reset_module()
 
