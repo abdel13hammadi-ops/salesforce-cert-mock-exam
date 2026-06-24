@@ -977,9 +977,9 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
         fake = FakeSupabase()
         registry = build_handler_registry(fake)
 
-        # deterministic_audit is now implemented; only these remain as stubs.
+        # deterministic_audit and llm_audit are now implemented.
+        # Only these remain as NotImplementedHandler stubs.
         still_stubbed = [
-            "llm_audit",
             "hybrid_audit",
             "question_generation",
             "embedding_generation",
@@ -993,8 +993,8 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
                         attempt=1, heartbeat_fn=lambda: None)
 
     def test_implemented_types_are_not_stubs(self):
-        """resource_ingestion, candidate_promotion, and deterministic_audit
-        must not raise NotImplementedHandler."""
+        """resource_ingestion, candidate_promotion, deterministic_audit, and
+        llm_audit must not raise NotImplementedHandler."""
         _AUDIT_RUN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
         fake = FakeSupabase()
         fake.set_response("ingest_resource_version_v1", [_INGEST_RESPONSE])
@@ -1025,10 +1025,20 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
             },
         }
 
+        _VALID_LLM_PAYLOAD = {
+            "target_question_version_id": "bbbbbbbb-0000-0000-0000-000000000001",
+            "created_by":     "audit-worker@certbound.io",
+            "model_name":     "gpt-4o",
+            "prompt_version": "v1.0.0",
+            "system_prompt":  "You are an expert Salesforce question auditor.",
+            "user_prompt":    "Audit this question: What is 2+2?",
+        }
+
         for job_type, payload in [
             ("resource_ingestion",  _VALID_INGEST_PAYLOAD),
             ("candidate_promotion", _VALID_PROMOTE_PAYLOAD),
             ("deterministic_audit", _VALID_AUDIT_PAYLOAD),
+            ("llm_audit",           _VALID_LLM_PAYLOAD),
         ]:
             try:
                 registry[job_type](
@@ -1038,8 +1048,9 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
             except NotImplementedHandler:
                 self.fail(f"{job_type} raised NotImplementedHandler — must be a real handler")
             except Exception:
-                # Any other exception (e.g. RPC error from fake) is acceptable;
-                # only NotImplementedHandler signals "not yet implemented".
+                # Any other exception (MissingProviderError, RPC error, etc.)
+                # is acceptable; only NotImplementedHandler signals "not yet
+                # implemented".
                 pass
 
 

@@ -27,11 +27,16 @@ Implemented handlers
   resource_ingestion   (8B) → calls ingest_resource_version_v1 RPC
   candidate_promotion  (8C) → calls promote_question_candidate_v1 RPC
   deterministic_audit  (8D) → orchestrates create→check→complete audit RPCs
+  llm_audit            (8G) → calls injected LLM provider, validates response,
+                               orchestrates create→check→complete audit RPCs
 
 All other handlers are stubs that raise NotImplementedHandler.
-Use build_handler_registry(client) to build the registry with real handlers
-injected.  HANDLER_REGISTRY contains only stubs (useful for testing and as a
-fallback default).
+Use build_handler_registry(client, llm_provider=<provider>) to build the
+registry with real handlers injected.  HANDLER_REGISTRY contains only stubs
+(useful for testing and as a fallback default).
+
+llm_audit raises MissingProviderError before any RPC call when llm_provider
+is None.  Supply a provider via build_handler_registry to enable real calls.
 """
 
 from __future__ import annotations
@@ -310,6 +315,128 @@ def make_deterministic_audit_handler(client) -> Callable[..., dict]:
     return handle
 
 
+def make_llm_audit_handler(client, llm_provider=None) -> Callable[..., dict]:
+    """Return the llm_audit handler bound to *client* and *llm_provider*.
+
+    If *llm_provider* is ``None`` the returned handler raises
+    ``MissingProviderError`` immediately, before any RPC call, so no
+    orphaned audit_run rows are created.
+
+    Expected payload fields
+    -----------------------
+    Exactly one of:
+      target_question_version_id  str  — UUID of a question_versions row
+      target_candidate_id         str  — UUID of a question_candidates row
+
+    Required:
+      created_by     str  — email or service identifier of the caller
+      model_name     str  — provider model identifier (e.g. 'gpt-4o')
+      prompt_version str  — version tag for the prompt template
+      system_prompt  str  — system-level instructions for the model
+      user_prompt    str  — user-level content (question + resource + task)
+
+    Optional:
+      question          dict  — structured question snapshot (for traceability)
+      resource_snapshot dict  — resource context passed to create_audit_run_v1
+      metadata          dict  — extra metadata merged into the audit run
+
+    Returns
+    -------
+      audit_run_id   str
+      run_status     str
+      finding_count  int
+      evidence_count int
+      input_tokens   int
+      output_tokens  int
+      actual_cost_usd float or None
+
+    RPCs called (via audit_orchestration):
+      create_audit_run_v1, complete_audit_run_v1, end_audit_run_v1 (on failure)
+    """
+    from workers.llm_providers import MissingProviderError          # noqa: PLC0415
+    from workers.llm_audit import validate_llm_response, AUDIT_RESPONSE_SCHEMA  # noqa: PLC0415
+    from workers.audit_orchestration import orchestrate_audit        # noqa: PLC0415
+
+    def handle(
+        job_id: str,
+        payload: dict,
+        checkpoint: dict,
+        attempt: int,
+        heartbeat_fn: Callable[[], None],
+    ) -> dict:
+        # Guard: check provider BEFORE any RPC call so no run row is created.
+        if llm_provider is None:
+            raise MissingProviderError(
+                "No LLM provider configured for llm_audit jobs. "
+                "Pass llm_provider=<provider> to build_handler_registry()."
+            )
+
+        # Target validation
+        tqv_id = payload.get("target_question_version_id") or None
+        tc_id  = payload.get("target_candidate_id") or None
+        n_targets = sum(1 for v in (tqv_id, tc_id) if v)
+        if n_targets != 1:
+            raise HandlerPayloadError(
+                "exactly one of target_question_version_id or "
+                "target_candidate_id must be provided"
+            )
+
+        created_by     = _require(payload, "created_by")
+        model_name     = _require(payload, "model_name")
+        prompt_version = _require(payload, "prompt_version")
+        system_prompt  = _require(payload, "system_prompt")
+        user_prompt    = _require(payload, "user_prompt")
+
+        question          = payload.get("question")
+        resource_snapshot = payload.get("resource_snapshot")
+        metadata          = payload.get("metadata")
+
+        # Closure captures token info filled by the provider call.
+        token_info: dict = {}
+
+        def check_fn() -> list:
+            response = llm_provider(
+                model_name=model_name,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_schema=AUDIT_RESPONSE_SCHEMA,
+                metadata={
+                    **(metadata or {}),
+                    "question":          question,
+                    "resource_snapshot": resource_snapshot,
+                },
+            )
+            token_info["input_tokens"]        = response.input_tokens
+            token_info["output_tokens"]       = response.output_tokens
+            token_info["actual_cost_usd"]     = response.actual_cost_usd
+            token_info["provider_request_id"] = response.provider_request_id
+            # Validate and normalise the provider's JSON payload.
+            return validate_llm_response(response.parsed_response)
+
+        result = orchestrate_audit(
+            client,
+            audit_type="llm",
+            target_question_version_id=tqv_id,
+            target_candidate_id=tc_id,
+            created_by=created_by,
+            ruleset_version=prompt_version,
+            resource_snapshot=resource_snapshot,
+            metadata=metadata,
+            check_fn=check_fn,
+        )
+
+        return {
+            **result,
+            "input_tokens":    token_info.get("input_tokens", 0),
+            "output_tokens":   token_info.get("output_tokens", 0),
+            "actual_cost_usd": token_info.get("actual_cost_usd"),
+        }
+
+    handle.__name__ = "handle_llm_audit"
+    handle.__qualname__ = "handle_llm_audit"
+    return handle
+
+
 # ===========================================================================
 # Stub-only registry (backwards-compatible default)
 # ===========================================================================
@@ -326,25 +453,32 @@ HANDLER_REGISTRY: Dict[str, Callable[..., Any]] = {
 }
 
 
-def build_handler_registry(client) -> Dict[str, Callable[..., Any]]:
+def build_handler_registry(
+    client,
+    llm_provider=None,
+) -> Dict[str, Callable[..., Any]]:
     """Build a complete handler registry with real handlers injected.
 
     Returns a new dict that overrides resource_ingestion, candidate_promotion,
-    and deterministic_audit with real implementations bound to *client*,
-    leaving llm_audit, hybrid_audit, question_generation, embedding_generation,
-    and other as stubs.
+    deterministic_audit, and llm_audit with real implementations, leaving
+    hybrid_audit, question_generation, embedding_generation, and other as stubs.
 
     Parameters
     ----------
     client:
         Any object exposing ``.rpc(name, params).execute()`` — in production,
         the Supabase Python client; in tests, a FakeSupabase mock.
+    llm_provider:
+        Optional LLM provider callable (see ``workers.llm_providers.LlmProvider``).
+        When ``None``, the ``llm_audit`` handler raises ``MissingProviderError``
+        before any RPC call when invoked.
     """
     return {
         **HANDLER_REGISTRY,
         "resource_ingestion":  make_resource_ingestion_handler(client),
         "candidate_promotion": make_candidate_promotion_handler(client),
         "deterministic_audit": make_deterministic_audit_handler(client),
+        "llm_audit":           make_llm_audit_handler(client, llm_provider=llm_provider),
     }
 
 
@@ -355,5 +489,6 @@ __all__ = [
     "make_resource_ingestion_handler",
     "make_candidate_promotion_handler",
     "make_deterministic_audit_handler",
+    "make_llm_audit_handler",
     "build_handler_registry",
 ]

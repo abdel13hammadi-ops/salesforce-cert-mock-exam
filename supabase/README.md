@@ -38,3 +38,6 @@
 | `workers/job_handlers.py` (Phase 8C) | candidate_promotion handler | `make_candidate_promotion_handler(client)` calls `promote_question_candidate_v1`. Payload validated before RPC. |
 | `workers/deterministic_audit.py` (Phase 8D) | Deterministic audit engine | 11 pure-function checks; 11 finding codes (e.g. `EMPTY_QUESTION_TEXT`, `CORRECT_COUNT_MISMATCH`). No RPCs. |
 | `workers/audit_orchestration.py` (Phase 8E) | Audit orchestration layer | `orchestrate_audit()` manages create→check→complete lifecycle; calls `end_audit_run_v1` on failure. |
+| `workers/llm_providers.py` (Phase 8F) | LLM provider abstraction | `LlmProvider` Protocol, `LlmResponse` dataclass, `MissingProviderError`, `NoOpProvider` sentinel. |
+| `workers/llm_audit.py` (Phase 8F) | Strict LLM response schema | `AUDIT_RESPONSE_SCHEMA`, `validate_llm_response()`, `LlmAuditValidationError`. 13 allowed finding types, 5 severities, 3 evidence roles. |
+| `workers/job_handlers.py` (Phase 8G) | `llm_audit` handler | `make_llm_audit_handler(client, llm_provider)` calls injected provider, validates response, orchestrates audit RPCs. Raises `MissingProviderError` before any RPC if no provider. |

@@ -24,9 +24,11 @@ Scheduled → recover_expired_background_jobs_v1
 | File | Purpose |
 |---|---|
 | `background_worker.py` | Worker class, CLI entry point, signal handling |
-| `job_handlers.py` | Handler registry, factory functions, `build_handler_registry(client)` |
+| `job_handlers.py` | Handler registry, factory functions, `build_handler_registry(client, llm_provider)` |
 | `deterministic_audit.py` | Phase 8D — pure structural check functions; no Supabase calls |
 | `audit_orchestration.py` | Phase 8E — `orchestrate_audit()` lifecycle: create → check → complete/fail |
+| `llm_providers.py` | Phase 8F — `LlmProvider` Protocol, `LlmResponse`, `MissingProviderError`, `NoOpProvider` |
+| `llm_audit.py` | Phase 8F — strict JSON response schema, `validate_llm_response()`, `LlmAuditValidationError` |
 
 ## Entry Command
 
@@ -67,7 +69,7 @@ Use `build_handler_registry(client)` to get the production registry.  It wires i
 | `resource_ingestion` | 8B | **Implemented** — calls `ingest_resource_version_v1` |
 | `candidate_promotion` | 8C | **Implemented** — calls `promote_question_candidate_v1` |
 | `deterministic_audit` | 8D/8E | **Implemented** — runs structural checks via `orchestrate_audit()` |
-| `llm_audit` | — | Stub — `NotImplementedHandler` |
+| `llm_audit` | 8G | **Implemented** — calls injected `LlmProvider`, validates response via `validate_llm_response()` |
 | `hybrid_audit` | — | Stub — `NotImplementedHandler` |
 | `question_generation` | — | Stub — `NotImplementedHandler` |
 | `embedding_generation` | — | Stub — `NotImplementedHandler` |
@@ -105,9 +107,32 @@ Call `heartbeat_fn()` periodically for long-running work to extend the lease. Ra
 
 Run as `service_role` in Supabase SQL editor or psql. The script wraps all state in `BEGIN … ROLLBACK` and leaves no persistent rows.
 
+## LLM Provider Injection
+
+`llm_audit` requires a real provider at runtime. Wire one in:
+
+```python
+from workers.llm_providers import LlmResponse
+
+class MyOpenAiProvider:
+    def __call__(self, *, model_name, system_prompt, user_prompt,
+                 response_schema, metadata=None):
+        # ... call OpenAI SDK ...
+        return LlmResponse(parsed_response={...}, input_tokens=..., output_tokens=...)
+
+worker = BackgroundWorker(
+    worker_id="my-worker",
+    client=supabase_client,
+    handlers=build_handler_registry(supabase_client, llm_provider=MyOpenAiProvider()),
+)
+```
+
+Without a provider, the handler raises `MissingProviderError` before any RPC call.
+
 ## What Is Not Implemented Yet
 
-- Handlers: `llm_audit`, `hybrid_audit`, `question_generation`, `embedding_generation`, `other`
+- Handlers: `hybrid_audit`, `question_generation`, `embedding_generation`, `other`
+- Concrete SDK providers (OpenAI, Anthropic) — implement as shown above
 - Heartbeat background thread (currently a single pre-dispatch call by the worker)
 - Monitoring / alerting integration
 - Retry backoff strategies beyond `fail_background_job_v1` defaults
