@@ -1,0 +1,563 @@
+"""
+Unit tests for workers/background_worker.py and workers/job_handlers.py.
+
+Tests are fully hermetic: no Supabase connection, no network, no Streamlit.
+The Supabase client is replaced with a FakeSupabase that captures all RPC calls
+and returns configurable responses.
+
+Coverage
+--------
+  T1  No job available — run_once returns False, no RPC besides claim
+  T2  Claim and dispatch — correct job fields forwarded to handler
+  T3  Successful handler — complete RPC called with handler result
+  T4  Handler exception — fail RPC called with error message
+  T5  Unsupported job type — fail RPC called without invoking any handler
+  T6  Worker shutdown — request_shutdown stops the polling loop
+  T7  No direct table writes — worker never calls client.table()
+
+Run:
+    python -m pytest tests/test_background_worker.py -v
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+import unittest
+from typing import Any, Dict, List, Optional
+from unittest.mock import patch
+
+# ---------------------------------------------------------------------------
+# Make project root importable regardless of cwd.
+# ---------------------------------------------------------------------------
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from workers.background_worker import BackgroundWorker
+from workers.job_handlers import HANDLER_REGISTRY, NotImplementedHandler
+
+
+# ===========================================================================
+# Fake Supabase infrastructure
+# ===========================================================================
+
+class FakeRpcResult:
+    """Mimics the PostgREST response object returned by .execute()."""
+
+    def __init__(self, data: Optional[List[dict]] = None, error=None) -> None:
+        self.data = data if data is not None else []
+        self.error = error
+
+
+class FakeRpcBuilder:
+    """Mimics the builder returned by client.rpc(...)."""
+
+    def __init__(self, result: FakeRpcResult) -> None:
+        self._result = result
+
+    def execute(self) -> FakeRpcResult:
+        return self._result
+
+
+class FakeSupabase:
+    """Captures all .rpc(...) calls and returns configurable responses.
+
+    Does NOT expose a .table() method by design — any attempt by the worker
+    to call client.table() will raise AttributeError, making that assertion
+    trivially testable.
+    """
+
+    def __init__(self) -> None:
+        self.rpc_calls: List[Dict[str, Any]] = []
+        self._defaults: Dict[str, FakeRpcResult] = {}
+        # Sequence overrides: consumed in order before falling back to defaults.
+        self._sequences: Dict[str, List[List[dict]]] = {}
+
+    # ------------------------------------------------------------------
+    # Configuration helpers
+    # ------------------------------------------------------------------
+
+    def set_response(self, rpc_name: str, data: List[dict]) -> None:
+        """Set a static response for an RPC name."""
+        self._defaults[rpc_name] = FakeRpcResult(data=data)
+
+    def set_sequence(self, rpc_name: str, data_list: List[List[dict]]) -> None:
+        """Set multiple responses consumed in order; falls back to default."""
+        self._sequences[rpc_name] = list(data_list)
+
+    # ------------------------------------------------------------------
+    # Query interface
+    # ------------------------------------------------------------------
+
+    def rpc(self, name: str, params: Optional[dict] = None) -> FakeRpcBuilder:
+        self.rpc_calls.append({"name": name, "params": params or {}})
+        if name in self._sequences and self._sequences[name]:
+            data = self._sequences[name].pop(0)
+            return FakeRpcBuilder(FakeRpcResult(data=data))
+        return FakeRpcBuilder(self._defaults.get(name, FakeRpcResult(data=[])))
+
+    # ------------------------------------------------------------------
+    # Introspection helpers
+    # ------------------------------------------------------------------
+
+    def calls_for(self, rpc_name: str) -> List[Dict[str, Any]]:
+        return [c for c in self.rpc_calls if c["name"] == rpc_name]
+
+    @property
+    def called_rpc_names(self) -> set:
+        return {c["name"] for c in self.rpc_calls}
+
+
+# ===========================================================================
+# Shared factories
+# ===========================================================================
+
+_SAMPLE_JOB = {
+    "job_id":        "aaaaaaaa-0000-0000-0000-000000000001",
+    "job_type":      "other",
+    "payload":       {"key": "value"},
+    "checkpoint":    {},
+    "attempt_count": 1,
+    "max_attempts":  3,
+    "lease_expires_at": "2099-01-01T00:00:00+00:00",
+    "model_name":    None,
+    "prompt_version": None,
+    "metadata":      {},
+}
+
+
+def _make_worker(
+    fake: FakeSupabase,
+    handlers: Optional[Dict] = None,
+    job_types: Optional[List[str]] = None,
+    sleep_interval: float = 0.0,
+) -> BackgroundWorker:
+    return BackgroundWorker(
+        worker_id="test-worker-1",
+        client=fake,
+        handlers=handlers if handlers is not None else {},
+        job_types=job_types,
+        lease_seconds=60,
+        sleep_interval=sleep_interval,
+    )
+
+
+# ===========================================================================
+# Tests
+# ===========================================================================
+
+class TestNoJobAvailable(unittest.TestCase):
+    """T1: When no job is available, run_once returns False."""
+
+    def test_returns_false_when_queue_empty(self):
+        fake = FakeSupabase()
+        # claim RPC returns empty list (no job)
+        fake.set_response("claim_background_job_v1", [])
+
+        worker = _make_worker(fake)
+        result = worker.run_once()
+
+        self.assertFalse(result, "run_once must return False when no job is available")
+
+    def test_only_claim_rpc_called(self):
+        fake = FakeSupabase()
+        fake.set_response("claim_background_job_v1", [])
+        worker = _make_worker(fake)
+        worker.run_once()
+
+        self.assertIn("claim_background_job_v1", fake.called_rpc_names)
+        # heartbeat, complete, and fail must NOT be called
+        for forbidden in (
+            "heartbeat_background_job_v1",
+            "complete_background_job_v1",
+            "fail_background_job_v1",
+        ):
+            self.assertNotIn(forbidden, fake.called_rpc_names,
+                             f"{forbidden} must not be called on empty queue")
+
+
+class TestClaimAndDispatch(unittest.TestCase):
+    """T2: Correct job fields are forwarded to the handler."""
+
+    def test_handler_receives_correct_arguments(self):
+        fake = FakeSupabase()
+        fake.set_response("claim_background_job_v1", [_SAMPLE_JOB])
+        fake.set_response("heartbeat_background_job_v1",
+                          [{"job_id": _SAMPLE_JOB["job_id"], "job_status": "running",
+                            "lease_expires_at": "2099-01-01T00:00:00+00:00",
+                            "heartbeat_at": "2099-01-01T00:00:00+00:00"}])
+        fake.set_response("complete_background_job_v1",
+                          [{"job_id": _SAMPLE_JOB["job_id"], "job_status": "completed",
+                            "completed_at": "2099-01-01T00:00:00+00:00"}])
+
+        received: Dict[str, Any] = {}
+
+        def capturing_handler(job_id, payload, checkpoint, attempt, heartbeat_fn):
+            received.update({
+                "job_id": job_id,
+                "payload": payload,
+                "checkpoint": checkpoint,
+                "attempt": attempt,
+            })
+            return {"done": True}
+
+        worker = _make_worker(fake, handlers={"other": capturing_handler})
+        result = worker.run_once()
+
+        self.assertTrue(result, "run_once must return True when a job was processed")
+        self.assertEqual(received["job_id"],    _SAMPLE_JOB["job_id"])
+        self.assertEqual(received["payload"],   _SAMPLE_JOB["payload"])
+        self.assertEqual(received["checkpoint"], _SAMPLE_JOB["checkpoint"])
+        self.assertEqual(received["attempt"],   _SAMPLE_JOB["attempt_count"])
+
+
+class TestSuccessfulHandler(unittest.TestCase):
+    """T3: A handler that returns successfully causes complete RPC to be called."""
+
+    def setUp(self):
+        self.fake = FakeSupabase()
+        self.fake.set_response("claim_background_job_v1", [_SAMPLE_JOB])
+        self.fake.set_response("heartbeat_background_job_v1",
+                               [{"job_id": _SAMPLE_JOB["job_id"], "job_status": "running",
+                                 "lease_expires_at": "2099-01-01T00:00:00+00:00",
+                                 "heartbeat_at": "2099-01-01T00:00:00+00:00"}])
+        self.fake.set_response("complete_background_job_v1",
+                               [{"job_id": _SAMPLE_JOB["job_id"], "job_status": "completed",
+                                 "completed_at": "2099-01-01T00:00:00+00:00"}])
+
+    def _make_success_handler(self, return_value=None):
+        def handler(job_id, payload, checkpoint, attempt, heartbeat_fn):
+            return return_value
+        return handler
+
+    def test_complete_rpc_is_called(self):
+        worker = _make_worker(
+            self.fake,
+            handlers={"other": self._make_success_handler({"output": "ok"})},
+        )
+        worker.run_once()
+        self.assertIn("complete_background_job_v1", self.fake.called_rpc_names,
+                      "complete RPC must be called on handler success")
+
+    def test_fail_rpc_is_not_called(self):
+        worker = _make_worker(
+            self.fake,
+            handlers={"other": self._make_success_handler()},
+        )
+        worker.run_once()
+        self.assertNotIn("fail_background_job_v1", self.fake.called_rpc_names,
+                         "fail RPC must NOT be called on handler success")
+
+    def test_complete_rpc_receives_handler_result(self):
+        handler_result = {"lines_processed": 42}
+        worker = _make_worker(
+            self.fake,
+            handlers={"other": self._make_success_handler(handler_result)},
+        )
+        worker.run_once()
+
+        complete_calls = self.fake.calls_for("complete_background_job_v1")
+        self.assertEqual(len(complete_calls), 1)
+        self.assertEqual(
+            complete_calls[0]["params"]["p_result"],
+            handler_result,
+        )
+
+
+class TestHandlerFailure(unittest.TestCase):
+    """T4: A handler that raises causes the fail RPC to be called."""
+
+    def setUp(self):
+        self.fake = FakeSupabase()
+        self.fake.set_response("claim_background_job_v1", [_SAMPLE_JOB])
+        self.fake.set_response("heartbeat_background_job_v1",
+                               [{"job_id": _SAMPLE_JOB["job_id"], "job_status": "running",
+                                 "lease_expires_at": "2099-01-01T00:00:00+00:00",
+                                 "heartbeat_at": "2099-01-01T00:00:00+00:00"}])
+        self.fake.set_response("fail_background_job_v1",
+                               [{"job_id": _SAMPLE_JOB["job_id"], "job_status": "pending",
+                                 "available_at": "2099-01-01T00:00:00+00:00",
+                                 "completed_at": None}])
+
+    def _raising_handler(self, exc: Exception):
+        def handler(job_id, payload, checkpoint, attempt, heartbeat_fn):
+            raise exc
+        return handler
+
+    def test_fail_rpc_is_called(self):
+        worker = _make_worker(
+            self.fake,
+            handlers={"other": self._raising_handler(RuntimeError("network error"))},
+        )
+        worker.run_once()
+        self.assertIn("fail_background_job_v1", self.fake.called_rpc_names,
+                      "fail RPC must be called when handler raises")
+
+    def test_complete_rpc_is_not_called(self):
+        worker = _make_worker(
+            self.fake,
+            handlers={"other": self._raising_handler(ValueError("bad input"))},
+        )
+        worker.run_once()
+        self.assertNotIn("complete_background_job_v1", self.fake.called_rpc_names,
+                         "complete RPC must NOT be called when handler raises")
+
+    def test_fail_rpc_receives_error_message(self):
+        worker = _make_worker(
+            self.fake,
+            handlers={"other": self._raising_handler(RuntimeError("exploded"))},
+        )
+        worker.run_once()
+        fail_calls = self.fake.calls_for("fail_background_job_v1")
+        self.assertEqual(len(fail_calls), 1)
+        error_msg = fail_calls[0]["params"]["p_error_message"]
+        self.assertIn("exploded", error_msg, "error message must include the exception text")
+        self.assertIn("RuntimeError", error_msg, "error message must include the exception type")
+
+    def test_stub_handler_causes_fail(self):
+        """NotImplementedHandler from a stub also triggers fail RPC."""
+        worker = _make_worker(
+            self.fake,
+            handlers={"other": HANDLER_REGISTRY["other"]},
+        )
+        worker.run_once()
+        self.assertIn("fail_background_job_v1", self.fake.called_rpc_names)
+        fail_msg = self.fake.calls_for("fail_background_job_v1")[0]["params"]["p_error_message"]
+        self.assertIn("not yet implemented", fail_msg)
+
+
+class TestUnsupportedJobType(unittest.TestCase):
+    """T5: An unsupported job type fails the job without invoking any handler."""
+
+    def test_fail_called_for_unknown_type(self):
+        fake = FakeSupabase()
+        job = {**_SAMPLE_JOB, "job_type": "totally_unknown_type"}
+        fake.set_response("claim_background_job_v1", [job])
+        fake.set_response("fail_background_job_v1",
+                          [{"job_id": job["job_id"], "job_status": "pending",
+                            "available_at": None, "completed_at": None}])
+
+        worker = _make_worker(fake, handlers={})  # empty registry
+        worker.run_once()
+
+        self.assertIn("fail_background_job_v1", fake.called_rpc_names)
+
+    def test_heartbeat_not_called_for_unknown_type(self):
+        fake = FakeSupabase()
+        job = {**_SAMPLE_JOB, "job_type": "totally_unknown_type"}
+        fake.set_response("claim_background_job_v1", [job])
+        fake.set_response("fail_background_job_v1", [{}])
+
+        worker = _make_worker(fake, handlers={})
+        worker.run_once()
+
+        self.assertNotIn("heartbeat_background_job_v1", fake.called_rpc_names,
+                         "heartbeat must not be sent for an unsupported job type")
+
+    def test_fail_message_contains_job_type(self):
+        fake = FakeSupabase()
+        job = {**_SAMPLE_JOB, "job_type": "totally_unknown_type"}
+        fake.set_response("claim_background_job_v1", [job])
+        fake.set_response("fail_background_job_v1", [{}])
+
+        worker = _make_worker(fake, handlers={})
+        worker.run_once()
+
+        fail_msg = fake.calls_for("fail_background_job_v1")[0]["params"]["p_error_message"]
+        self.assertIn("totally_unknown_type", fail_msg)
+
+
+class TestWorkerShutdown(unittest.TestCase):
+    """T6: request_shutdown stops the polling loop cleanly."""
+
+    def test_shutdown_stops_loop(self):
+        fake = FakeSupabase()
+        # Queue is always empty; the shutdown flag is what terminates the loop.
+        fake.set_response("claim_background_job_v1", [])
+
+        iterations = [0]
+        original_run_once = None
+
+        worker = BackgroundWorker(
+            worker_id="shutdown-test",
+            client=fake,
+            handlers={},
+            sleep_interval=0.0,
+        )
+
+        # Patch run_once to count calls and request shutdown after the first.
+        original_run_once = worker.run_once
+
+        def counting_run_once():
+            iterations[0] += 1
+            result = original_run_once()
+            if iterations[0] >= 1:
+                worker.request_shutdown()
+            return result
+
+        worker.run_once = counting_run_once
+
+        start = time.monotonic()
+        with patch("time.sleep"):
+            worker.run()
+        elapsed = time.monotonic() - start
+
+        self.assertTrue(worker._shutdown_requested, "shutdown flag must be set")
+        self.assertGreaterEqual(iterations[0], 1, "loop must have iterated at least once")
+        self.assertLess(elapsed, 5.0, "shutdown must complete quickly")
+
+    def test_request_shutdown_sets_flag(self):
+        fake = FakeSupabase()
+        worker = _make_worker(fake)
+        self.assertFalse(worker._shutdown_requested)
+        worker.request_shutdown()
+        self.assertTrue(worker._shutdown_requested)
+
+
+class TestNoDirectTableWrites(unittest.TestCase):
+    """T7: The worker never calls client.table() for any operation."""
+
+    def test_no_table_method_called_on_success(self):
+        fake = FakeSupabase()
+        fake.set_response("claim_background_job_v1", [_SAMPLE_JOB])
+        fake.set_response("heartbeat_background_job_v1",
+                          [{"job_id": _SAMPLE_JOB["job_id"], "job_status": "running",
+                            "lease_expires_at": "2099-01-01T00:00:00+00:00",
+                            "heartbeat_at": "2099-01-01T00:00:00+00:00"}])
+        fake.set_response("complete_background_job_v1",
+                          [{"job_id": _SAMPLE_JOB["job_id"], "job_status": "completed",
+                            "completed_at": "2099-01-01T00:00:00+00:00"}])
+
+        worker = _make_worker(
+            fake,
+            handlers={"other": lambda **kw: {"done": True}},
+        )
+        # FakeSupabase has no .table attribute; calling it would raise AttributeError.
+        # If the worker does not call .table(), no error occurs.
+        try:
+            worker.run_once()
+        except AttributeError as exc:
+            self.fail(f"worker called client.table() directly: {exc}")
+
+    def test_no_table_method_called_on_failure(self):
+        fake = FakeSupabase()
+        fake.set_response("claim_background_job_v1", [_SAMPLE_JOB])
+        fake.set_response("heartbeat_background_job_v1",
+                          [{"job_id": _SAMPLE_JOB["job_id"], "job_status": "running",
+                            "lease_expires_at": "2099-01-01T00:00:00+00:00",
+                            "heartbeat_at": "2099-01-01T00:00:00+00:00"}])
+        fake.set_response("fail_background_job_v1",
+                          [{"job_id": _SAMPLE_JOB["job_id"], "job_status": "pending",
+                            "available_at": None, "completed_at": None}])
+
+        def raising_handler(**kw):
+            raise RuntimeError("handler failure")
+
+        worker = _make_worker(fake, handlers={"other": raising_handler})
+        try:
+            worker.run_once()
+        except AttributeError as exc:
+            self.fail(f"worker called client.table() directly: {exc}")
+
+    def test_only_rpc_methods_used(self):
+        """All calls to the client must go through .rpc()."""
+        fake = FakeSupabase()
+        fake.set_response("claim_background_job_v1", [])
+        worker = _make_worker(fake)
+        worker.run_once()
+        # All calls are captured in rpc_calls; none should be direct table ops.
+        for call in fake.rpc_calls:
+            self.assertIn("name", call,
+                          "every client interaction must be an RPC call with a name")
+
+
+class TestHandlerRegistry(unittest.TestCase):
+    """Verify the HANDLER_REGISTRY structure and stub behavior."""
+
+    EXPECTED_TYPES = {
+        "resource_ingestion",
+        "deterministic_audit",
+        "llm_audit",
+        "hybrid_audit",
+        "question_generation",
+        "candidate_promotion",
+        "embedding_generation",
+        "other",
+    }
+
+    def test_all_expected_types_registered(self):
+        self.assertEqual(set(HANDLER_REGISTRY.keys()), self.EXPECTED_TYPES)
+
+    def test_all_handlers_are_callable(self):
+        for job_type, handler in HANDLER_REGISTRY.items():
+            self.assertTrue(callable(handler),
+                            f"handler for {job_type!r} must be callable")
+
+    def test_all_stubs_raise_not_implemented(self):
+        for job_type, handler in HANDLER_REGISTRY.items():
+            with self.assertRaises(NotImplementedHandler,
+                                   msg=f"stub for {job_type!r} must raise NotImplementedHandler"):
+                handler(
+                    job_id="test-id",
+                    payload={},
+                    checkpoint={},
+                    attempt=1,
+                    heartbeat_fn=lambda: None,
+                )
+
+    def test_no_stub_returns_success(self):
+        """No stub may silently return a success result."""
+        for job_type, handler in HANDLER_REGISTRY.items():
+            try:
+                result = handler(
+                    job_id="test-id",
+                    payload={},
+                    checkpoint={},
+                    attempt=1,
+                    heartbeat_fn=lambda: None,
+                )
+                self.fail(
+                    f"stub for {job_type!r} returned {result!r} instead of raising"
+                )
+            except NotImplementedHandler:
+                pass  # expected
+
+    def test_error_message_contains_job_type(self):
+        for job_type, handler in HANDLER_REGISTRY.items():
+            try:
+                handler(
+                    job_id="test-id",
+                    payload={},
+                    checkpoint={},
+                    attempt=1,
+                    heartbeat_fn=lambda: None,
+                )
+            except NotImplementedHandler as exc:
+                self.assertIn(
+                    job_type, str(exc),
+                    f"stub error for {job_type!r} must mention the job type"
+                )
+
+
+class TestWorkerConstruction(unittest.TestCase):
+    """Construction-time validation on BackgroundWorker."""
+
+    def test_empty_worker_id_raises(self):
+        with self.assertRaises(ValueError):
+            BackgroundWorker("", FakeSupabase(), {})
+
+    def test_whitespace_worker_id_raises(self):
+        with self.assertRaises(ValueError):
+            BackgroundWorker("   ", FakeSupabase(), {})
+
+    def test_valid_worker_id_accepted(self):
+        worker = BackgroundWorker("w1", FakeSupabase(), {})
+        self.assertEqual(worker.worker_id, "w1")
+
+    def test_worker_id_is_stripped(self):
+        worker = BackgroundWorker("  w2  ", FakeSupabase(), {})
+        self.assertEqual(worker.worker_id, "w2")
+
+
+if __name__ == "__main__":
+    unittest.main()

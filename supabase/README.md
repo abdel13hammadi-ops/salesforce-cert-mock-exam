@@ -32,3 +32,5 @@
 | `20260624023300_v44_background_jobs_foundation.sql` | Ready — not yet applied | Additive. One table. No RPCs. No exam delivery impact. |
 | `20260624023700_v44_background_job_enqueue_claim_rpcs.sql` | Ready — not yet applied | Requires Phase 7A table. Two RPCs. service_role only. |
 | `20260624024200_v44_background_job_lifecycle_rpcs.sql` | Ready — not yet applied | Requires Phase 7A table. Four RPCs: heartbeat, complete, fail, recover. service_role only. |
+| `supabase/tests/v44_background_job_lifecycle_verification.sql` | Phase 7D — verification script | Run as service_role. Wraps all state in BEGIN…ROLLBACK. Covers 10 lifecycle assertions. No pgTAP. |
+| `workers/` | Phase 8A — Python worker skeleton | `background_worker.py` + `job_handlers.py`. All handlers are stubs. No real job execution yet. |
