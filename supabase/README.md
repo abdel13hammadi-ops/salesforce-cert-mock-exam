@@ -23,3 +23,4 @@
 | `20260623191900_v44_create_question_version_rpc.sql` | Ready — not yet applied | Requires Phase 1 tables. Service-role / admin only. No publishing. |
 | `20260623192800_v44_approve_publish_question_version_rpc.sql` | Ready — not yet applied | Requires Phase 1 tables. Approval + publish RPCs. service_role only. |
 | `20260623193600_v44_question_candidates.sql` | Ready — not yet applied | Additive. Staging table only; no exam delivery impact. |
+| `20260623233200_v44_promote_question_candidate_rpc.sql` | Ready — not yet applied | Requires Phase 4A and Phase 3A tables/functions. service_role only. |
