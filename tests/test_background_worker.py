@@ -34,7 +34,14 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from workers.background_worker import BackgroundWorker
-from workers.job_handlers import HANDLER_REGISTRY, NotImplementedHandler
+from workers.job_handlers import (
+    HANDLER_REGISTRY,
+    NotImplementedHandler,
+    HandlerPayloadError,
+    make_resource_ingestion_handler,
+    make_candidate_promotion_handler,
+    build_handler_registry,
+)
 
 
 # ===========================================================================
@@ -80,6 +87,10 @@ class FakeSupabase:
     def set_response(self, rpc_name: str, data: List[dict]) -> None:
         """Set a static response for an RPC name."""
         self._defaults[rpc_name] = FakeRpcResult(data=data)
+
+    def set_error_response(self, rpc_name: str, error: str) -> None:
+        """Set an error response for an RPC name (simulates Supabase error)."""
+        self._defaults[rpc_name] = FakeRpcResult(data=None, error=error)
 
     def set_sequence(self, rpc_name: str, data_list: List[List[dict]]) -> None:
         """Set multiple responses consumed in order; falls back to default."""
@@ -557,6 +568,448 @@ class TestWorkerConstruction(unittest.TestCase):
     def test_worker_id_is_stripped(self):
         worker = BackgroundWorker("  w2  ", FakeSupabase(), {})
         self.assertEqual(worker.worker_id, "w2")
+
+
+# ===========================================================================
+# Phase 8B — Resource ingestion handler
+# ===========================================================================
+
+_INGEST_RESPONSE = {
+    "resource_version_id": "bbbbbbbb-1111-1111-1111-000000000001",
+    "resource_id":         "cccccccc-2222-2222-2222-000000000002",
+    "version_number":      1,
+    "chunk_count":         3,
+}
+
+_VALID_INGEST_PAYLOAD = {
+    "resource_id":  "cccccccc-2222-2222-2222-000000000002",
+    "content_text": "Salesforce chapter 1 content",
+    "content_hash": "abc123def456",
+    "created_by":   "ingest-worker@certbound.io",
+    "source_url":   "https://help.salesforce.com/article/1",
+    "chunks":       [],
+}
+
+
+class TestResourceIngestionHandler(unittest.TestCase):
+    """Phase 8B: resource_ingestion handler unit tests (direct, no worker)."""
+
+    def _make_client(self, data=None, error=None):
+        fake = FakeSupabase()
+        if error:
+            fake.set_error_response("ingest_resource_version_v1", error)
+        else:
+            fake.set_response("ingest_resource_version_v1", [data or _INGEST_RESPONSE])
+        return fake
+
+    def test_successful_resource_ingestion(self):
+        fake = self._make_client()
+        handler = make_resource_ingestion_handler(fake)
+
+        result = handler(
+            job_id="j1",
+            payload=_VALID_INGEST_PAYLOAD,
+            checkpoint={},
+            attempt=1,
+            heartbeat_fn=lambda: None,
+        )
+
+        self.assertEqual(result["resource_version_id"],
+                         str(_INGEST_RESPONSE["resource_version_id"]))
+        self.assertEqual(result["resource_id"],
+                         str(_INGEST_RESPONSE["resource_id"]))
+        self.assertEqual(result["version_number"], _INGEST_RESPONSE["version_number"])
+        self.assertEqual(result["chunk_count"],    _INGEST_RESPONSE["chunk_count"])
+
+    def test_ingest_rpc_called_with_correct_params(self):
+        fake = self._make_client()
+        handler = make_resource_ingestion_handler(fake)
+        handler(job_id="j1", payload=_VALID_INGEST_PAYLOAD,
+                checkpoint={}, attempt=1, heartbeat_fn=lambda: None)
+
+        calls = fake.calls_for("ingest_resource_version_v1")
+        self.assertEqual(len(calls), 1)
+        params = calls[0]["params"]
+        self.assertEqual(params["p_resource_id"],  _VALID_INGEST_PAYLOAD["resource_id"])
+        self.assertEqual(params["p_content_text"], _VALID_INGEST_PAYLOAD["content_text"])
+        self.assertEqual(params["p_content_hash"], _VALID_INGEST_PAYLOAD["content_hash"])
+        self.assertEqual(params["p_created_by"],   _VALID_INGEST_PAYLOAD["created_by"])
+        self.assertEqual(params["p_source_url"],   _VALID_INGEST_PAYLOAD["source_url"])
+
+    def test_malformed_payload_missing_resource_id(self):
+        fake = self._make_client()
+        handler = make_resource_ingestion_handler(fake)
+        payload = {k: v for k, v in _VALID_INGEST_PAYLOAD.items() if k != "resource_id"}
+        with self.assertRaises(HandlerPayloadError):
+            handler(job_id="j1", payload=payload, checkpoint={},
+                    attempt=1, heartbeat_fn=lambda: None)
+        self.assertNotIn("ingest_resource_version_v1", fake.called_rpc_names)
+
+    def test_malformed_payload_missing_content_text(self):
+        fake = self._make_client()
+        handler = make_resource_ingestion_handler(fake)
+        payload = {**_VALID_INGEST_PAYLOAD, "content_text": ""}
+        with self.assertRaises(HandlerPayloadError):
+            handler(job_id="j1", payload=payload, checkpoint={},
+                    attempt=1, heartbeat_fn=lambda: None)
+
+    def test_malformed_payload_missing_content_hash(self):
+        fake = self._make_client()
+        handler = make_resource_ingestion_handler(fake)
+        payload = {k: v for k, v in _VALID_INGEST_PAYLOAD.items() if k != "content_hash"}
+        with self.assertRaises(HandlerPayloadError):
+            handler(job_id="j1", payload=payload, checkpoint={},
+                    attempt=1, heartbeat_fn=lambda: None)
+
+    def test_malformed_payload_missing_created_by(self):
+        fake = self._make_client()
+        handler = make_resource_ingestion_handler(fake)
+        payload = {**_VALID_INGEST_PAYLOAD, "created_by": None}
+        with self.assertRaises(HandlerPayloadError):
+            handler(job_id="j1", payload=payload, checkpoint={},
+                    attempt=1, heartbeat_fn=lambda: None)
+
+    def test_rpc_error_propagates_as_runtime_error(self):
+        fake = self._make_client(error="resource not found")
+        handler = make_resource_ingestion_handler(fake)
+        with self.assertRaises(RuntimeError) as ctx:
+            handler(job_id="j1", payload=_VALID_INGEST_PAYLOAD,
+                    checkpoint={}, attempt=1, heartbeat_fn=lambda: None)
+        self.assertIn("resource not found", str(ctx.exception))
+
+    def test_no_direct_table_calls(self):
+        """Handler must never call client.table()."""
+        fake = self._make_client()
+        handler = make_resource_ingestion_handler(fake)
+        try:
+            handler(job_id="j1", payload=_VALID_INGEST_PAYLOAD,
+                    checkpoint={}, attempt=1, heartbeat_fn=lambda: None)
+        except AttributeError as exc:
+            self.fail(f"handler called client.table() directly: {exc}")
+
+    def test_optional_fields_default_when_absent(self):
+        """Optional payload fields fall back to None / empty without error."""
+        fake = self._make_client()
+        handler = make_resource_ingestion_handler(fake)
+        minimal = {
+            "resource_id":  "cccccccc-2222-2222-2222-000000000002",
+            "content_text": "text",
+            "content_hash": "hash",
+            "created_by":   "worker",
+        }
+        handler(job_id="j1", payload=minimal, checkpoint={},
+                attempt=1, heartbeat_fn=lambda: None)
+
+        params = fake.calls_for("ingest_resource_version_v1")[0]["params"]
+        self.assertIsNone(params["p_source_url"])
+        self.assertIsNone(params["p_source_external_version"])
+        self.assertIsNone(params["p_effective_at"])
+        self.assertEqual(params["p_metadata"], {})
+        self.assertEqual(params["p_chunks"], [])
+
+
+# ===========================================================================
+# Phase 8C — Candidate promotion handler
+# ===========================================================================
+
+_PROMOTE_RESPONSE = {
+    "candidate_id":        "dddddddd-3333-3333-3333-000000000003",
+    "question_version_id": "eeeeeeee-4444-4444-4444-000000000004",
+    "question_id":         42,
+    "version_number":      2,
+}
+
+_VALID_PROMOTE_PAYLOAD = {
+    "candidate_id": "dddddddd-3333-3333-3333-000000000003",
+    "actor_email":  "reviewer@certbound.io",
+    "reason":       "passed automated audit",
+    "event_data":   {"audit_run_id": "ffff"},
+}
+
+
+class TestCandidatePromotionHandler(unittest.TestCase):
+    """Phase 8C: candidate_promotion handler unit tests (direct, no worker)."""
+
+    def _make_client(self, data=None, error=None):
+        fake = FakeSupabase()
+        if error:
+            fake.set_error_response("promote_question_candidate_v1", error)
+        else:
+            fake.set_response("promote_question_candidate_v1", [data or _PROMOTE_RESPONSE])
+        return fake
+
+    def test_successful_candidate_promotion(self):
+        fake = self._make_client()
+        handler = make_candidate_promotion_handler(fake)
+
+        result = handler(
+            job_id="j2",
+            payload=_VALID_PROMOTE_PAYLOAD,
+            checkpoint={},
+            attempt=1,
+            heartbeat_fn=lambda: None,
+        )
+
+        self.assertEqual(result["candidate_id"],
+                         str(_PROMOTE_RESPONSE["candidate_id"]))
+        self.assertEqual(result["question_version_id"],
+                         str(_PROMOTE_RESPONSE["question_version_id"]))
+        self.assertEqual(result["question_id"],    _PROMOTE_RESPONSE["question_id"])
+        self.assertEqual(result["version_number"], _PROMOTE_RESPONSE["version_number"])
+
+    def test_promotion_rpc_called_with_correct_params(self):
+        fake = self._make_client()
+        handler = make_candidate_promotion_handler(fake)
+        handler(job_id="j2", payload=_VALID_PROMOTE_PAYLOAD,
+                checkpoint={}, attempt=1, heartbeat_fn=lambda: None)
+
+        calls = fake.calls_for("promote_question_candidate_v1")
+        self.assertEqual(len(calls), 1)
+        params = calls[0]["params"]
+        self.assertEqual(params["p_candidate_id"], _VALID_PROMOTE_PAYLOAD["candidate_id"])
+        self.assertEqual(params["p_actor_email"],  _VALID_PROMOTE_PAYLOAD["actor_email"])
+        self.assertEqual(params["p_reason"],       _VALID_PROMOTE_PAYLOAD["reason"])
+        self.assertEqual(params["p_event_data"],   _VALID_PROMOTE_PAYLOAD["event_data"])
+
+    def test_malformed_payload_missing_candidate_id(self):
+        fake = self._make_client()
+        handler = make_candidate_promotion_handler(fake)
+        payload = {k: v for k, v in _VALID_PROMOTE_PAYLOAD.items() if k != "candidate_id"}
+        with self.assertRaises(HandlerPayloadError):
+            handler(job_id="j2", payload=payload, checkpoint={},
+                    attempt=1, heartbeat_fn=lambda: None)
+        self.assertNotIn("promote_question_candidate_v1", fake.called_rpc_names)
+
+    def test_malformed_payload_missing_actor_email(self):
+        fake = self._make_client()
+        handler = make_candidate_promotion_handler(fake)
+        payload = {**_VALID_PROMOTE_PAYLOAD, "actor_email": ""}
+        with self.assertRaises(HandlerPayloadError):
+            handler(job_id="j2", payload=payload, checkpoint={},
+                    attempt=1, heartbeat_fn=lambda: None)
+
+    def test_malformed_payload_missing_reason(self):
+        fake = self._make_client()
+        handler = make_candidate_promotion_handler(fake)
+        payload = {k: v for k, v in _VALID_PROMOTE_PAYLOAD.items() if k != "reason"}
+        with self.assertRaises(HandlerPayloadError):
+            handler(job_id="j2", payload=payload, checkpoint={},
+                    attempt=1, heartbeat_fn=lambda: None)
+
+    def test_rpc_error_propagates_as_runtime_error(self):
+        fake = self._make_client(error="candidate not found")
+        handler = make_candidate_promotion_handler(fake)
+        with self.assertRaises(RuntimeError) as ctx:
+            handler(job_id="j2", payload=_VALID_PROMOTE_PAYLOAD,
+                    checkpoint={}, attempt=1, heartbeat_fn=lambda: None)
+        self.assertIn("candidate not found", str(ctx.exception))
+
+    def test_no_direct_table_calls(self):
+        """Handler must never call client.table()."""
+        fake = self._make_client()
+        handler = make_candidate_promotion_handler(fake)
+        try:
+            handler(job_id="j2", payload=_VALID_PROMOTE_PAYLOAD,
+                    checkpoint={}, attempt=1, heartbeat_fn=lambda: None)
+        except AttributeError as exc:
+            self.fail(f"handler called client.table() directly: {exc}")
+
+    def test_optional_event_data_defaults_to_empty(self):
+        fake = self._make_client()
+        handler = make_candidate_promotion_handler(fake)
+        payload = {k: v for k, v in _VALID_PROMOTE_PAYLOAD.items() if k != "event_data"}
+        handler(job_id="j2", payload=payload, checkpoint={},
+                attempt=1, heartbeat_fn=lambda: None)
+        params = fake.calls_for("promote_question_candidate_v1")[0]["params"]
+        self.assertEqual(params["p_event_data"], {})
+
+
+# ===========================================================================
+# Integration: worker dispatches to real handlers, result forwarded
+# ===========================================================================
+
+class TestWorkerHandlerIntegration(unittest.TestCase):
+    """End-to-end: worker + real handler + fake Supabase client."""
+
+    def _make_ingest_job(self):
+        return {
+            **_SAMPLE_JOB,
+            "job_type": "resource_ingestion",
+            "payload":  _VALID_INGEST_PAYLOAD,
+        }
+
+    def _make_promote_job(self):
+        return {
+            **_SAMPLE_JOB,
+            "job_id":   "ffffffff-9999-9999-9999-000000000009",
+            "job_type": "candidate_promotion",
+            "payload":  _VALID_PROMOTE_PAYLOAD,
+        }
+
+    def _setup_fake(self, job: dict, domain_rpc: str, domain_response: list) -> FakeSupabase:
+        fake = FakeSupabase()
+        fake.set_response("claim_background_job_v1", [job])
+        fake.set_response("heartbeat_background_job_v1", [
+            {"job_id": job["job_id"], "job_status": "running",
+             "lease_expires_at": "2099-01-01T00:00:00+00:00",
+             "heartbeat_at": "2099-01-01T00:00:00+00:00"},
+        ])
+        fake.set_response(domain_rpc, domain_response)
+        fake.set_response("complete_background_job_v1", [
+            {"job_id": job["job_id"], "job_status": "completed",
+             "completed_at": "2099-01-01T00:00:00+00:00"},
+        ])
+        return fake
+
+    # --- resource_ingestion integration ---
+
+    def test_ingest_result_forwarded_to_complete_rpc(self):
+        """The result returned by the handler is passed to complete_background_job_v1."""
+        job = self._make_ingest_job()
+        fake = self._setup_fake(job, "ingest_resource_version_v1",
+                                [_INGEST_RESPONSE])
+        worker = BackgroundWorker(
+            worker_id="integration-worker",
+            client=fake,
+            handlers=build_handler_registry(fake),
+            sleep_interval=0.0,
+        )
+        worker.run_once()
+
+        complete_calls = fake.calls_for("complete_background_job_v1")
+        self.assertEqual(len(complete_calls), 1, "complete must be called once")
+
+        p_result = complete_calls[0]["params"]["p_result"]
+        self.assertEqual(p_result["version_number"], _INGEST_RESPONSE["version_number"])
+        self.assertEqual(p_result["chunk_count"],    _INGEST_RESPONSE["chunk_count"])
+
+    def test_ingest_no_table_writes_via_worker(self):
+        job = self._make_ingest_job()
+        fake = self._setup_fake(job, "ingest_resource_version_v1", [_INGEST_RESPONSE])
+        worker = BackgroundWorker(
+            worker_id="integration-worker",
+            client=fake,
+            handlers=build_handler_registry(fake),
+            sleep_interval=0.0,
+        )
+        try:
+            worker.run_once()
+        except AttributeError as exc:
+            self.fail(f"worker or handler called client.table() directly: {exc}")
+
+    def test_ingest_rpc_error_causes_fail_rpc(self):
+        """When the domain RPC errors, the worker calls fail_background_job_v1."""
+        job = self._make_ingest_job()
+        fake = FakeSupabase()
+        fake.set_response("claim_background_job_v1", [job])
+        fake.set_response("heartbeat_background_job_v1", [
+            {"job_id": job["job_id"], "job_status": "running",
+             "lease_expires_at": "2099-01-01T00:00:00+00:00",
+             "heartbeat_at": "2099-01-01T00:00:00+00:00"},
+        ])
+        fake.set_error_response("ingest_resource_version_v1", "connection timeout")
+        fake.set_response("fail_background_job_v1", [
+            {"job_id": job["job_id"], "job_status": "pending",
+             "available_at": None, "completed_at": None},
+        ])
+
+        worker = BackgroundWorker(
+            worker_id="integration-worker",
+            client=fake,
+            handlers=build_handler_registry(fake),
+            sleep_interval=0.0,
+        )
+        worker.run_once()
+
+        self.assertIn("fail_background_job_v1", fake.called_rpc_names)
+        self.assertNotIn("complete_background_job_v1", fake.called_rpc_names)
+
+    # --- candidate_promotion integration ---
+
+    def test_promote_result_forwarded_to_complete_rpc(self):
+        job = self._make_promote_job()
+        fake = self._setup_fake(job, "promote_question_candidate_v1",
+                                [_PROMOTE_RESPONSE])
+        worker = BackgroundWorker(
+            worker_id="integration-worker",
+            client=fake,
+            handlers=build_handler_registry(fake),
+            sleep_interval=0.0,
+        )
+        worker.run_once()
+
+        complete_calls = fake.calls_for("complete_background_job_v1")
+        self.assertEqual(len(complete_calls), 1)
+
+        p_result = complete_calls[0]["params"]["p_result"]
+        self.assertEqual(p_result["question_id"],    _PROMOTE_RESPONSE["question_id"])
+        self.assertEqual(p_result["version_number"], _PROMOTE_RESPONSE["version_number"])
+
+    def test_promote_rpc_error_causes_fail_rpc(self):
+        job = self._make_promote_job()
+        fake = FakeSupabase()
+        fake.set_response("claim_background_job_v1", [job])
+        fake.set_response("heartbeat_background_job_v1", [
+            {"job_id": job["job_id"], "job_status": "running",
+             "lease_expires_at": "2099-01-01T00:00:00+00:00",
+             "heartbeat_at": "2099-01-01T00:00:00+00:00"},
+        ])
+        fake.set_error_response("promote_question_candidate_v1", "candidate not approved")
+        fake.set_response("fail_background_job_v1", [
+            {"job_id": job["job_id"], "job_status": "pending",
+             "available_at": None, "completed_at": None},
+        ])
+        worker = BackgroundWorker(
+            worker_id="integration-worker",
+            client=fake,
+            handlers=build_handler_registry(fake),
+            sleep_interval=0.0,
+        )
+        worker.run_once()
+
+        self.assertIn("fail_background_job_v1", fake.called_rpc_names)
+        self.assertNotIn("complete_background_job_v1", fake.called_rpc_names)
+
+    # --- remaining stubs still not implemented ---
+
+    def test_remaining_handlers_still_not_implemented(self):
+        """build_handler_registry must leave non-implemented types as stubs."""
+        fake = FakeSupabase()
+        registry = build_handler_registry(fake)
+
+        still_stubbed = [
+            "deterministic_audit",
+            "llm_audit",
+            "hybrid_audit",
+            "question_generation",
+            "embedding_generation",
+            "other",
+        ]
+        for job_type in still_stubbed:
+            handler = registry[job_type]
+            with self.assertRaises(NotImplementedHandler,
+                                   msg=f"{job_type} must still raise NotImplementedHandler"):
+                handler(job_id="x", payload={}, checkpoint={},
+                        attempt=1, heartbeat_fn=lambda: None)
+
+    def test_implemented_types_are_not_stubs(self):
+        """resource_ingestion and candidate_promotion must not raise NotImplementedHandler."""
+        fake = FakeSupabase()
+        fake.set_response("ingest_resource_version_v1", [_INGEST_RESPONSE])
+        fake.set_response("promote_question_candidate_v1", [_PROMOTE_RESPONSE])
+        registry = build_handler_registry(fake)
+
+        for job_type, payload in [
+            ("resource_ingestion",  _VALID_INGEST_PAYLOAD),
+            ("candidate_promotion", _VALID_PROMOTE_PAYLOAD),
+        ]:
+            try:
+                registry[job_type](
+                    job_id="x", payload=payload, checkpoint={},
+                    attempt=1, heartbeat_fn=lambda: None,
+                )
+            except NotImplementedHandler:
+                self.fail(f"{job_type} raised NotImplementedHandler — must be a real handler")
 
 
 if __name__ == "__main__":

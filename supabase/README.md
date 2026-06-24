@@ -33,4 +33,6 @@
 | `20260624023700_v44_background_job_enqueue_claim_rpcs.sql` | Ready — not yet applied | Requires Phase 7A table. Two RPCs. service_role only. |
 | `20260624024200_v44_background_job_lifecycle_rpcs.sql` | Ready — not yet applied | Requires Phase 7A table. Four RPCs: heartbeat, complete, fail, recover. service_role only. |
 | `supabase/tests/v44_background_job_lifecycle_verification.sql` | Phase 7D — verification script | Run as service_role. Wraps all state in BEGIN…ROLLBACK. Covers 10 lifecycle assertions. No pgTAP. |
-| `workers/` | Phase 8A — Python worker skeleton | `background_worker.py` + `job_handlers.py`. All handlers are stubs. No real job execution yet. |
+| `workers/` (Phase 8A) | Python worker skeleton | `background_worker.py` + `job_handlers.py`. All handlers were stubs. No real job execution yet. |
+| `workers/job_handlers.py` (Phase 8B) | resource_ingestion handler | `make_resource_ingestion_handler(client)` calls `ingest_resource_version_v1`. Payload validated before RPC. |
+| `workers/job_handlers.py` (Phase 8C) | candidate_promotion handler | `make_candidate_promotion_handler(client)` calls `promote_question_candidate_v1`. Payload validated before RPC. |

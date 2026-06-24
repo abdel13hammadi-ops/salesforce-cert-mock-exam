@@ -58,18 +58,20 @@ These are read directly from the environment, not from Streamlit secrets, so the
 
 ## Handler Registry
 
-All handlers in `job_handlers.HANDLER_REGISTRY` are stubs that raise `NotImplementedHandler`. The full list of registered types:
+Use `build_handler_registry(client)` to get the production registry.  It wires in real handlers for implemented types and leaves stubs for the rest.  `HANDLER_REGISTRY` is the all-stubs dict (used for testing and as a fallback).
 
-- `resource_ingestion`
-- `deterministic_audit`
-- `llm_audit`
-- `hybrid_audit`
-- `question_generation`
-- `candidate_promotion`
-- `embedding_generation`
-- `other`
+| job_type | Phase | Status |
+|---|---|---|
+| `resource_ingestion` | 8B | **Implemented** — calls `ingest_resource_version_v1` |
+| `candidate_promotion` | 8C | **Implemented** — calls `promote_question_candidate_v1` |
+| `deterministic_audit` | — | Stub — `NotImplementedHandler` |
+| `llm_audit` | — | Stub — `NotImplementedHandler` |
+| `hybrid_audit` | — | Stub — `NotImplementedHandler` |
+| `question_generation` | — | Stub — `NotImplementedHandler` |
+| `embedding_generation` | — | Stub — `NotImplementedHandler` |
+| `other` | — | Stub — `NotImplementedHandler` |
 
-To add a real handler, replace the `_stub(...)` entry for the relevant type with a function matching this signature:
+To add a real handler, create a factory function `make_<type>_handler(client)` and register it in `build_handler_registry`.  The function must match this signature:
 
 ```python
 def handle_my_type(
@@ -103,7 +105,7 @@ Run as `service_role` in Supabase SQL editor or psql. The script wraps all state
 
 ## What Is Not Implemented Yet
 
-- Real handler implementations (all stubs)
-- Heartbeat background thread (currently a single call before dispatch)
+- Handlers: `deterministic_audit`, `llm_audit`, `hybrid_audit`, `question_generation`, `embedding_generation`, `other`
+- Heartbeat background thread (currently a single pre-dispatch call by the worker)
 - Monitoring / alerting integration
 - Retry backoff strategies beyond `fail_background_job_v1` defaults

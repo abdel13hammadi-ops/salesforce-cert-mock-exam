@@ -342,14 +342,14 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.job_types:
         job_types = [t.strip() for t in args.job_types.split(",") if t.strip()]
 
-    from workers.job_handlers import HANDLER_REGISTRY  # local import avoids circular
+    from workers.job_handlers import build_handler_registry  # local import avoids circular
 
     client = build_supabase_client()
 
     worker = BackgroundWorker(
         worker_id=args.worker_id,
         client=client,
-        handlers=HANDLER_REGISTRY,
+        handlers=build_handler_registry(client),
         job_types=job_types,
         lease_seconds=args.lease_seconds,
         sleep_interval=args.sleep,
