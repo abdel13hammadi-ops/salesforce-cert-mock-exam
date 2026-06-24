@@ -22,10 +22,11 @@ Rules
 * Raising any exception causes the worker to call fail_background_job_v1.
 * Returning a dict causes the worker to call complete_background_job_v1.
 
-Implemented handlers (Phase 8B / 8C)
---------------------------------------
-  resource_ingestion   → calls ingest_resource_version_v1 RPC
-  candidate_promotion  → calls promote_question_candidate_v1 RPC
+Implemented handlers
+--------------------
+  resource_ingestion   (8B) → calls ingest_resource_version_v1 RPC
+  candidate_promotion  (8C) → calls promote_question_candidate_v1 RPC
+  deterministic_audit  (8D) → orchestrates create→check→complete audit RPCs
 
 All other handlers are stubs that raise NotImplementedHandler.
 Use build_handler_registry(client) to build the registry with real handlers
@@ -229,6 +230,86 @@ def make_candidate_promotion_handler(client) -> Callable[..., dict]:
     return handle
 
 
+def make_deterministic_audit_handler(client) -> Callable[..., dict]:
+    """Return the deterministic_audit handler bound to the given Supabase client.
+
+    Orchestrates a full audit run lifecycle via three RPCs:
+      create_audit_run_v1 → run_deterministic_checks → complete_audit_run_v1
+
+    Expected payload fields
+    -----------------------
+    Exactly one of:
+      target_question_version_id  str  — UUID of a question_versions row
+      target_candidate_id         str  — UUID of a question_candidates row
+
+    Required:
+      created_by  str  — email or service identifier of the caller
+
+    Optional:
+      ruleset_version    str   — audit ruleset version (default '1.0.0')
+      question           dict  — snapshot with question_text, explanation,
+                                 question_type, select_count, options[]
+      resource_snapshot  dict  — resource context for the audit run
+      metadata           dict  — extra metadata merged into the run
+
+    Returns
+    -------
+      audit_run_id   str
+      run_status     str
+      finding_count  int
+      evidence_count int
+
+    Only calls (via audit_orchestration):
+      create_audit_run_v1, complete_audit_run_v1, end_audit_run_v1 (on failure)
+    """
+    from workers.deterministic_audit import run_deterministic_checks  # noqa: PLC0415
+    from workers.audit_orchestration import orchestrate_audit          # noqa: PLC0415
+
+    def handle(
+        job_id: str,
+        payload: dict,
+        checkpoint: dict,
+        attempt: int,
+        heartbeat_fn: Callable[[], None],
+    ) -> dict:
+        tqv_id = payload.get("target_question_version_id") or None
+        tc_id  = payload.get("target_candidate_id") or None
+        n_targets = sum(1 for v in (tqv_id, tc_id) if v)
+        if n_targets != 1:
+            raise HandlerPayloadError(
+                "exactly one of target_question_version_id or "
+                "target_candidate_id must be provided"
+            )
+
+        created_by = _require(payload, "created_by")
+
+        question = payload.get("question")
+        if not isinstance(question, dict):
+            raise HandlerPayloadError(
+                "payload field 'question' must be a non-null object"
+            )
+
+        ruleset_version   = payload.get("ruleset_version") or "1.0.0"
+        resource_snapshot = payload.get("resource_snapshot")
+        metadata          = payload.get("metadata")
+
+        return orchestrate_audit(
+            client,
+            audit_type="deterministic",
+            target_question_version_id=tqv_id,
+            target_candidate_id=tc_id,
+            created_by=created_by,
+            ruleset_version=ruleset_version,
+            resource_snapshot=resource_snapshot,
+            metadata=metadata,
+            check_fn=lambda: run_deterministic_checks(question, ruleset_version),
+        )
+
+    handle.__name__ = "handle_deterministic_audit"
+    handle.__qualname__ = "handle_deterministic_audit"
+    return handle
+
+
 # ===========================================================================
 # Stub-only registry (backwards-compatible default)
 # ===========================================================================
@@ -248,9 +329,10 @@ HANDLER_REGISTRY: Dict[str, Callable[..., Any]] = {
 def build_handler_registry(client) -> Dict[str, Callable[..., Any]]:
     """Build a complete handler registry with real handlers injected.
 
-    Returns a new dict that overrides resource_ingestion and
-    candidate_promotion with real implementations bound to *client*, leaving
-    all other types as stubs.
+    Returns a new dict that overrides resource_ingestion, candidate_promotion,
+    and deterministic_audit with real implementations bound to *client*,
+    leaving llm_audit, hybrid_audit, question_generation, embedding_generation,
+    and other as stubs.
 
     Parameters
     ----------
@@ -262,6 +344,7 @@ def build_handler_registry(client) -> Dict[str, Callable[..., Any]]:
         **HANDLER_REGISTRY,
         "resource_ingestion":  make_resource_ingestion_handler(client),
         "candidate_promotion": make_candidate_promotion_handler(client),
+        "deterministic_audit": make_deterministic_audit_handler(client),
     }
 
 
@@ -271,5 +354,6 @@ __all__ = [
     "HandlerPayloadError",
     "make_resource_ingestion_handler",
     "make_candidate_promotion_handler",
+    "make_deterministic_audit_handler",
     "build_handler_registry",
 ]

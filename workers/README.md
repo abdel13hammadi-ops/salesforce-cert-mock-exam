@@ -24,7 +24,9 @@ Scheduled → recover_expired_background_jobs_v1
 | File | Purpose |
 |---|---|
 | `background_worker.py` | Worker class, CLI entry point, signal handling |
-| `job_handlers.py` | Handler registry; all handlers are stubs returning `NotImplementedHandler` |
+| `job_handlers.py` | Handler registry, factory functions, `build_handler_registry(client)` |
+| `deterministic_audit.py` | Phase 8D — pure structural check functions; no Supabase calls |
+| `audit_orchestration.py` | Phase 8E — `orchestrate_audit()` lifecycle: create → check → complete/fail |
 
 ## Entry Command
 
@@ -64,7 +66,7 @@ Use `build_handler_registry(client)` to get the production registry.  It wires i
 |---|---|---|
 | `resource_ingestion` | 8B | **Implemented** — calls `ingest_resource_version_v1` |
 | `candidate_promotion` | 8C | **Implemented** — calls `promote_question_candidate_v1` |
-| `deterministic_audit` | — | Stub — `NotImplementedHandler` |
+| `deterministic_audit` | 8D/8E | **Implemented** — runs structural checks via `orchestrate_audit()` |
 | `llm_audit` | — | Stub — `NotImplementedHandler` |
 | `hybrid_audit` | — | Stub — `NotImplementedHandler` |
 | `question_generation` | — | Stub — `NotImplementedHandler` |
@@ -105,7 +107,7 @@ Run as `service_role` in Supabase SQL editor or psql. The script wraps all state
 
 ## What Is Not Implemented Yet
 
-- Handlers: `deterministic_audit`, `llm_audit`, `hybrid_audit`, `question_generation`, `embedding_generation`, `other`
+- Handlers: `llm_audit`, `hybrid_audit`, `question_generation`, `embedding_generation`, `other`
 - Heartbeat background thread (currently a single pre-dispatch call by the worker)
 - Monitoring / alerting integration
 - Retry backoff strategies beyond `fail_background_job_v1` defaults

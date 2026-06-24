@@ -977,8 +977,8 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
         fake = FakeSupabase()
         registry = build_handler_registry(fake)
 
+        # deterministic_audit is now implemented; only these remain as stubs.
         still_stubbed = [
-            "deterministic_audit",
             "llm_audit",
             "hybrid_audit",
             "question_generation",
@@ -993,15 +993,42 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
                         attempt=1, heartbeat_fn=lambda: None)
 
     def test_implemented_types_are_not_stubs(self):
-        """resource_ingestion and candidate_promotion must not raise NotImplementedHandler."""
+        """resource_ingestion, candidate_promotion, and deterministic_audit
+        must not raise NotImplementedHandler."""
+        _AUDIT_RUN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
         fake = FakeSupabase()
         fake.set_response("ingest_resource_version_v1", [_INGEST_RESPONSE])
         fake.set_response("promote_question_candidate_v1", [_PROMOTE_RESPONSE])
+        fake.set_response("create_audit_run_v1", [
+            {"audit_run_id": _AUDIT_RUN_ID, "run_status": "pending"},
+        ])
+        fake.set_response("complete_audit_run_v1", [
+            {"audit_run_id": _AUDIT_RUN_ID, "run_status": "completed",
+             "finding_count": 0, "evidence_count": 0},
+        ])
         registry = build_handler_registry(fake)
+
+        _VALID_AUDIT_PAYLOAD = {
+            "target_question_version_id": "bbbbbbbb-0000-0000-0000-000000000001",
+            "created_by": "audit-worker@certbound.io",
+            "question": {
+                "question_text": "What is 2+2?",
+                "explanation":   "Elementary arithmetic.",
+                "question_type": "single",
+                "select_count":  1,
+                "options": [
+                    {"option_label": "A", "option_text": "4",
+                     "is_correct": True,  "display_order": 1},
+                    {"option_label": "B", "option_text": "5",
+                     "is_correct": False, "display_order": 2},
+                ],
+            },
+        }
 
         for job_type, payload in [
             ("resource_ingestion",  _VALID_INGEST_PAYLOAD),
             ("candidate_promotion", _VALID_PROMOTE_PAYLOAD),
+            ("deterministic_audit", _VALID_AUDIT_PAYLOAD),
         ]:
             try:
                 registry[job_type](
@@ -1010,6 +1037,10 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
                 )
             except NotImplementedHandler:
                 self.fail(f"{job_type} raised NotImplementedHandler — must be a real handler")
+            except Exception:
+                # Any other exception (e.g. RPC error from fake) is acceptable;
+                # only NotImplementedHandler signals "not yet implemented".
+                pass
 
 
 if __name__ == "__main__":

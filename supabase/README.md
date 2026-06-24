@@ -36,3 +36,5 @@
 | `workers/` (Phase 8A) | Python worker skeleton | `background_worker.py` + `job_handlers.py`. All handlers were stubs. No real job execution yet. |
 | `workers/job_handlers.py` (Phase 8B) | resource_ingestion handler | `make_resource_ingestion_handler(client)` calls `ingest_resource_version_v1`. Payload validated before RPC. |
 | `workers/job_handlers.py` (Phase 8C) | candidate_promotion handler | `make_candidate_promotion_handler(client)` calls `promote_question_candidate_v1`. Payload validated before RPC. |
+| `workers/deterministic_audit.py` (Phase 8D) | Deterministic audit engine | 11 pure-function checks; 11 finding codes (e.g. `EMPTY_QUESTION_TEXT`, `CORRECT_COUNT_MISMATCH`). No RPCs. |
+| `workers/audit_orchestration.py` (Phase 8E) | Audit orchestration layer | `orchestrate_audit()` manages create→check→complete lifecycle; calls `end_audit_run_v1` on failure. |
