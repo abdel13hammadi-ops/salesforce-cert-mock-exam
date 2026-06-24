@@ -25,3 +25,4 @@
 | `20260623193600_v44_question_candidates.sql` | Ready — not yet applied | Additive. Staging table only; no exam delivery impact. |
 | `20260623233200_v44_promote_question_candidate_rpc.sql` | Ready — not yet applied | Requires Phase 4A and Phase 3A tables/functions. service_role only. |
 | `20260623233800_v44_resource_library_foundation.sql` | Ready — not yet applied | Additive. Three tables. No embeddings, no exam delivery impact. |
+| `20260623234600_v44_ingest_resource_version_rpc.sql` | Ready — not yet applied | Requires Phase 5A tables. Idempotent. service_role only. |
