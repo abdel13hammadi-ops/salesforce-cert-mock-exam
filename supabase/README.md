@@ -29,3 +29,4 @@
 | `20260623235100_v44_audit_foundation.sql` | Ready — not yet applied | Additive. Three tables. No RPCs. No exam delivery impact. |
 | `20260624015900_v44_audit_lifecycle_rpcs.sql` | Ready — not yet applied | Requires Phase 6A tables. Two RPCs. service_role only. |
 | `20260624022600_v44_fail_cancel_audit_run_rpc.sql` | Ready — not yet applied | Requires Phase 6A tables. One RPC. service_role only. |
+| `20260624023300_v44_background_jobs_foundation.sql` | Ready — not yet applied | Additive. One table. No RPCs. No exam delivery impact. |
