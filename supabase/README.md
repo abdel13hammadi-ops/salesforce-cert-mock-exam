@@ -27,3 +27,4 @@
 | `20260623233800_v44_resource_library_foundation.sql` | Ready — not yet applied | Additive. Three tables. No embeddings, no exam delivery impact. |
 | `20260623234600_v44_ingest_resource_version_rpc.sql` | Ready — not yet applied | Requires Phase 5A tables. Idempotent. service_role only. |
 | `20260623235100_v44_audit_foundation.sql` | Ready — not yet applied | Additive. Three tables. No RPCs. No exam delivery impact. |
+| `20260624015900_v44_audit_lifecycle_rpcs.sql` | Ready — not yet applied | Requires Phase 6A tables. Two RPCs. service_role only. |
