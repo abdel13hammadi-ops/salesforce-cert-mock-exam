@@ -6,6 +6,7 @@ All tests use injected mock clients. No real network calls are made.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -26,6 +27,7 @@ from workers.anthropic_provider import (
     AnthropicAuditProvider,
     AnthropicProviderConfig,
     load_anthropic_config_from_env,
+    normalize_schema_for_anthropic,
 )
 from workers.llm_audit import AUDIT_RESPONSE_SCHEMA, LlmAuditValidationError
 from workers.llm_providers import LlmProviderError, MissingProviderError
@@ -87,6 +89,101 @@ def _transient(exc: Exception) -> bool:
 
 def _auth(exc: Exception) -> bool:
     return isinstance(exc, _AuthenticationError)
+
+
+def _collect_object_schemas(node: object, found: list | None = None) -> list:
+    if found is None:
+        found = []
+    if isinstance(node, dict):
+        if node.get("type") == "object":
+            found.append(node)
+        for value in node.values():
+            _collect_object_schemas(value, found)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_object_schemas(item, found)
+    return found
+
+
+def _finding_item_schema(schema: dict) -> dict:
+    return schema["properties"]["findings"]["items"]
+
+
+def _evidence_item_schema(schema: dict) -> dict:
+    return _finding_item_schema(schema)["properties"]["evidence"]["items"]
+
+
+class TestNormalizeSchemaForAnthropic(unittest.TestCase):
+
+    def test_root_object_receives_additional_properties_false(self):
+        normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        self.assertFalse(normalized["additionalProperties"])
+
+    def test_nested_finding_objects_receive_additional_properties_false(self):
+        normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        finding = _finding_item_schema(normalized)
+        self.assertEqual(finding["type"], "object")
+        self.assertFalse(finding["additionalProperties"])
+
+    def test_nested_metadata_objects_receive_additional_properties_false(self):
+        normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        finding_meta = _finding_item_schema(normalized)["properties"]["metadata"]
+        evidence_meta = _evidence_item_schema(normalized)["properties"]["metadata"]
+        self.assertFalse(finding_meta["additionalProperties"])
+        self.assertFalse(evidence_meta["additionalProperties"])
+
+    def test_array_item_objects_receive_additional_properties_false(self):
+        normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        evidence = _evidence_item_schema(normalized)
+        self.assertEqual(evidence["type"], "object")
+        self.assertFalse(evidence["additionalProperties"])
+
+    def test_defs_objects_receive_additional_properties_false(self):
+        schema = {
+            "type": "object",
+            "$defs": {
+                "Finding": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                }
+            },
+            "properties": {
+                "findings": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/Finding"},
+                }
+            },
+        }
+        normalized = normalize_schema_for_anthropic(schema)
+        self.assertFalse(normalized["additionalProperties"])
+        self.assertFalse(normalized["$defs"]["Finding"]["additionalProperties"])
+
+    def test_source_schema_is_not_mutated(self):
+        before = copy.deepcopy(AUDIT_RESPONSE_SCHEMA)
+        normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        self.assertEqual(AUDIT_RESPONSE_SCHEMA, before)
+        self.assertNotIn(
+            "additionalProperties",
+            AUDIT_RESPONSE_SCHEMA["properties"]["findings"]["items"],
+        )
+        self.assertNotIn(
+            "additionalProperties",
+            AUDIT_RESPONSE_SCHEMA["properties"]["findings"]["items"]["properties"]["metadata"],
+        )
+
+    def test_non_object_nodes_are_not_modified(self):
+        normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        confidence = _finding_item_schema(normalized)["properties"]["confidence"]
+        self.assertEqual(confidence["type"], "number")
+        self.assertNotIn("additionalProperties", confidence)
+
+    def test_all_object_nodes_in_normalized_schema_are_closed(self):
+        normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        for obj_schema in _collect_object_schemas(normalized):
+            self.assertFalse(
+                obj_schema.get("additionalProperties"),
+                f"object schema missing additionalProperties=false: {obj_schema!r}",
+            )
 
 
 class TestAnthropicProviderConfig(unittest.TestCase):
@@ -159,6 +256,9 @@ class TestAnthropicAuditProvider(unittest.TestCase):
         kwargs = client.messages.create.call_args.kwargs
         self.assertEqual(kwargs["model"], "claude-sonnet-4-6")
         self.assertIn("output_config", kwargs)
+        sent_schema = kwargs["output_config"]["format"]["schema"]
+        for obj_schema in _collect_object_schemas(sent_schema):
+            self.assertFalse(obj_schema.get("additionalProperties"))
         self.assertIn("Question snapshot", kwargs["messages"][0]["content"])
         self.assertIn("Official evidence", kwargs["messages"][0]["content"])
 

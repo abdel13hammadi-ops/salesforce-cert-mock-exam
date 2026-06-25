@@ -39,6 +39,7 @@ Does **not** retry:
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -260,6 +261,66 @@ def _is_auth_error(exc: Exception) -> bool:
     return isinstance(exc, anthropic.AuthenticationError)
 
 
+def normalize_schema_for_anthropic(schema: dict) -> dict:
+    """Return a deep copy of *schema* with Anthropic-required object constraints.
+
+    Anthropic structured output requires ``additionalProperties: false`` on
+    every JSON Schema node whose ``type`` is ``"object"``. The internal
+    ``AUDIT_RESPONSE_SCHEMA`` is left unchanged; this helper produces a
+    provider-specific copy only for the API request.
+    """
+    normalized = copy.deepcopy(schema)
+    _apply_additional_properties_false(normalized)
+    return normalized
+
+
+def _apply_additional_properties_false(node: object) -> None:
+    """Recursively set ``additionalProperties: false`` on object schema nodes."""
+    if isinstance(node, list):
+        for item in node:
+            _apply_additional_properties_false(item)
+        return
+
+    if not isinstance(node, dict):
+        return
+
+    if node.get("type") == "object":
+        node["additionalProperties"] = False
+
+    properties = node.get("properties")
+    if isinstance(properties, dict):
+        for subschema in properties.values():
+            _apply_additional_properties_false(subschema)
+
+    pattern_properties = node.get("patternProperties")
+    if isinstance(pattern_properties, dict):
+        for subschema in pattern_properties.values():
+            _apply_additional_properties_false(subschema)
+
+    for defs_key in ("$defs", "definitions"):
+        defs = node.get(defs_key)
+        if isinstance(defs, dict):
+            for subschema in defs.values():
+                _apply_additional_properties_false(subschema)
+
+    items = node.get("items")
+    if isinstance(items, dict):
+        _apply_additional_properties_false(items)
+    elif isinstance(items, list):
+        for subschema in items:
+            _apply_additional_properties_false(subschema)
+
+    additional = node.get("additionalProperties")
+    if isinstance(additional, dict):
+        _apply_additional_properties_false(additional)
+
+    for combiner in ("allOf", "anyOf", "oneOf"):
+        group = node.get(combiner)
+        if isinstance(group, list):
+            for subschema in group:
+                _apply_additional_properties_false(subschema)
+
+
 def _build_create_kwargs(
     *,
     model: str,
@@ -280,7 +341,7 @@ def _build_create_kwargs(
     kwargs["output_config"] = {
         "format": {
             "type": "json_schema",
-            "schema": response_schema,
+            "schema": normalize_schema_for_anthropic(response_schema),
         }
     }
     return kwargs
