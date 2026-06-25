@@ -251,6 +251,28 @@ JSON object with:
 - No database writes
 - Uses provider bounded retry policy only
 
+## Hybrid Audit Enqueue Pilot (V45 Phase 4A)
+
+Enqueues exactly one `hybrid_audit` background job via `enqueue_background_job_v1`.
+Does **not** claim or process the job; run the background worker separately.
+
+```bash
+set CERTBOUND_ALLOW_LIVE_AI_TEST=1
+set CERTBOUND_LLM_PROVIDER=anthropic
+set CERTBOUND_ANTHROPIC_API_KEY=your-key-here
+set SUPABASE_URL=https://your-project.supabase.co
+set SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+python -m workers.run_hybrid_audit_pilot --payload-file path/to/payload.json
+```
+
+The JSON payload must match the `hybrid_audit` handler contract documented on
+`make_hybrid_audit_handler()` in `job_handlers.py` (exactly one target ID,
+`created_by`, `model_name`, `prompt_version`, `ruleset_version`, prompts,
+and `question` snapshot).
+
+Optional flags: `--priority`, `--max-attempts`, `--available-at`,
+`--estimated-cost-usd`, `--metadata-file`.
+
 ## Finding Materiality and Canonical Codes (V45 Phase 3)
 
 After LLM response schema validation, every finding passes through
