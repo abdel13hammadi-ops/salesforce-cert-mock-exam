@@ -261,28 +261,49 @@ def _is_auth_error(exc: Exception) -> bool:
     return isinstance(exc, anthropic.AuthenticationError)
 
 
-def normalize_schema_for_anthropic(schema: dict) -> dict:
-    """Return a deep copy of *schema* with Anthropic-required object constraints.
+# Validation keywords rejected by Anthropic structured-output JSON Schema.
+ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS: frozenset[str] = frozenset({
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "format",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "minProperties",
+    "maxProperties",
+})
 
-    Anthropic structured output requires ``additionalProperties: false`` on
-    every JSON Schema node whose ``type`` is ``"object"``. The internal
+
+def normalize_schema_for_anthropic(schema: dict) -> dict:
+    """Return a deep copy of *schema* normalized for Anthropic structured output.
+
+    Anthropic requires ``additionalProperties: false`` on every object node and
+    rejects several standard JSON Schema validation keywords. The internal
     ``AUDIT_RESPONSE_SCHEMA`` is left unchanged; this helper produces a
     provider-specific copy only for the API request.
     """
     normalized = copy.deepcopy(schema)
-    _apply_additional_properties_false(normalized)
+    _normalize_schema_node(normalized)
     return normalized
 
 
-def _apply_additional_properties_false(node: object) -> None:
-    """Recursively set ``additionalProperties: false`` on object schema nodes."""
+def _normalize_schema_node(node: object) -> None:
+    """Recursively strip unsupported keywords and close object schemas."""
     if isinstance(node, list):
         for item in node:
-            _apply_additional_properties_false(item)
+            _normalize_schema_node(item)
         return
 
     if not isinstance(node, dict):
         return
+
+    for key in ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS:
+        node.pop(key, None)
 
     if node.get("type") == "object":
         node["additionalProperties"] = False
@@ -290,35 +311,35 @@ def _apply_additional_properties_false(node: object) -> None:
     properties = node.get("properties")
     if isinstance(properties, dict):
         for subschema in properties.values():
-            _apply_additional_properties_false(subschema)
+            _normalize_schema_node(subschema)
 
     pattern_properties = node.get("patternProperties")
     if isinstance(pattern_properties, dict):
         for subschema in pattern_properties.values():
-            _apply_additional_properties_false(subschema)
+            _normalize_schema_node(subschema)
 
     for defs_key in ("$defs", "definitions"):
         defs = node.get(defs_key)
         if isinstance(defs, dict):
             for subschema in defs.values():
-                _apply_additional_properties_false(subschema)
+                _normalize_schema_node(subschema)
 
     items = node.get("items")
     if isinstance(items, dict):
-        _apply_additional_properties_false(items)
+        _normalize_schema_node(items)
     elif isinstance(items, list):
         for subschema in items:
-            _apply_additional_properties_false(subschema)
+            _normalize_schema_node(subschema)
 
     additional = node.get("additionalProperties")
     if isinstance(additional, dict):
-        _apply_additional_properties_false(additional)
+        _normalize_schema_node(additional)
 
     for combiner in ("allOf", "anyOf", "oneOf"):
         group = node.get(combiner)
         if isinstance(group, list):
             for subschema in group:
-                _apply_additional_properties_false(subschema)
+                _normalize_schema_node(subschema)
 
 
 def _build_create_kwargs(

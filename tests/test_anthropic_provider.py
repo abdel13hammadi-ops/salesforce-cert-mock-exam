@@ -26,6 +26,7 @@ from workers.anthropic_provider import (
     ENV_TIMEOUT,
     AnthropicAuditProvider,
     AnthropicProviderConfig,
+    ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS,
     load_anthropic_config_from_env,
     normalize_schema_for_anthropic,
 )
@@ -113,6 +114,66 @@ def _evidence_item_schema(schema: dict) -> dict:
     return _finding_item_schema(schema)["properties"]["evidence"]["items"]
 
 
+def _collect_unsupported_keywords(node: object, found: list | None = None) -> list:
+    if found is None:
+        found = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in ANTHROPIC_UNSUPPORTED_SCHEMA_KEYWORDS:
+                found.append(key)
+            _collect_unsupported_keywords(value, found)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_unsupported_keywords(item, found)
+    return found
+
+
+def _schema_with_all_unsupported_keywords() -> dict:
+    return {
+        "type": "object",
+        "minimum": 0,
+        "properties": {
+            "findings": {
+                "type": "array",
+                "minItems": 0,
+                "maxItems": 10,
+                "uniqueItems": True,
+                "items": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "maxProperties": 5,
+                    "properties": {
+                        "confidence": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1,
+                            "exclusiveMinimum": 0,
+                            "exclusiveMaximum": 1,
+                        },
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 50,
+                            "pattern": "^[A-Z]+$",
+                            "format": "uuid",
+                        },
+                    },
+                },
+            }
+        },
+        "$defs": {
+            "Meta": {
+                "type": "object",
+                "format": "json",
+                "properties": {"note": {"type": "string", "minLength": 1}},
+            }
+        },
+        "anyOf": [
+            {"type": "object", "minProperties": 0, "properties": {"ok": {"type": "boolean"}}}
+        ],
+    }
+
+
 class TestNormalizeSchemaForAnthropic(unittest.TestCase):
 
     def test_root_object_receives_additional_properties_false(self):
@@ -171,11 +232,49 @@ class TestNormalizeSchemaForAnthropic(unittest.TestCase):
             AUDIT_RESPONSE_SCHEMA["properties"]["findings"]["items"]["properties"]["metadata"],
         )
 
-    def test_non_object_nodes_are_not_modified(self):
+    def test_non_object_nodes_keep_type_without_additional_properties(self):
         normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
         confidence = _finding_item_schema(normalized)["properties"]["confidence"]
         self.assertEqual(confidence["type"], "number")
         self.assertNotIn("additionalProperties", confidence)
+
+    def test_numeric_minimum_and_maximum_are_removed(self):
+        normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        confidence = _finding_item_schema(normalized)["properties"]["confidence"]
+        relevance = _evidence_item_schema(normalized)["properties"]["relevance_score"]
+        self.assertNotIn("minimum", confidence)
+        self.assertNotIn("maximum", confidence)
+        self.assertNotIn("minimum", relevance)
+        self.assertNotIn("maximum", relevance)
+        self.assertIn(
+            "minimum",
+            AUDIT_RESPONSE_SCHEMA["properties"]["findings"]["items"]["properties"]["confidence"],
+        )
+
+    def test_all_listed_unsupported_keywords_are_removed_recursively(self):
+        normalized = normalize_schema_for_anthropic(_schema_with_all_unsupported_keywords())
+        self.assertEqual(_collect_unsupported_keywords(normalized), [])
+
+    def test_supported_structural_keywords_remain(self):
+        normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        finding = _finding_item_schema(normalized)
+        self.assertEqual(normalized["type"], "object")
+        self.assertIn("properties", normalized)
+        self.assertIn("required", normalized)
+        self.assertIn("items", normalized["properties"]["findings"])
+        self.assertIn("enum", finding["properties"]["finding_type"])
+        self.assertIn("enum", finding["properties"]["severity"])
+        self.assertIn("required", finding)
+        self.assertIn("items", finding["properties"]["evidence"])
+        self.assertIn("properties", _evidence_item_schema(normalized))
+
+    def test_source_schema_retains_unsupported_validation_keywords(self):
+        before = copy.deepcopy(AUDIT_RESPONSE_SCHEMA)
+        normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        self.assertEqual(AUDIT_RESPONSE_SCHEMA, before)
+        confidence = AUDIT_RESPONSE_SCHEMA["properties"]["findings"]["items"]["properties"]["confidence"]
+        self.assertEqual(confidence["minimum"], 0)
+        self.assertEqual(confidence["maximum"], 1)
 
     def test_all_object_nodes_in_normalized_schema_are_closed(self):
         normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
@@ -184,6 +283,10 @@ class TestNormalizeSchemaForAnthropic(unittest.TestCase):
                 obj_schema.get("additionalProperties"),
                 f"object schema missing additionalProperties=false: {obj_schema!r}",
             )
+
+    def test_normalized_audit_schema_has_no_unsupported_keywords(self):
+        normalized = normalize_schema_for_anthropic(AUDIT_RESPONSE_SCHEMA)
+        self.assertEqual(_collect_unsupported_keywords(normalized), [])
 
 
 class TestAnthropicProviderConfig(unittest.TestCase):
@@ -259,6 +362,7 @@ class TestAnthropicAuditProvider(unittest.TestCase):
         sent_schema = kwargs["output_config"]["format"]["schema"]
         for obj_schema in _collect_object_schemas(sent_schema):
             self.assertFalse(obj_schema.get("additionalProperties"))
+        self.assertEqual(_collect_unsupported_keywords(sent_schema), [])
         self.assertIn("Question snapshot", kwargs["messages"][0]["content"])
         self.assertIn("Official evidence", kwargs["messages"][0]["content"])
 
