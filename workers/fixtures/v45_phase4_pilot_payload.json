@@ -1,0 +1,50 @@
+{
+  "target_question_version_id": "8d330e9d-a737-4ee3-b3ea-328f261508b8",
+  "created_by": "manual:v45_phase4_pilot",
+  "model_name": "claude-sonnet-4-6",
+  "prompt_version": "v1.0.0",
+  "ruleset_version": "1.0.0",
+  "system_prompt": "You are a CertBound certification question auditor. Review each question against the supplied calibration evidence chunks. Return findings only in the required JSON schema. Flag correctness, ambiguity, answer quality, and explanation quality issues when supported by the evidence.",
+  "user_prompt": "Audit this question for material defects. Return no findings if the question, answer key, options, and explanation align with the calibration evidence.",
+  "question": {
+    "question_text": "A Business Analyst joins a new Salesforce implementation for a mid-sized insurance company. The project sponsor has provided a brief that focuses on automating claims processing. During the first stakeholder meeting, agents mention they also struggle with manual policy renewals and a lack of customer 360-degree visibility. What should the BA do FIRST?",
+    "explanation": "B is correct. The BA's first responsibility during Customer Discovery is to listen, capture, and assess. When stakeholders raise issues beyond the stated brief, the BA must document those pain points and explicitly evaluate whether they constitute scope creep or legitimate additions requiring change control. Jumping to requirements (A) ignores the unvetted scope. Involving developers for estimation (C) is premature and skips the discovery and scoping phase. Building a prototype (D) is a technical task, entirely outside the BA's analytical role at this stage.",
+    "question_type": "single",
+    "select_count": 1,
+    "difficulty": "medium",
+    "cognitive_level": "application",
+    "category": "Customer Discovery",
+    "concept_key": "DISCOVERY_SCOPE_AND_BOUNDARIES",
+    "options": [
+      {
+        "option_label": "A",
+        "option_text": "Begin documenting detailed requirements for the claims automation feature as requested by the sponsor.",
+        "is_correct": false,
+        "display_order": 1
+      },
+      {
+        "option_label": "B",
+        "option_text": "Record the additional pain points raised by the agents and formally assess whether they fall within the current project scope or represent scope expansion.",
+        "is_correct": true,
+        "display_order": 2
+      },
+      {
+        "option_label": "C",
+        "option_text": "Ask the development team to estimate effort for all three problem areas before deciding how to proceed.",
+        "is_correct": false,
+        "display_order": 3
+      },
+      {
+        "option_label": "D",
+        "option_text": "Create a Salesforce sandbox and prototype a claims automation solution to demonstrate feasibility.",
+        "is_correct": false,
+        "display_order": 4
+      }
+    ]
+  },
+  "resource_snapshot": {},
+  "metadata": {
+    "phase": "V45_PHASE4A",
+    "purpose": "persisted_hybrid_audit_pilot"
+  }
+}
