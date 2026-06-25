@@ -17,6 +17,7 @@ from workers.finding_policy import (
     canonicalize_llm_finding_code,
     normalize_deterministic_finding,
     normalize_llm_finding,
+    original_llm_codes,
 )
 from workers.llm_providers import LlmResponse
 
@@ -117,6 +118,36 @@ class TestCanonicalCodeNormalization(unittest.TestCase):
         ))
         self.assertEqual(finding["finding_code"], "WEAK_DISTRACTORS")
         self.assertIn(finding["finding_code"], CANONICAL_FINDING_CODES)
+
+
+class TestOriginalLlmCodes(unittest.TestCase):
+
+    def test_flattens_mixed_string_and_list_metadata_with_dedup(self):
+        findings = [
+            {"metadata": {"original_finding_code": "EXP_001"}},
+            {"metadata": {"original_finding_code": [
+                "EXP_MISSING",
+                "  EXP_MISSING  ",
+                "",
+                None,
+                "EXPL_NO_DISTRACTOR_RATIONALE",
+            ]}},
+            {"metadata": {"original_finding_code": "MISSING_EXPLANATION"}},
+            {"metadata": {"original_finding_code": "  AMB-001  "}},
+            {"metadata": {"original_finding_code": "EXP_001"}},
+            {"metadata": {}},
+            {"metadata": {"original_finding_code": None}},
+        ]
+        self.assertEqual(
+            original_llm_codes(findings),
+            [
+                "EXP_001",
+                "EXP_MISSING",
+                "EXPL_NO_DISTRACTOR_RATIONALE",
+                "MISSING_EXPLANATION",
+                "AMB-001",
+            ],
+        )
 
 
 class TestMergeMaterialityEscalation(unittest.TestCase):

@@ -267,11 +267,20 @@ def count_materiality(findings: List[dict]) -> Dict[str, int]:
 
 
 def original_llm_codes(findings: List[dict]) -> List[str]:
-    """Return original LLM codes preserved in metadata, when present."""
+    """Return original codes preserved in metadata, flattened when stored as lists."""
     codes: List[str] = []
+    seen: set[str] = set()
     for finding in findings:
-        meta = finding.get("metadata") or {}
-        original = meta.get("original_finding_code")
-        if original:
-            codes.append(str(original))
+        raw = (finding.get("metadata") or {}).get("original_finding_code")
+        if raw is None:
+            continue
+        candidates = raw if isinstance(raw, list) else [raw]
+        for item in candidates:
+            if item is None:
+                continue
+            code = str(item).strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            codes.append(code)
     return codes
