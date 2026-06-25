@@ -7,3 +7,4 @@ sqlalchemy
 supabase
 streamlit-js-eval
 sentry-sdk
+anthropic

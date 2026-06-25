@@ -30,6 +30,8 @@ Scheduled → recover_expired_background_jobs_v1
 | `llm_providers.py` | Phase 8F — `LlmProvider` Protocol, `LlmResponse`, `MissingProviderError`, `NoOpProvider` |
 | `llm_audit.py` | Phase 8F — strict JSON response schema, `validate_llm_response()`, `LlmAuditValidationError` |
 | `finding_merge.py` | Phase 8I — `merge_findings()`: dedup by (code, field_path, description), severity/confidence escalation, evidence union, metadata provenance |
+| `anthropic_provider.py` | Phase V45 — production Anthropic Messages API provider with structured JSON output |
+| `smoke_anthropic_audit.py` | Phase V45 — manual live smoke test (never run under pytest) |
 
 ## Entry Command
 
@@ -130,6 +132,62 @@ worker = BackgroundWorker(
 
 Without a provider, the handler raises `MissingProviderError` before any RPC call.
 
+## Anthropic Provider (V45 Phase 1)
+
+Production provider: `AnthropicAuditProvider` in `workers/anthropic_provider.py`.
+
+Wire it into the worker:
+
+```python
+from workers.anthropic_provider import build_anthropic_provider_from_env
+from workers.job_handlers import build_handler_registry
+
+provider = build_anthropic_provider_from_env()
+worker = BackgroundWorker(
+    worker_id="my-worker",
+    client=supabase_client,
+    handlers=build_handler_registry(supabase_client, llm_provider=provider),
+)
+```
+
+### Environment variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `CERTBOUND_ANTHROPIC_API_KEY` | **yes** | — | Anthropic API key (never logged) |
+| `CERTBOUND_ANTHROPIC_MODEL` | no | `claude-sonnet-4-6` | Default model ID |
+| `CERTBOUND_ANTHROPIC_TIMEOUT_SECONDS` | no | `120` | Per-request timeout (seconds) |
+| `CERTBOUND_ANTHROPIC_MAX_OUTPUT_TOKENS` | no | `4096` | Max output tokens per request |
+| `CERTBOUND_ANTHROPIC_MAX_RETRIES` | no | `3` | Max retries for transient failures |
+| `CERTBOUND_ANTHROPIC_INPUT_COST_PER_MTOK` | no | — | USD per 1M input tokens (cost estimate) |
+| `CERTBOUND_ANTHROPIC_OUTPUT_COST_PER_MTOK` | no | — | USD per 1M output tokens (cost estimate) |
+| `CERTBOUND_ALLOW_LIVE_AI_TEST` | smoke test only | — | Must be `1` for manual smoke test |
+
+### Retry policy
+
+Retries with exponential backoff (max 30s jitter) only for transient Anthropic errors: rate limits, timeouts, connection errors, and 5xx server errors.
+
+Does **not** retry authentication failures, bad requests, malformed JSON, empty responses, or schema-invalid output (`validate_llm_response` failures).
+
+### Manual smoke test
+
+Refuses to call the live API unless explicitly enabled:
+
+```bash
+set CERTBOUND_ALLOW_LIVE_AI_TEST=1
+set CERTBOUND_ANTHROPIC_API_KEY=your-key-here
+python -m workers.smoke_anthropic_audit
+```
+
+Optional pricing for cost output:
+
+```bash
+set CERTBOUND_ANTHROPIC_INPUT_COST_PER_MTOK=3.0
+set CERTBOUND_ANTHROPIC_OUTPUT_COST_PER_MTOK=15.0
+```
+
+Prints model, duration, token usage, estimated cost, and validated findings. Not collected or executed by pytest.
+
 ## Finding Merge (`finding_merge.py`)
 
 `merge_findings(deterministic, llm)` produces a single deduplicated list from two finding sources.
@@ -150,7 +208,7 @@ Deduplication key: `(normalized finding_code, normalized field_path, normalized 
 ## What Is Not Implemented Yet
 
 - Handlers: `question_generation`, `embedding_generation`, `other`
-- Concrete SDK providers (OpenAI, Anthropic) — implement as shown above
+- OpenAI or other SDK providers — follow the Anthropic pattern in `anthropic_provider.py`
 - Heartbeat background thread (currently a single pre-dispatch call by the worker)
 - Monitoring / alerting integration
 - Retry backoff strategies beyond `fail_background_job_v1` defaults

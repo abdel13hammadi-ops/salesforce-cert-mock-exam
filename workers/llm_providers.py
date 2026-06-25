@@ -69,6 +69,10 @@ class LlmResponse:
         Monetary cost of the call in USD, if the provider reports it.
     provider_request_id:
         Provider-side request identifier for tracing and debugging.
+    model_name:
+        Provider model identifier used for the call.
+    provider_name:
+        Provider identifier (e.g. ``anthropic``).
     """
 
     parsed_response: dict
@@ -76,6 +80,8 @@ class LlmResponse:
     output_tokens: int
     actual_cost_usd: Optional[float] = None
     provider_request_id: Optional[str] = None
+    model_name: Optional[str] = None
+    provider_name: Optional[str] = None
 
 
 # ===========================================================================
