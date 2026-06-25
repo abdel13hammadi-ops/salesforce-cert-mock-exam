@@ -113,7 +113,7 @@ VALID_FINDING = {
     "finding_type": "ambiguity",
     "severity":     "medium",
     "title":        "Ambiguous question wording",
-    "description":  "The question could be interpreted in multiple ways.",
+    "description":  "The question wording lacks sufficient context for a single clear interpretation.",
 }
 
 # A valid finding with evidence.
@@ -286,9 +286,10 @@ class TestValidateLlmResponse(unittest.TestCase):
         result = validate_llm_response({"findings": [VALID_FINDING]})
         self.assertEqual(len(result), 1)
         f = result[0]
-        self.assertEqual(f["finding_code"], "AMBIGUOUS_WORDING")
+        self.assertEqual(f["finding_code"], "AMBIGUOUS_QUESTION")
         self.assertEqual(f["finding_type"], "ambiguity")
         self.assertEqual(f["severity"],     "medium")
+        self.assertEqual(f["materiality"],  "warning")
         self.assertIsNone(f["confidence"])
         self.assertEqual(f["evidence"],     [])
 
@@ -517,7 +518,8 @@ class TestMakeLlmAuditHandler(unittest.TestCase):
         self.assertEqual(len(complete_calls), 1)
         sent_findings = complete_calls[0]["params"]["p_findings"]
         self.assertEqual(len(sent_findings), 1)
-        self.assertEqual(sent_findings[0]["finding_code"], "AMBIGUOUS_WORDING")
+        self.assertEqual(sent_findings[0]["finding_code"], "AMBIGUOUS_QUESTION")
+        self.assertEqual(sent_findings[0]["materiality"], "warning")
 
     # ---- token and cost values forwarded in result ----
 

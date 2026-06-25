@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import List
 
+from workers.finding_policy import normalize_deterministic_finding
+
 DETECTOR_NAME = "certbound-deterministic-audit"
 DETECTOR_VERSION = "1.0.0"
 
@@ -341,7 +343,7 @@ def run_deterministic_checks(question: dict, ruleset_version: str = "1.0.0") -> 
             results = check_fn(question)
             for f in results:
                 f.setdefault("metadata", {})["ruleset_version"] = ruleset_version
-            findings.extend(results)
+                findings.append(normalize_deterministic_finding(f))
         except Exception:  # noqa: BLE001
             pass
     return findings

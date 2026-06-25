@@ -29,7 +29,8 @@ Scheduled → recover_expired_background_jobs_v1
 | `audit_orchestration.py` | Phase 8E — `orchestrate_audit()` lifecycle: create → check → complete/fail |
 | `llm_providers.py` | Phase 8F — `LlmProvider` Protocol, `LlmResponse`, `MissingProviderError`, `NoOpProvider` |
 | `llm_audit.py` | Phase 8F — strict JSON response schema, `validate_llm_response()`, `LlmAuditValidationError` |
-| `finding_merge.py` | Phase 8I — `merge_findings()`: dedup by (code, field_path, description), severity/confidence escalation, evidence union, metadata provenance |
+| `finding_policy.py` | Phase V45 — canonical finding codes, materiality policy, post-validation normalization |
+| `finding_merge.py` | Phase 8I — `merge_findings()`: dedup by canonical code + field_path + description, severity/materiality escalation |
 | `anthropic_provider.py` | Phase V45 — production Anthropic Messages API provider with structured JSON output |
 | `llm_provider_factory.py` | Phase V45 — `build_llm_provider_from_env()` for worker startup wiring |
 | `audit_calibration.py` | Phase V45 — dry-run five-case calibration pilot logic |
@@ -250,6 +251,48 @@ JSON object with:
 - No database writes
 - Uses provider bounded retry policy only
 
+## Finding Materiality and Canonical Codes (V45 Phase 3)
+
+After LLM response schema validation, every finding passes through
+`workers/finding_policy.py`:
+
+- **Materiality** (`blocking`, `warning`, `informational`) is assigned in code by
+  `workers/finding_policy.py` and sent as a top-level finding field in
+  `p_findings`. `complete_audit_run_v1` validates and persists it to
+  `audit_findings.materiality` (migration `20260624120000_v45_audit_finding_materiality.sql`).
+  Severity is unchanged. The model must not control publication impact.
+- **Canonical finding codes** replace arbitrary LLM codes (e.g. `AMB-001`).
+  The original LLM code is preserved in `metadata.original_finding_code`.
+
+### Materiality policy
+
+| Level | Examples |
+|---|---|
+| `blocking` | Wrong answer key, unsupported/contradicted answer, severe ambiguity, multiple defensible answers, invalid answer count, missing required explanation, outdated behavior that makes the keyed answer wrong, structural deterministic defects |
+| `warning` | Thin/incomplete explanation (not missing), weak distractors, incomplete non-wrong coverage, minor wording ambiguity, low cognitive level, difficulty mismatch, weak source support |
+| `informational` | Stylistic improvements, scenario-based rewrite suggestions, nonessential enrichment |
+
+Unknown or unmapped findings default to **`warning`**, not `blocking`.
+
+### Canonical codes
+
+Minimum catalog includes: `WRONG_ANSWER_KEY`, `AMBIGUOUS_QUESTION`,
+`MULTIPLE_DEFENSIBLE_ANSWERS`, `UNSUPPORTED_ANSWER`, `EXPLANATION_MISSING`,
+`EXPLANATION_INCOMPLETE`, `WEAK_DISTRACTORS`, `LOW_COGNITIVE_LEVEL`,
+`DIFFICULTY_MISMATCH`, `OUTDATED_CONTENT`, `SOURCE_SUPPORT_WEAK`,
+`OTHER_REVIEW_NEEDED`, plus reused deterministic structural codes.
+
+Deterministic `MISSING_EXPLANATION` maps to canonical `EXPLANATION_MISSING` before
+RPC completion. Persisted rows store `EXPLANATION_MISSING`; legacy
+`MISSING_EXPLANATION` is backfilled to `blocking` only for historical rows.
+No active in-repo consumer depends on the legacy stored code.
+
+### Calibration pass criteria (Phase 3)
+
+- **Known-good**: pass with zero **blocking** findings; warnings and informational findings are reported separately and do not fail the case.
+- **Defect cases**: pass when the expected canonical code is detected with the expected materiality when the defect is publication-blocking.
+- Pilot totals include `blocking_false_positives`, `warning_only_on_known_good`, and `canonical_code_coverage`.
+
 ## Finding Merge (`finding_merge.py`)
 
 `merge_findings(deterministic, llm)` produces a single deduplicated list from two finding sources.
@@ -259,6 +302,7 @@ Deduplication key: `(normalized finding_code, normalized field_path, normalized 
 | Rule | Behaviour |
 |---|---|
 | Severity | Higher-ranked severity wins (`info < low < medium < high < critical`) |
+| Materiality | Higher-ranked materiality wins (`informational < warning < blocking`) |
 | Confidence | Higher numeric value wins; `None` only when both are `None` |
 | Evidence | Combined; deduped by `(resource_chunk_id, evidence_role)` |
 | Metadata | LLM metadata is the base; deterministic values overwrite on conflict |

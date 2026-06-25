@@ -40,6 +40,8 @@ from __future__ import annotations
 
 from typing import List
 
+from workers.finding_policy import normalize_llm_finding
+
 # ---------------------------------------------------------------------------
 # Allowed enum values — must match complete_audit_run_v1 validation exactly
 # ---------------------------------------------------------------------------
@@ -185,7 +187,7 @@ def validate_llm_response(raw: object) -> List[dict]:
             )
         )
 
-    return [_validate_finding(i, f) for i, f in enumerate(findings_raw)]
+    return [normalize_llm_finding(_validate_finding(i, f)) for i, f in enumerate(findings_raw)]
 
 
 # ===========================================================================

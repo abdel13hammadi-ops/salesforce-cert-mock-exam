@@ -12,6 +12,7 @@ Three-tuple of normalized strings:
 When two findings share the same key
 --------------------------------------
 * Highest severity is kept.
+* Highest materiality is kept (``informational < warning < blocking``).
 * Highest confidence is kept (``None`` only when both are ``None``).
 * Evidence combined, deduped by ``(resource_chunk_id, evidence_role)``.
 * Metadata merged: LLM metadata is the base; deterministic metadata values
@@ -34,6 +35,8 @@ Conflicting findings with distinct deduplication keys are never silently dropped
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Set, Tuple
+
+from workers.finding_policy import MATERIALITY_RANK
 
 # Severity from lowest to highest.
 SEVERITY_RANK: Dict[str, int] = {
@@ -68,6 +71,11 @@ def _merge_key(finding: dict) -> Tuple[str, str, str]:
 def _pick_severity(a: str, b: str) -> str:
     """Return the higher-ranked of severities *a* and *b*."""
     return a if SEVERITY_RANK.get(a, -1) >= SEVERITY_RANK.get(b, -1) else b
+
+
+def _pick_materiality(a: str, b: str) -> str:
+    """Return the higher-ranked materiality of *a* and *b*."""
+    return a if MATERIALITY_RANK.get(a, -1) >= MATERIALITY_RANK.get(b, -1) else b
 
 
 def _pick_confidence(
@@ -194,6 +202,10 @@ def merge_findings(
                 # Escalation rules.
                 "severity":   _pick_severity(
                     det_finding["severity"], llm_finding["severity"]
+                ),
+                "materiality": _pick_materiality(
+                    det_finding.get("materiality", "warning"),
+                    llm_finding.get("materiality", "warning"),
                 ),
                 "confidence": _pick_confidence(
                     det_finding.get("confidence"), llm_finding.get("confidence")

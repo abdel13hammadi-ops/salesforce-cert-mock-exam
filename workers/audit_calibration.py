@@ -1,9 +1,13 @@
 """
-Dry-run audit calibration pilot for CertBound (V45 Phase 2).
+Dry-run audit calibration pilot for CertBound (V45 Phase 2/3).
 
 Runs exactly five labeled calibration cases through deterministic checks,
 an injected LLM provider, and finding merge logic. Does not call audit
 lifecycle RPCs, publish, promote, or mutate live questions.
+
+Phase 3 pass criteria use canonical finding codes and materiality:
+known-good cases fail only on blocking findings; warnings and informational
+findings are reported separately.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from workers.deterministic_audit import run_deterministic_checks
 from workers.finding_merge import merge_findings
+from workers.finding_policy import count_materiality, original_llm_codes
 from workers.llm_audit import AUDIT_RESPONSE_SCHEMA, LlmAuditValidationError, validate_llm_response
 from workers.llm_providers import LlmProviderError
 
@@ -41,6 +46,10 @@ class CalibrationCaseResult:
     llm_finding_count: int
     merged_finding_count: int
     finding_codes: List[str]
+    blocking_count: int
+    warning_count: int
+    informational_count: int
+    original_llm_codes: List[str]
     duration_seconds: float
     input_tokens: int
     output_tokens: int
@@ -58,6 +67,9 @@ class CalibrationPilotSummary:
     cases_passed: int = 0
     known_defects_detected: int = 0
     false_positives: int = 0
+    blocking_false_positives: int = 0
+    warning_only_on_known_good: int = 0
+    canonical_code_coverage: int = 0
     total_cost_usd: float = 0.0
     average_duration_seconds: float = 0.0
     invalid_responses: int = 0
@@ -105,28 +117,42 @@ def _finding_codes(findings: List[dict]) -> List[str]:
     return [str(f.get("finding_code", "")) for f in findings if f.get("finding_code")]
 
 
-def _evaluate_case(case: dict, merged_findings: List[dict]) -> tuple[bool, bool]:
-    """Return (passed, false_positive)."""
+def _blocking_findings(findings: List[dict]) -> List[dict]:
+    return [f for f in findings if f.get("materiality") == "blocking"]
+
+
+def _evaluate_case(case: dict, merged_findings: List[dict]) -> tuple[bool, bool, bool]:
+    """Return (passed, false_positive, warning_only_on_known_good)."""
     expect_detection = bool(case.get("expect_detection", True))
-    expected_codes = case.get("expected_finding_codes") or []
     expected_category = case.get("expected_defect_category", "")
+    expected_codes = case.get("expected_canonical_codes") or case.get("expected_finding_codes") or []
+    expected_materiality = case.get("expected_materiality")
     merged_codes = _finding_codes(merged_findings)
     merged_types = {f.get("finding_type") for f in merged_findings}
+    blocking = _blocking_findings(merged_findings)
+    counts = count_materiality(merged_findings)
 
     if not expect_detection or expected_category == "none":
-        false_positive = len(merged_findings) > 0
-        return (not false_positive, false_positive)
+        false_positive = len(blocking) > 0
+        warning_only = counts["warning"] > 0 or counts["informational"] > 0
+        passed = not false_positive
+        return (passed, false_positive, warning_only and passed)
 
     if expected_codes:
-        passed = any(code in merged_codes for code in expected_codes)
-        return (passed, False)
+        matched = [f for f in merged_findings if f.get("finding_code") in expected_codes]
+        if not matched:
+            return (False, False, False)
+        if expected_materiality:
+            passed = any(f.get("materiality") == expected_materiality for f in matched)
+            return (passed, False, False)
+        return (True, False, False)
 
     if expected_category:
         passed = expected_category in merged_types or len(merged_findings) > 0
-        return (passed, False)
+        return (passed, False, False)
 
     passed = len(merged_findings) > 0
-    return (passed, False)
+    return (passed, False, False)
 
 
 def run_calibration_case(
@@ -178,7 +204,8 @@ def run_calibration_case(
         error_message = f"{type(exc).__name__}: {exc}"
 
     merged_findings = merge_findings(det_findings, llm_findings)
-    passed, false_positive = _evaluate_case(case, merged_findings)
+    passed, false_positive, warning_only = _evaluate_case(case, merged_findings)
+    counts = count_materiality(merged_findings)
     duration = time.perf_counter() - started
 
     return CalibrationCaseResult(
@@ -188,6 +215,10 @@ def run_calibration_case(
         llm_finding_count=len(llm_findings),
         merged_finding_count=len(merged_findings),
         finding_codes=_finding_codes(merged_findings),
+        blocking_count=counts["blocking"],
+        warning_count=counts["warning"],
+        informational_count=counts["informational"],
+        original_llm_codes=original_llm_codes(merged_findings),
         duration_seconds=duration,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -227,6 +258,18 @@ def run_calibration_pilot(fixture: dict, provider) -> CalibrationPilotSummary:
         if results else 0.0
     )
 
+    blocking_false_positives = sum(
+        1 for r in results if r.label == "known-good" and r.false_positive
+    )
+    warning_only_on_known_good = sum(
+        1 for r in results
+        if r.label == "known-good" and r.warning_count + r.informational_count > 0 and r.passed
+    )
+    canonical_code_coverage = sum(
+        1 for r in results
+        if r.label != "known-good" and r.passed and r.finding_codes
+    )
+
     return CalibrationPilotSummary(
         case_results=results,
         cases_passed=sum(1 for r in results if r.passed),
@@ -235,6 +278,9 @@ def run_calibration_pilot(fixture: dict, provider) -> CalibrationPilotSummary:
             if r.label != "known-good" and r.merged_finding_count > 0
         ),
         false_positives=sum(1 for r in results if r.false_positive),
+        blocking_false_positives=blocking_false_positives,
+        warning_only_on_known_good=warning_only_on_known_good,
+        canonical_code_coverage=canonical_code_coverage,
         total_cost_usd=total_cost,
         average_duration_seconds=avg_duration,
         invalid_responses=sum(1 for r in results if r.invalid_response),
@@ -250,7 +296,11 @@ def format_case_report(result: CalibrationCaseResult) -> str:
         f"deterministic_findings: {result.deterministic_finding_count}",
         f"llm_findings: {result.llm_finding_count}",
         f"merged_findings: {result.merged_finding_count}",
+        f"blocking_count: {result.blocking_count}",
+        f"warning_count: {result.warning_count}",
+        f"informational_count: {result.informational_count}",
         f"finding_codes: {result.finding_codes}",
+        f"original_llm_codes: {result.original_llm_codes}",
         f"duration_sec: {result.duration_seconds:.2f}",
         f"input_tokens: {result.input_tokens}",
         f"output_tokens: {result.output_tokens}",
@@ -272,6 +322,9 @@ def format_pilot_summary(summary: CalibrationPilotSummary) -> str:
             f"cases_passed: {summary.cases_passed}/{CALIBRATION_CASE_COUNT}",
             f"known_defects_detected: {summary.known_defects_detected}",
             f"false_positives: {summary.false_positives}",
+            f"blocking_false_positives: {summary.blocking_false_positives}",
+            f"warning_only_on_known_good: {summary.warning_only_on_known_good}",
+            f"canonical_code_coverage: {summary.canonical_code_coverage}",
             f"total_cost_usd: {summary.total_cost_usd:.6f}",
             f"average_duration_sec: {summary.average_duration_seconds:.2f}",
             f"invalid_responses: {summary.invalid_responses}",

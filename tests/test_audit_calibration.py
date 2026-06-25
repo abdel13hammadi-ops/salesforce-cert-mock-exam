@@ -1,5 +1,5 @@
 """
-Tests for V45 Phase 2 audit calibration pilot (dry-run).
+Tests for V45 Phase 2/3 audit calibration pilot (dry-run).
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class FakeCalibrationProvider:
         findings = []
         if label == "ambiguous":
             findings = [{
-                "finding_code": "AMBIGUOUS_WORDING",
+                "finding_code": "AMB-001",
                 "finding_type": "ambiguity",
                 "severity": "medium",
                 "title": "Ambiguous wording",
@@ -60,7 +60,7 @@ class FakeCalibrationProvider:
             }]
         elif label == "wrong-answer-key":
             findings = [{
-                "finding_code": "INCORRECT_ANSWER_KEY",
+                "finding_code": "EXP_001",
                 "finding_type": "correctness",
                 "severity": "high",
                 "title": "Incorrect answer key",
@@ -69,7 +69,7 @@ class FakeCalibrationProvider:
             }]
         elif label == "weak-distractors":
             findings = [{
-                "finding_code": "WEAK_DISTRACTOR",
+                "finding_code": "WEAK_DISTRACTORS_001",
                 "finding_type": "answer_quality",
                 "severity": "medium",
                 "title": "Weak distractors",
@@ -133,7 +133,8 @@ class TestCalibrationFixture(unittest.TestCase):
         fixture = _load_default_fixture()
         case = next(c for c in fixture["cases"] if c["label"] == "incomplete-explanation")
         self.assertEqual(case["expected_defect_category"], "explanation_quality")
-        self.assertEqual(case["expected_finding_codes"], ["MISSING_EXPLANATION"])
+        self.assertEqual(case["expected_canonical_codes"], ["EXPLANATION_MISSING"])
+        self.assertEqual(case["expected_materiality"], "blocking")
 
     def test_fixture_with_wrong_count_rejected(self):
         payload = {"cases": [{"label": "only-one", "question": {}, "user_prompt": "x",
@@ -158,6 +159,7 @@ class TestCalibrationPilot(unittest.TestCase):
         self.assertFalse(known_good.false_positive)
         self.assertTrue(known_good.passed)
         self.assertEqual(known_good.merged_finding_count, 0)
+        self.assertEqual(known_good.blocking_count, 0)
 
     def test_expected_defect_detection_reporting(self):
         fixture = _load_default_fixture()
@@ -169,14 +171,28 @@ class TestCalibrationPilot(unittest.TestCase):
         ambiguous = next(r for r in summary.case_results if r.label == "ambiguous")
         weak = next(r for r in summary.case_results if r.label == "weak-distractors")
 
-        self.assertIn("INCORRECT_ANSWER_KEY", wrong_key.finding_codes)
+        self.assertIn("WRONG_ANSWER_KEY", wrong_key.finding_codes)
+        self.assertEqual(wrong_key.blocking_count, 1)
         self.assertTrue(wrong_key.passed)
         self.assertNotIn("CORRECT_COUNT_MISMATCH", wrong_key.finding_codes)
-        self.assertIn("MISSING_EXPLANATION", incomplete.finding_codes)
+        self.assertIn("EXP_001", wrong_key.original_llm_codes)
+
+        self.assertIn("EXPLANATION_MISSING", incomplete.finding_codes)
+        self.assertEqual(incomplete.blocking_count, 1)
         self.assertTrue(incomplete.passed)
+
         self.assertGreater(ambiguous.merged_finding_count, 0)
         self.assertTrue(ambiguous.passed)
-        self.assertIn("WEAK_DISTRACTOR", weak.finding_codes)
+        self.assertTrue(
+            any(code in ambiguous.finding_codes for code in (
+                "AMBIGUOUS_QUESTION", "MULTIPLE_DEFENSIBLE_ANSWERS",
+            ))
+        )
+        self.assertIn("AMB-001", ambiguous.original_llm_codes)
+
+        self.assertIn("WEAK_DISTRACTORS", weak.finding_codes)
+        self.assertEqual(weak.warning_count, 1)
+        self.assertEqual(weak.blocking_count, 0)
         self.assertTrue(weak.passed)
 
     def test_token_and_cost_aggregation(self):
@@ -187,6 +203,13 @@ class TestCalibrationPilot(unittest.TestCase):
         self.assertAlmostEqual(summary.total_cost_usd, 0.002 * CALIBRATION_CASE_COUNT)
         self.assertGreater(summary.average_duration_seconds, 0.0)
         self.assertEqual(len(provider.calls), CALIBRATION_CASE_COUNT)
+
+    def test_summary_includes_materiality_totals(self):
+        fixture = _load_default_fixture()
+        provider = FakeCalibrationProvider()
+        summary = run_calibration_pilot(fixture, provider)
+        self.assertEqual(summary.blocking_false_positives, 0)
+        self.assertGreaterEqual(summary.canonical_code_coverage, 4)
 
     def test_no_publish_or_promote_rpc_calls(self):
         """Calibration dry-run never touches Supabase RPCs."""
@@ -272,7 +295,8 @@ class TestRunCalibrationCase(unittest.TestCase):
 
         self.assertTrue(result.provider_failure)
         self.assertGreater(result.deterministic_finding_count, 0)
-        self.assertIn("MISSING_EXPLANATION", result.finding_codes)
+        self.assertIn("EXPLANATION_MISSING", result.finding_codes)
+        self.assertEqual(result.blocking_count, 1)
 
 
 if __name__ == "__main__":

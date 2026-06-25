@@ -98,9 +98,11 @@ VALID_AUDIT_PAYLOAD = {
 }
 
 _REQUIRED_FINDING_KEYS = {
-    "finding_code", "finding_type", "severity", "title", "description",
+    "finding_code", "finding_type", "severity", "materiality", "title", "description",
     "detector_name", "detector_version", "metadata", "evidence",
 }
+
+_CANONICAL_FINDING_CODES = _FINDING_CODES | frozenset({"EXPLANATION_MISSING"})
 
 _CREATE_RESPONSE  = [{"audit_run_id": _AUDIT_RUN_ID, "run_status": "pending"}]
 _COMPLETE_RESPONSE = [
@@ -210,7 +212,7 @@ class TestFindingStructure(unittest.TestCase):
         for f in findings:
             self.assertIn(
                 f["finding_code"],
-                _FINDING_CODES,
+                _CANONICAL_FINDING_CODES,
                 f"Unexpected finding_code: {f['finding_code']}",
             )
 

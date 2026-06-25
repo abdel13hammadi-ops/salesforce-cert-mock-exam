@@ -580,7 +580,7 @@ class TestMakeHybridAuditHandler(unittest.TestCase):
         complete_calls = fake.calls_for("complete_audit_run_v1")
         findings_sent = complete_calls[0].get("p_findings", [])
         codes = {f["finding_code"] for f in findings_sent}
-        self.assertIn("AMBIGUOUS_OPTION", codes)
+        self.assertIn("AMBIGUOUS_QUESTION", codes)
 
     def test_merged_findings_from_both_sources(self):
         """Bad question (det finding) + LLM finding with different code → 2 findings."""
@@ -611,7 +611,7 @@ class TestMakeHybridAuditHandler(unittest.TestCase):
         findings_sent = complete_calls[0].get("p_findings", [])
         codes = {f["finding_code"] for f in findings_sent}
         self.assertIn("EMPTY_QUESTION_TEXT", codes)
-        self.assertIn("LLM_FINDING", codes)
+        self.assertIn("OTHER_REVIEW_NEEDED", codes)
 
     def test_severity_escalated_in_merged_finding(self):
         """LLM returns a higher-severity version of the same finding → escalated."""

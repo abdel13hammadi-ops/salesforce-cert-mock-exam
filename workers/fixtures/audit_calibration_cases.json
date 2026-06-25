@@ -60,6 +60,7 @@
       "expected_defect_category": "ambiguity",
       "expected_detector": "llm",
       "expect_detection": true,
+      "expected_canonical_codes": ["AMBIGUOUS_QUESTION", "MULTIPLE_DEFENSIBLE_ANSWERS"],
       "user_prompt": "Audit this question for ambiguous wording. Flag ambiguity when missing business context makes more than one answer approach defensible.",
       "question": {
         "question_text": "What is the best way to improve a user's Salesforce access?",
@@ -108,6 +109,8 @@
       "expected_defect_category": "correctness",
       "expected_detector": "llm",
       "expect_detection": true,
+      "expected_canonical_codes": ["WRONG_ANSWER_KEY"],
+      "expected_materiality": "blocking",
       "user_prompt": "Audit this question for answer-key correctness against the calibration evidence. The marked correct option must match the evidence.",
       "question": {
         "question_text": "Which Salesforce feature grants additional permissions to a user without changing the user's assigned profile?",
@@ -156,6 +159,8 @@
       "expected_defect_category": "answer_quality",
       "expected_detector": "llm",
       "expect_detection": true,
+      "expected_canonical_codes": ["WEAK_DISTRACTORS"],
+      "expected_materiality": "warning",
       "user_prompt": "Audit this question for weak, unrealistic, or trivially dismissible distractors.",
       "question": {
         "question_text": "Which permission tool adds access without changing a user's profile?",
@@ -204,7 +209,8 @@
       "expected_defect_category": "explanation_quality",
       "expected_detector": "deterministic",
       "expect_detection": true,
-      "expected_finding_codes": ["MISSING_EXPLANATION"],
+      "expected_canonical_codes": ["EXPLANATION_MISSING"],
+      "expected_materiality": "blocking",
       "user_prompt": "Audit this question for missing or incomplete explanations.",
       "question": {
         "question_text": "What does a Salesforce Administrator primarily do?",
