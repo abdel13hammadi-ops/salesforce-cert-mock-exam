@@ -29,6 +29,7 @@ Scheduled → recover_expired_background_jobs_v1
 | `audit_orchestration.py` | Phase 8E — `orchestrate_audit()` lifecycle: create → check → complete/fail |
 | `llm_providers.py` | Phase 8F — `LlmProvider` Protocol, `LlmResponse`, `MissingProviderError`, `NoOpProvider` |
 | `llm_audit.py` | Phase 8F — strict JSON response schema, `validate_llm_response()`, `LlmAuditValidationError` |
+| `finding_merge.py` | Phase 8I — `merge_findings()`: dedup by (code, field_path, description), severity/confidence escalation, evidence union, metadata provenance |
 
 ## Entry Command
 
@@ -70,7 +71,7 @@ Use `build_handler_registry(client)` to get the production registry.  It wires i
 | `candidate_promotion` | 8C | **Implemented** — calls `promote_question_candidate_v1` |
 | `deterministic_audit` | 8D/8E | **Implemented** — runs structural checks via `orchestrate_audit()` |
 | `llm_audit` | 8G | **Implemented** — calls injected `LlmProvider`, validates response via `validate_llm_response()` |
-| `hybrid_audit` | — | Stub — `NotImplementedHandler` |
+| `hybrid_audit` | 8H/8I | **Implemented** — det checks + LLM call + `merge_findings()`, orchestrates audit lifecycle |
 | `question_generation` | — | Stub — `NotImplementedHandler` |
 | `embedding_generation` | — | Stub — `NotImplementedHandler` |
 | `other` | — | Stub — `NotImplementedHandler` |
@@ -109,7 +110,7 @@ Run as `service_role` in Supabase SQL editor or psql. The script wraps all state
 
 ## LLM Provider Injection
 
-`llm_audit` requires a real provider at runtime. Wire one in:
+`llm_audit` and `hybrid_audit` both require a real provider at runtime. Wire one in:
 
 ```python
 from workers.llm_providers import LlmResponse
@@ -129,9 +130,26 @@ worker = BackgroundWorker(
 
 Without a provider, the handler raises `MissingProviderError` before any RPC call.
 
+## Finding Merge (`finding_merge.py`)
+
+`merge_findings(deterministic, llm)` produces a single deduplicated list from two finding sources.
+
+Deduplication key: `(normalized finding_code, normalized field_path, normalized description)`.
+
+| Rule | Behaviour |
+|---|---|
+| Severity | Higher-ranked severity wins (`info < low < medium < high < critical`) |
+| Confidence | Higher numeric value wins; `None` only when both are `None` |
+| Evidence | Combined; deduped by `(resource_chunk_id, evidence_role)` |
+| Metadata | LLM metadata is the base; deterministic values overwrite on conflict |
+| Detector provenance | LLM `detector_name`/`detector_version` stored under `llm_detector_*` metadata keys |
+| Identity | Deterministic `finding_code`, `finding_type`, `title`, `description`, `field_path` win |
+| Ordering | Deterministic findings first (stable), unmatched LLM findings appended |
+| Non-duplicates | Never silently dropped |
+
 ## What Is Not Implemented Yet
 
-- Handlers: `hybrid_audit`, `question_generation`, `embedding_generation`, `other`
+- Handlers: `question_generation`, `embedding_generation`, `other`
 - Concrete SDK providers (OpenAI, Anthropic) — implement as shown above
 - Heartbeat background thread (currently a single pre-dispatch call by the worker)
 - Monitoring / alerting integration

@@ -29,14 +29,16 @@ Implemented handlers
   deterministic_audit  (8D) → orchestrates create→check→complete audit RPCs
   llm_audit            (8G) → calls injected LLM provider, validates response,
                                orchestrates create→check→complete audit RPCs
+  hybrid_audit         (8H) → runs deterministic checks, calls LLM provider,
+                               merges findings, orchestrates audit lifecycle
 
 All other handlers are stubs that raise NotImplementedHandler.
 Use build_handler_registry(client, llm_provider=<provider>) to build the
 registry with real handlers injected.  HANDLER_REGISTRY contains only stubs
 (useful for testing and as a fallback default).
 
-llm_audit raises MissingProviderError before any RPC call when llm_provider
-is None.  Supply a provider via build_handler_registry to enable real calls.
+llm_audit and hybrid_audit raise MissingProviderError before any RPC call
+when llm_provider is None.  Supply a provider via build_handler_registry.
 """
 
 from __future__ import annotations
@@ -437,6 +439,148 @@ def make_llm_audit_handler(client, llm_provider=None) -> Callable[..., dict]:
     return handle
 
 
+def make_hybrid_audit_handler(client, llm_provider=None) -> Callable[..., dict]:
+    """Return the hybrid_audit handler bound to *client* and *llm_provider*.
+
+    Runs deterministic structural checks first, then calls the LLM provider,
+    validates its response, and merges the two finding lists before persisting
+    them via ``complete_audit_run_v1``.
+
+    Provider guard: if *llm_provider* is ``None``, the handler raises
+    ``MissingProviderError`` immediately, before any RPC call.
+
+    Expected payload fields
+    -----------------------
+    Exactly one of:
+      target_question_version_id  str  — UUID of a question_versions row
+      target_candidate_id         str  — UUID of a question_candidates row
+
+    Required:
+      created_by      str   — email or service identifier of the caller
+      model_name      str   — provider model identifier
+      prompt_version  str   — version tag for the prompt template
+      ruleset_version str   — deterministic ruleset version
+      system_prompt   str   — system-level instructions for the model
+      user_prompt     str   — user-level content
+      question        dict  — question snapshot for deterministic checks
+
+    Optional:
+      resource_snapshot  dict  — resource context for the audit run
+      metadata           dict  — extra metadata merged into the audit run
+
+    Returns
+    -------
+      audit_run_id   str
+      run_status     str
+      finding_count  int
+      evidence_count int
+      input_tokens   int
+      output_tokens  int
+      actual_cost_usd float or None
+
+    RPCs called (via audit_orchestration):
+      create_audit_run_v1, complete_audit_run_v1, end_audit_run_v1 (on failure)
+    """
+    from workers.llm_providers import MissingProviderError              # noqa: PLC0415
+    from workers.llm_audit import validate_llm_response, AUDIT_RESPONSE_SCHEMA  # noqa: PLC0415
+    from workers.deterministic_audit import run_deterministic_checks    # noqa: PLC0415
+    from workers.finding_merge import merge_findings                    # noqa: PLC0415
+    from workers.audit_orchestration import orchestrate_audit           # noqa: PLC0415
+
+    def handle(
+        job_id: str,
+        payload: dict,
+        checkpoint: dict,
+        attempt: int,
+        heartbeat_fn: Callable[[], None],
+    ) -> dict:
+        # Guard: raise before any RPC when provider is absent.
+        if llm_provider is None:
+            raise MissingProviderError(
+                "No LLM provider configured for hybrid_audit jobs. "
+                "Pass llm_provider=<provider> to build_handler_registry()."
+            )
+
+        # Target validation.
+        tqv_id = payload.get("target_question_version_id") or None
+        tc_id  = payload.get("target_candidate_id") or None
+        n_targets = sum(1 for v in (tqv_id, tc_id) if v)
+        if n_targets != 1:
+            raise HandlerPayloadError(
+                "exactly one of target_question_version_id or "
+                "target_candidate_id must be provided"
+            )
+
+        created_by      = _require(payload, "created_by")
+        model_name      = _require(payload, "model_name")
+        prompt_version  = _require(payload, "prompt_version")
+        ruleset_version = _require(payload, "ruleset_version")
+        system_prompt   = _require(payload, "system_prompt")
+        user_prompt     = _require(payload, "user_prompt")
+
+        question = payload.get("question")
+        if not isinstance(question, dict):
+            raise HandlerPayloadError(
+                "payload field 'question' must be a non-null object"
+            )
+
+        resource_snapshot = payload.get("resource_snapshot")
+        metadata          = payload.get("metadata")
+
+        # Closure captures token info written by the provider call.
+        token_info: dict = {}
+
+        def check_fn() -> list:
+            # Step 1: deterministic checks (designed never to raise).
+            det_findings = run_deterministic_checks(question, ruleset_version)
+
+            # Step 2: LLM provider call.
+            response = llm_provider(
+                model_name=model_name,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_schema=AUDIT_RESPONSE_SCHEMA,
+                metadata={
+                    **(metadata or {}),
+                    "question":          question,
+                    "resource_snapshot": resource_snapshot,
+                },
+            )
+            token_info["input_tokens"]        = response.input_tokens
+            token_info["output_tokens"]       = response.output_tokens
+            token_info["actual_cost_usd"]     = response.actual_cost_usd
+            token_info["provider_request_id"] = response.provider_request_id
+
+            # Step 3: validate LLM response.
+            llm_findings = validate_llm_response(response.parsed_response)
+
+            # Step 4: merge deterministic + LLM findings.
+            return merge_findings(det_findings, llm_findings)
+
+        result = orchestrate_audit(
+            client,
+            audit_type="hybrid",
+            target_question_version_id=tqv_id,
+            target_candidate_id=tc_id,
+            created_by=created_by,
+            ruleset_version=ruleset_version,
+            resource_snapshot=resource_snapshot,
+            metadata=metadata,
+            check_fn=check_fn,
+        )
+
+        return {
+            **result,
+            "input_tokens":    token_info.get("input_tokens", 0),
+            "output_tokens":   token_info.get("output_tokens", 0),
+            "actual_cost_usd": token_info.get("actual_cost_usd"),
+        }
+
+    handle.__name__ = "handle_hybrid_audit"
+    handle.__qualname__ = "handle_hybrid_audit"
+    return handle
+
+
 # ===========================================================================
 # Stub-only registry (backwards-compatible default)
 # ===========================================================================
@@ -459,9 +603,9 @@ def build_handler_registry(
 ) -> Dict[str, Callable[..., Any]]:
     """Build a complete handler registry with real handlers injected.
 
-    Returns a new dict that overrides resource_ingestion, candidate_promotion,
-    deterministic_audit, and llm_audit with real implementations, leaving
-    hybrid_audit, question_generation, embedding_generation, and other as stubs.
+    Returns a new dict overriding resource_ingestion, candidate_promotion,
+    deterministic_audit, llm_audit, and hybrid_audit with real implementations.
+    question_generation, embedding_generation, and other remain stubs.
 
     Parameters
     ----------
@@ -470,8 +614,8 @@ def build_handler_registry(
         the Supabase Python client; in tests, a FakeSupabase mock.
     llm_provider:
         Optional LLM provider callable (see ``workers.llm_providers.LlmProvider``).
-        When ``None``, the ``llm_audit`` handler raises ``MissingProviderError``
-        before any RPC call when invoked.
+        When ``None``, both ``llm_audit`` and ``hybrid_audit`` raise
+        ``MissingProviderError`` before any RPC call when invoked.
     """
     return {
         **HANDLER_REGISTRY,
@@ -479,6 +623,7 @@ def build_handler_registry(
         "candidate_promotion": make_candidate_promotion_handler(client),
         "deterministic_audit": make_deterministic_audit_handler(client),
         "llm_audit":           make_llm_audit_handler(client, llm_provider=llm_provider),
+        "hybrid_audit":        make_hybrid_audit_handler(client, llm_provider=llm_provider),
     }
 
 
@@ -490,5 +635,6 @@ __all__ = [
     "make_candidate_promotion_handler",
     "make_deterministic_audit_handler",
     "make_llm_audit_handler",
+    "make_hybrid_audit_handler",
     "build_handler_registry",
 ]

@@ -977,10 +977,9 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
         fake = FakeSupabase()
         registry = build_handler_registry(fake)
 
-        # deterministic_audit and llm_audit are now implemented.
+        # deterministic_audit, llm_audit, and hybrid_audit are now implemented.
         # Only these remain as NotImplementedHandler stubs.
         still_stubbed = [
-            "hybrid_audit",
             "question_generation",
             "embedding_generation",
             "other",
@@ -993,8 +992,8 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
                         attempt=1, heartbeat_fn=lambda: None)
 
     def test_implemented_types_are_not_stubs(self):
-        """resource_ingestion, candidate_promotion, deterministic_audit, and
-        llm_audit must not raise NotImplementedHandler."""
+        """resource_ingestion, candidate_promotion, deterministic_audit,
+        llm_audit, and hybrid_audit must not raise NotImplementedHandler."""
         _AUDIT_RUN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
         fake = FakeSupabase()
         fake.set_response("ingest_resource_version_v1", [_INGEST_RESPONSE])
@@ -1034,11 +1033,34 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
             "user_prompt":    "Audit this question: What is 2+2?",
         }
 
+        _VALID_HYBRID_PAYLOAD = {
+            "target_question_version_id": "bbbbbbbb-0000-0000-0000-000000000001",
+            "created_by":      "audit-worker@certbound.io",
+            "model_name":      "gpt-4o",
+            "prompt_version":  "v1.0.0",
+            "ruleset_version": "1.0.0",
+            "system_prompt":   "You are an expert Salesforce question auditor.",
+            "user_prompt":     "Audit this question: What is 2+2?",
+            "question": {
+                "question_text": "What is 2+2?",
+                "explanation":   "Elementary arithmetic.",
+                "question_type": "single",
+                "select_count":  1,
+                "options": [
+                    {"option_label": "A", "option_text": "4",
+                     "is_correct": True,  "display_order": 1},
+                    {"option_label": "B", "option_text": "5",
+                     "is_correct": False, "display_order": 2},
+                ],
+            },
+        }
+
         for job_type, payload in [
             ("resource_ingestion",  _VALID_INGEST_PAYLOAD),
             ("candidate_promotion", _VALID_PROMOTE_PAYLOAD),
             ("deterministic_audit", _VALID_AUDIT_PAYLOAD),
             ("llm_audit",           _VALID_LLM_PAYLOAD),
+            ("hybrid_audit",        _VALID_HYBRID_PAYLOAD),
         ]:
             try:
                 registry[job_type](
