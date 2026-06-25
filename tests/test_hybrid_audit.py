@@ -113,7 +113,11 @@ _COMPLETE_AUDIT_RESPONSE = [
      "finding_count": 0, "evidence_count": 0},
 ]
 _END_AUDIT_RESPONSE = [
-    {"audit_run_id": _AUDIT_RUN_ID, "run_status": "failed"},
+    {
+        "audit_run_id": _AUDIT_RUN_ID,
+        "run_status":   "failed",
+        "completed_at": "2099-01-01T00:00:00+00:00",
+    },
 ]
 
 
@@ -556,7 +560,7 @@ class TestMakeHybridAuditHandler(unittest.TestCase):
         ])
         llm_finding = {
             "finding_code": "AMBIGUOUS_OPTION",
-            "finding_type": "clarity",
+            "finding_type": "ambiguity",
             "severity":     "medium",
             "confidence":   0.8,
             "title":        "Ambiguous option wording",
@@ -588,7 +592,7 @@ class TestMakeHybridAuditHandler(unittest.TestCase):
         ])
         llm_finding = {
             "finding_code": "LLM_FINDING",
-            "finding_type": "accuracy",
+            "finding_type": "correctness",
             "severity":     "low",
             "confidence":   0.7,
             "title":        "LLM finding",
@@ -660,7 +664,7 @@ class TestMakeHybridAuditHandler(unittest.TestCase):
         self.assertEqual(len(fake.calls_for("complete_audit_run_v1")), 0)
         end_calls = fake.calls_for("end_audit_run_v1")
         self.assertEqual(len(end_calls), 1)
-        self.assertEqual(end_calls[0]["p_status"], "failed")
+        self.assertEqual(end_calls[0]["p_final_status"], "failed")
 
     def test_llm_validation_failure_triggers_end_audit_run(self):
         """Invalid LLM response raises and ends the audit run with status failed."""
@@ -674,7 +678,7 @@ class TestMakeHybridAuditHandler(unittest.TestCase):
 
         end_calls = fake.calls_for("end_audit_run_v1")
         self.assertEqual(len(end_calls), 1)
-        self.assertEqual(end_calls[0]["p_status"], "failed")
+        self.assertEqual(end_calls[0]["p_final_status"], "failed")
         self.assertEqual(len(fake.calls_for("complete_audit_run_v1")), 0)
 
     def test_create_run_failure_no_end_or_complete(self):
@@ -726,37 +730,60 @@ class TestMakeHybridAuditHandler(unittest.TestCase):
 
 class TestWorkerHybridAuditIntegration(unittest.TestCase):
 
+    def _make_bg_job(self) -> dict:
+        return {
+            "job_id":           "job-aaaaaa",
+            "job_type":         "hybrid_audit",
+            "payload":          _VALID_HYBRID_PAYLOAD,
+            "checkpoint":       {},
+            "attempt_count":    1,
+            "job_status":       "running",
+            "lease_expires_at": "2099-01-01T00:00:00+00:00",
+        }
+
+    def _heartbeat_response(self, job_id: str) -> dict:
+        return {
+            "job_id":           job_id,
+            "job_status":       "running",
+            "lease_expires_at": "2099-01-01T00:00:00+00:00",
+            "heartbeat_at":     "2099-01-01T00:00:00+00:00",
+        }
+
     def _make_fake(self):
         fake = FakeSupabase()
-        job_id   = "job-aaaaaa"
-        claim_id = "clm-bbbbbb"
+        job = self._make_bg_job()
 
-        def _claim_resp(params):
-            return [{"id": job_id, "job_type": "hybrid_audit",
-                     "payload": _VALID_HYBRID_PAYLOAD,
-                     "checkpoint": {}, "attempt": 1,
-                     "worker_claim_id": claim_id}]
-
-        fake.set_response("claim_background_job_v1",     _claim_resp)
-        fake.set_response("heartbeat_background_job_v1", [{"id": job_id}])
+        fake.set_response("claim_background_job_v1",     [job])
+        fake.set_response("heartbeat_background_job_v1", [
+            self._heartbeat_response(job["job_id"]),
+        ])
         fake.set_response("create_audit_run_v1",          _CREATE_AUDIT_RESPONSE)
         fake.set_response("complete_audit_run_v1",         _COMPLETE_AUDIT_RESPONSE)
-        fake.set_response("complete_background_job_v1",   [{"id": job_id}])
-        fake.set_response("fail_background_job_v1",       [{"id": job_id}])
+        fake.set_response("complete_background_job_v1",   [
+            {"job_id": job["job_id"], "job_status": "completed",
+             "completed_at": "2099-01-01T00:00:00+00:00"},
+        ])
+        fake.set_response("fail_background_job_v1",       [
+            {"job_id": job["job_id"], "job_status": "pending"},
+        ])
         fake.set_response("end_audit_run_v1",              _END_AUDIT_RESPONSE)
         return fake
 
+    def _make_worker(self, fake, provider):
+        from workers.background_worker import BackgroundWorker
+        return BackgroundWorker(
+            worker_id="test-worker",
+            client=fake,
+            handlers=build_handler_registry(fake, llm_provider=provider),
+            sleep_interval=0.0,
+        )
+
     def test_successful_result_reaches_complete_background_job(self):
         """End-to-end: hybrid_audit job completes and calls complete_background_job_v1."""
-        from workers.background_worker import BackgroundWorker
         fake = self._make_fake()
         provider = FakeLlmProvider(input_tokens=150, output_tokens=60,
                                    actual_cost_usd=0.008)
-        worker = BackgroundWorker(
-            client=fake,
-            handler_registry=build_handler_registry(fake, llm_provider=provider),
-            worker_id="test-worker",
-        )
+        worker = self._make_worker(fake, provider)
         worker.run_once()
 
         complete_calls = fake.calls_for("complete_background_job_v1")
@@ -783,14 +810,9 @@ class TestWorkerHybridAuditIntegration(unittest.TestCase):
 
     def test_no_direct_table_calls_worker_path(self):
         """BackgroundWorker must not call fake.table() during hybrid_audit processing."""
-        from workers.background_worker import BackgroundWorker
         fake = self._make_fake()
         provider = FakeLlmProvider()
-        worker = BackgroundWorker(
-            client=fake,
-            handler_registry=build_handler_registry(fake, llm_provider=provider),
-            worker_id="test-worker",
-        )
+        worker = self._make_worker(fake, provider)
         worker.run_once()
         self.assertFalse(
             hasattr(fake, "_table_calls"),

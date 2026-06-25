@@ -35,7 +35,7 @@ make_llm_audit_handler (unit):
 
 Worker integration:
   * successful llm_audit result reaches complete_background_job_v1
-  * remaining handlers (hybrid_audit, question_generation, etc.) not implemented
+  * remaining handlers (question_generation, embedding_generation, other) not implemented
 """
 
 from __future__ import annotations
@@ -667,13 +667,13 @@ class TestWorkerLlmAuditIntegration(unittest.TestCase):
     # ---- remaining handlers still not implemented ----
 
     def test_remaining_handlers_not_implemented(self):
-        """hybrid_audit, question_generation, embedding_generation, other
+        """question_generation, embedding_generation, other
         must still raise NotImplementedHandler."""
         fake     = FakeSupabase()
         provider = FakeLlmProvider(parsed_response=ZERO_FINDINGS_RESPONSE)
         registry = build_handler_registry(fake, llm_provider=provider)
 
-        for job_type in ("hybrid_audit", "question_generation",
+        for job_type in ("question_generation",
                          "embedding_generation", "other"):
             with self.assertRaises(
                 NotImplementedHandler,
