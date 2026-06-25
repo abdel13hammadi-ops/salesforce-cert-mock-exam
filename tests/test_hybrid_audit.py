@@ -431,6 +431,176 @@ class TestFindingMerge(unittest.TestCase):
         result = merge_findings([d], [l])
         self.assertEqual(len(result), 1)
 
+    def test_relaxed_dedup_collapses_det_and_two_llm_explanation_missing(self):
+        """Regression: incomplete-explanation live case produced three rows."""
+        det = {
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "medium",
+            "materiality": "blocking",
+            "title": "Explanation is missing or empty",
+            "description": "The explanation field must not be empty or consist only of whitespace.",
+            "field_path": "question.explanation",
+            "evidence": [],
+            "metadata": {
+                "ruleset_version": "1.0.0",
+                "original_finding_code": "MISSING_EXPLANATION",
+            },
+            "detector_name": "certbound-det",
+            "detector_version": "1.0.0",
+        }
+        llm1 = {
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "high",
+            "materiality": "blocking",
+            "title": "Missing explanation",
+            "description": "The question has no explanation text.",
+            "field_path": "explanation",
+            "evidence": [],
+            "metadata": {"original_finding_code": "EXP_MISSING"},
+            "detector_name": "claude-auditor",
+            "detector_version": "v1",
+        }
+        llm2 = {
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "medium",
+            "materiality": "blocking",
+            "title": "No rationale provided",
+            "description": "There is no explanation for the keyed answer.",
+            "field_path": None,
+            "evidence": [],
+            "metadata": {"original_finding_code": "DISTRACTOR_NO_RATIONALE"},
+            "detector_name": "claude-auditor",
+            "detector_version": "v1",
+        }
+        result = merge_findings([det], [llm1, llm2])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["finding_code"], "EXPLANATION_MISSING")
+        self.assertEqual(result[0]["title"], det["title"])
+        self.assertEqual(
+            result[0]["metadata"]["original_finding_code"],
+            ["MISSING_EXPLANATION", "EXP_MISSING", "DISTRACTOR_NO_RATIONALE"],
+        )
+
+    def test_relaxed_dedup_field_path_aliases(self):
+        paths = ["question.explanation", "explanation", None]
+        findings = [
+            {
+                "finding_code": "EXPLANATION_MISSING",
+                "finding_type": "explanation_quality",
+                "severity": "low",
+                "materiality": "blocking",
+                "title": f"Missing {idx}",
+                "description": f"Description {idx}",
+                "field_path": path,
+                "evidence": [],
+                "metadata": {},
+                "detector_name": "gpt-4o-auditor",
+                "detector_version": "v1",
+            }
+            for idx, path in enumerate(paths)
+        ]
+        result = merge_findings([], findings)
+        self.assertEqual(len(result), 1)
+
+    def test_relaxed_dedup_non_allowlist_stays_separate(self):
+        explanation = {
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "medium",
+            "materiality": "blocking",
+            "title": "Missing explanation",
+            "description": "Explanation is empty.",
+            "field_path": "explanation",
+            "evidence": [],
+            "metadata": {},
+            "detector_name": "certbound-det",
+            "detector_version": "1.0.0",
+        }
+        weak = {
+            "finding_code": "WEAK_DISTRACTORS",
+            "finding_type": "answer_quality",
+            "severity": "medium",
+            "materiality": "warning",
+            "title": "Weak distractors",
+            "description": "Distractors are unrealistic.",
+            "field_path": "options",
+            "evidence": [],
+            "metadata": {},
+            "detector_name": "gpt-4o-auditor",
+            "detector_version": "v1",
+        }
+        result = merge_findings([explanation], [weak])
+        self.assertEqual(len(result), 2)
+
+    def test_relaxed_dedup_preserves_original_finding_codes_list(self):
+        det = {
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "medium",
+            "materiality": "blocking",
+            "title": "Det title",
+            "description": "Det description",
+            "field_path": "question.explanation",
+            "evidence": [],
+            "metadata": {"original_finding_code": "MISSING_EXPLANATION"},
+            "detector_name": "certbound-det",
+            "detector_version": "1.0.0",
+        }
+        llm = {
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "medium",
+            "materiality": "blocking",
+            "title": "LLM title",
+            "description": "LLM description",
+            "field_path": "explanation",
+            "evidence": [],
+            "metadata": {"original_finding_code": "EXP_MISSING"},
+            "detector_name": "gpt-4o-auditor",
+            "detector_version": "v1",
+        }
+        result = merge_findings([det], [llm])
+        originals = result[0]["metadata"]["original_finding_code"]
+        self.assertEqual(originals, ["MISSING_EXPLANATION", "EXP_MISSING"])
+
+    def test_relaxed_dedup_escalates_severity_materiality_confidence(self):
+        det = {
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "medium",
+            "materiality": "warning",
+            "confidence": 0.4,
+            "title": "Det title",
+            "description": "Det description",
+            "field_path": "question.explanation",
+            "evidence": [],
+            "metadata": {},
+            "detector_name": "certbound-det",
+            "detector_version": "1.0.0",
+        }
+        llm = {
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "critical",
+            "materiality": "blocking",
+            "confidence": 0.95,
+            "title": "LLM title",
+            "description": "LLM description",
+            "field_path": None,
+            "evidence": [],
+            "metadata": {},
+            "detector_name": "gpt-4o-auditor",
+            "detector_version": "v1",
+        }
+        result = merge_findings([det], [llm])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["severity"], "critical")
+        self.assertEqual(result[0]["materiality"], "blocking")
+        self.assertAlmostEqual(result[0]["confidence"], 0.95)
+
     def test_normalisation_whitespace_stripped(self):
         d = _det_finding("X001", "  trimmed  ")
         l = _llm_finding("X001", "trimmed")

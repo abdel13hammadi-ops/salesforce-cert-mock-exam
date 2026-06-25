@@ -30,6 +30,18 @@ Output ordering
 Deterministic findings appear first in their original (stable) order,
 followed by any unmatched LLM findings in their original order.
 Conflicting findings with distinct deduplication keys are never silently dropped.
+
+Relaxed second pass (V45)
+-------------------------
+After the primary merge, ``EXPLANATION_MISSING`` findings with equivalent
+logical field paths are collapsed:
+
+* ``question.explanation``, ``explanation``, and empty/null field paths are
+  treated as the same logical target.
+* Severity, materiality, confidence, evidence, and metadata follow the same
+  escalation rules as the primary merge.
+* Distinct ``metadata.original_finding_code`` values are preserved as a list
+  when multiple sources contributed.
 """
 
 from __future__ import annotations
@@ -46,6 +58,10 @@ SEVERITY_RANK: Dict[str, int] = {
     "high":     3,
     "critical": 4,
 }
+
+_RELAXED_DEDUP_CODES = frozenset({"explanation_missing"})
+_EXPLANATION_LOGICAL_FIELD = "explanation"
+_DETERMINISTIC_DETECTOR = "certbound-det"
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +132,142 @@ def _merge_meta(
     preserved in the merged output.
     """
     return {**(llm_meta or {}), **(det_meta or {})}
+
+
+def _is_deterministic_finding(finding: dict) -> bool:
+    return finding.get("detector_name") == _DETERMINISTIC_DETECTOR
+
+
+def _logical_field_path(finding: dict) -> str:
+    """Return the relaxed dedup field-path key for *finding*."""
+    code = _normalize(finding.get("finding_code"))
+    path = _normalize(finding.get("field_path"))
+    if code == "explanation_missing":
+        if path in {"", _EXPLANATION_LOGICAL_FIELD, "question.explanation"}:
+            return _EXPLANATION_LOGICAL_FIELD
+    return path
+
+
+def _relaxed_dedup_key(finding: dict) -> Tuple[str, str]:
+    return (_normalize(finding.get("finding_code")), _logical_field_path(finding))
+
+
+def _original_finding_codes_from_meta(meta: Optional[dict]) -> List[str]:
+    if not meta:
+        return []
+    raw = meta.get("original_finding_code")
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    if raw:
+        return [str(raw).strip()]
+    return []
+
+
+def _collect_original_finding_codes(*findings: dict) -> List[str]:
+    seen: Set[str] = set()
+    codes: List[str] = []
+    for finding in findings:
+        for code in _original_finding_codes_from_meta(finding.get("metadata")):
+            if code not in seen:
+                seen.add(code)
+                codes.append(code)
+    return codes
+
+
+def _apply_original_finding_codes(meta: dict, *findings: dict) -> dict:
+    merged = dict(meta)
+    originals = _collect_original_finding_codes(*findings)
+    if len(originals) > 1:
+        merged["original_finding_code"] = originals
+    elif len(originals) == 1:
+        merged["original_finding_code"] = originals[0]
+    return merged
+
+
+def _merge_relaxed_metadata(left: dict, right: dict) -> dict:
+    """Merge metadata for relaxed dedup, preserving provenance."""
+    if _is_deterministic_finding(left):
+        merged = _merge_meta(left.get("metadata"), right.get("metadata"))
+    elif _is_deterministic_finding(right):
+        merged = _merge_meta(right.get("metadata"), left.get("metadata"))
+    else:
+        merged = {**(left.get("metadata") or {}), **(right.get("metadata") or {})}
+
+    merged = _apply_original_finding_codes(merged, left, right)
+
+    for src in (left, right):
+        if _is_deterministic_finding(src):
+            continue
+        det_name = src.get("detector_name")
+        det_ver = src.get("detector_version")
+        if det_name and "llm_detector_name" not in merged:
+            merged["llm_detector_name"] = det_name
+        if det_ver and "llm_detector_version" not in merged:
+            merged["llm_detector_version"] = det_ver
+
+    return merged
+
+
+def _identity_base(left: dict, right: dict) -> dict:
+    if _is_deterministic_finding(left):
+        return left
+    if _is_deterministic_finding(right):
+        return right
+    return left
+
+
+def _collapse_relaxed_pair(left: dict, right: dict) -> dict:
+    """Collapse two allowlisted findings that share a relaxed dedup key."""
+    base = _identity_base(left, right)
+    merged_meta = _merge_relaxed_metadata(left, right)
+    return {
+        "finding_code":     base["finding_code"],
+        "finding_type":     base["finding_type"],
+        "title":            base["title"],
+        "description":      base["description"],
+        "field_path":       base.get("field_path"),
+        "detector_name":    base.get("detector_name"),
+        "detector_version": base.get("detector_version"),
+        "severity":         _pick_severity(left["severity"], right["severity"]),
+        "materiality":      _pick_materiality(
+            left.get("materiality", "warning"),
+            right.get("materiality", "warning"),
+        ),
+        "confidence":       _pick_confidence(
+            left.get("confidence"), right.get("confidence")
+        ),
+        "evidence":         _merge_evidence(
+            left.get("evidence"), right.get("evidence")
+        ),
+        "metadata":         merged_meta,
+    }
+
+
+def _dedup_relaxed_allowlist(findings: List[dict]) -> List[dict]:
+    """Second pass: collapse allowlisted findings by code + logical field path."""
+    result: List[dict] = []
+    for finding in findings:
+        code = _normalize(finding.get("finding_code"))
+        if code not in _RELAXED_DEDUP_CODES:
+            result.append(dict(finding))
+            continue
+
+        relaxed_key = _relaxed_dedup_key(finding)
+        match_idx: Optional[int] = None
+        for i, existing in enumerate(result):
+            if (
+                _normalize(existing.get("finding_code")) in _RELAXED_DEDUP_CODES
+                and _relaxed_dedup_key(existing) == relaxed_key
+            ):
+                match_idx = i
+                break
+
+        if match_idx is None:
+            result.append(dict(finding))
+        else:
+            result[match_idx] = _collapse_relaxed_pair(result[match_idx], finding)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -225,4 +377,4 @@ def merge_findings(
         if j not in llm_matched:
             merged.append(dict(llm_finding))
 
-    return merged
+    return _dedup_relaxed_allowlist(merged)
