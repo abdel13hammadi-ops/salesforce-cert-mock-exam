@@ -31,6 +31,10 @@ Scheduled → recover_expired_background_jobs_v1
 | `llm_audit.py` | Phase 8F — strict JSON response schema, `validate_llm_response()`, `LlmAuditValidationError` |
 | `finding_merge.py` | Phase 8I — `merge_findings()`: dedup by (code, field_path, description), severity/confidence escalation, evidence union, metadata provenance |
 | `anthropic_provider.py` | Phase V45 — production Anthropic Messages API provider with structured JSON output |
+| `llm_provider_factory.py` | Phase V45 — `build_llm_provider_from_env()` for worker startup wiring |
+| `audit_calibration.py` | Phase V45 — dry-run five-case calibration pilot logic |
+| `run_audit_calibration.py` | Phase V45 — manual calibration CLI (never run under pytest) |
+| `fixtures/audit_calibration_cases.json` | Phase V45 — five labeled calibration cases with evidence chunks |
 | `smoke_anthropic_audit.py` | Phase V45 — manual live smoke test (never run under pytest) |
 
 ## Entry Command
@@ -187,6 +191,64 @@ set CERTBOUND_ANTHROPIC_OUTPUT_COST_PER_MTOK=15.0
 ```
 
 Prints model, duration, token usage, estimated cost, and validated findings. Not collected or executed by pytest.
+
+## Production Worker LLM Wiring (V45 Phase 2)
+
+The worker CLI (`python -m workers.background_worker`) calls `build_llm_provider_from_env()` at startup and injects the result into `build_handler_registry(client, llm_provider=...)`.
+
+| Variable | Required | Description |
+|---|---|---|
+| `CERTBOUND_LLM_PROVIDER` | for AI audits | Set to `anthropic` to enable LLM/hybrid handlers |
+| `CERTBOUND_ANTHROPIC_*` | when provider=anthropic | See Anthropic section below |
+
+Startup behavior:
+
+- `CERTBOUND_LLM_PROVIDER` unset → AI handlers disabled; `llm_audit` / `hybrid_audit` raise `MissingProviderError` before any audit RPC
+- `CERTBOUND_LLM_PROVIDER=anthropic` + valid `CERTBOUND_ANTHROPIC_API_KEY` → Anthropic provider injected
+- Unknown provider value → worker exits at startup with `UnknownLlmProviderError`
+- Secrets are never logged
+
+Non-AI handlers (`resource_ingestion`, `candidate_promotion`, `deterministic_audit`) behave unchanged.
+
+## Calibration Pilot (V45 Phase 2)
+
+Manual dry-run over exactly five labeled cases. Runs deterministic checks + Anthropic LLM + merge only. **No** audit RPCs, publishing, promotion, or question mutation.
+
+```bash
+set CERTBOUND_ALLOW_LIVE_AI_TEST=1
+set CERTBOUND_LLM_PROVIDER=anthropic
+set CERTBOUND_ANTHROPIC_API_KEY=your-key-here
+python -m workers.run_audit_calibration
+```
+
+Optional fixture override:
+
+```bash
+set CERTBOUND_CALIBRATION_FIXTURE=workers/fixtures/audit_calibration_cases.json
+```
+
+### Fixture format
+
+JSON object with:
+
+- `ruleset_version`, `model_name`, `prompt_version`, `system_prompt` (pilot defaults)
+- `cases`: array of **exactly five** objects, each with:
+  - `label`: one of `known-good`, `ambiguous`, `wrong-answer-key`, `weak-distractors`, `incomplete-explanation`
+  - `expected_defect_category`: e.g. `none`, `ambiguity`, `correctness`, `answer_quality`
+  - `expect_detection`: `true`/`false` (known-good uses `false`)
+  - `expected_finding_codes`: optional list for deterministic pass criteria
+  - `user_prompt`: case-specific audit instruction
+  - `question`: question snapshot (same shape as audit job payload)
+  - `resource_snapshot`: object with `chunks[]` including `resource_chunk_id` and `chunk_text`
+
+### Safety guarantees
+
+- Requires `CERTBOUND_ALLOW_LIVE_AI_TEST=1`
+- Refuses to run under pytest
+- Stops after five cases (fixture enforced)
+- No publish/promote RPCs
+- No database writes
+- Uses provider bounded retry policy only
 
 ## Finding Merge (`finding_merge.py`)
 

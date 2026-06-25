@@ -343,13 +343,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         job_types = [t.strip() for t in args.job_types.split(",") if t.strip()]
 
     from workers.job_handlers import build_handler_registry  # local import avoids circular
+    from workers.llm_provider_factory import build_llm_provider_from_env
 
     client = build_supabase_client()
+    llm_provider = build_llm_provider_from_env()
 
     worker = BackgroundWorker(
         worker_id=args.worker_id,
         client=client,
-        handlers=build_handler_registry(client),
+        handlers=build_handler_registry(client, llm_provider=llm_provider),
         job_types=job_types,
         lease_seconds=args.lease_seconds,
         sleep_interval=args.sleep,

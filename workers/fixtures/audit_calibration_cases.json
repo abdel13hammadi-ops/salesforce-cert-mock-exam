@@ -1,0 +1,252 @@
+{
+  "fixture_metadata": {
+    "evidence_note": "Synthetic calibration evidence only. These chunks are fabricated for pilot testing and are not official Salesforce source excerpts."
+  },
+  "ruleset_version": "1.0.0",
+  "model_name": "claude-sonnet-4-6",
+  "prompt_version": "v1.0.0",
+  "system_prompt": "You are a CertBound certification question auditor. Review each question against the supplied calibration evidence chunks. Return findings only in the required JSON schema. Flag correctness, ambiguity, answer quality, and explanation quality issues when supported by the evidence.",
+  "cases": [
+    {
+      "label": "known-good",
+      "expected_defect_category": "none",
+      "expected_detector": "none",
+      "expect_detection": false,
+      "user_prompt": "Audit this question for material defects. Return no findings if the question, answer key, options, and explanation align with the calibration evidence.",
+      "question": {
+        "question_text": "What is the primary responsibility of a Salesforce Administrator?",
+        "explanation": "Salesforce Administrators configure and maintain the platform, manage users, maintain data quality, and support business processes.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Configure and maintain the Salesforce platform",
+            "is_correct": true,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Develop all Apex integrations for external systems",
+            "is_correct": false,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Design and execute all marketing campaigns",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Approve every sales opportunity in the pipeline",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "aaaaaaaa-0000-0000-0000-000000000001",
+            "chunk_index": 0,
+            "chunk_text": "Salesforce Administrators configure and maintain the platform, manage users, maintain data quality, and support business processes."
+          }
+        ]
+      }
+    },
+    {
+      "label": "ambiguous",
+      "expected_defect_category": "ambiguity",
+      "expected_detector": "llm",
+      "expect_detection": true,
+      "user_prompt": "Audit this question for ambiguous wording. Flag ambiguity when missing business context makes more than one answer approach defensible.",
+      "question": {
+        "question_text": "What is the best way to improve a user's Salesforce access?",
+        "explanation": "Access changes depend on whether the user needs permissions beyond their current profile.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Assign a permission set",
+            "is_correct": true,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Update the user's profile",
+            "is_correct": false,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Change the org-wide default for the object",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Add the user to a new role in the role hierarchy",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "aaaaaaaa-0000-0000-0000-000000000002",
+            "chunk_index": 0,
+            "chunk_text": "The best access change depends on business context that the question omits. If the user only needs additional permissions beyond their profile, assign a permission set. If the profile itself is wrong for the job, update the profile. If record visibility is the issue, review org-wide defaults or role hierarchy changes."
+          }
+        ]
+      }
+    },
+    {
+      "label": "wrong-answer-key",
+      "expected_defect_category": "correctness",
+      "expected_detector": "llm",
+      "expect_detection": true,
+      "user_prompt": "Audit this question for answer-key correctness against the calibration evidence. The marked correct option must match the evidence.",
+      "question": {
+        "question_text": "Which Salesforce feature grants additional permissions to a user without changing the user's assigned profile?",
+        "explanation": "Permission sets add permissions while leaving the assigned profile unchanged.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Permission set",
+            "is_correct": false,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Profile",
+            "is_correct": true,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Sharing rule",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Validation rule",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "aaaaaaaa-0000-0000-0000-000000000003",
+            "chunk_index": 0,
+            "chunk_text": "Use permission sets to grant additional permissions to users without changing their assigned profiles."
+          }
+        ]
+      }
+    },
+    {
+      "label": "weak-distractors",
+      "expected_defect_category": "answer_quality",
+      "expected_detector": "llm",
+      "expect_detection": true,
+      "user_prompt": "Audit this question for weak, unrealistic, or trivially dismissible distractors.",
+      "question": {
+        "question_text": "Which permission tool adds access without changing a user's profile?",
+        "explanation": "Permission sets grant additional permissions while keeping the assigned profile unchanged.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Permission set",
+            "is_correct": true,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Checkbox field",
+            "is_correct": false,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Report chart color",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Email template footer",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "aaaaaaaa-0000-0000-0000-000000000004",
+            "chunk_index": 0,
+            "chunk_text": "Permission sets are the standard way to grant additional permissions without changing a user's assigned profile. Distractors should be plausible permission or access mechanisms, not unrelated metadata or UI elements."
+          }
+        ]
+      }
+    },
+    {
+      "label": "incomplete-explanation",
+      "expected_defect_category": "explanation_quality",
+      "expected_detector": "deterministic",
+      "expect_detection": true,
+      "expected_finding_codes": ["MISSING_EXPLANATION"],
+      "user_prompt": "Audit this question for missing or incomplete explanations.",
+      "question": {
+        "question_text": "What does a Salesforce Administrator primarily do?",
+        "explanation": "",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Configure and maintain the Salesforce platform",
+            "is_correct": true,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Design all marketing campaigns",
+            "is_correct": false,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Write every Apex trigger in the org",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Approve all customer contracts",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "aaaaaaaa-0000-0000-0000-000000000005",
+            "chunk_index": 0,
+            "chunk_text": "Administrators configure the platform, manage users, and maintain business processes. A complete explanation should describe those responsibilities."
+          }
+        ]
+      }
+    }
+  ]
+}
