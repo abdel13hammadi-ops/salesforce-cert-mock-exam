@@ -321,6 +321,64 @@ def filter_question_attempts_for_attempts(question_attempts: List[Dict[str, Any]
     ]
 
 
+VERIFIED_MOCK_PERFORMANCE_HEADER = "Verified Mock Performance"
+VERIFIED_MOCK_PERFORMANCE_EMPTY_MESSAGE = (
+    "No verified full paid mock exams yet. Complete a full paid mock exam to see Latest, "
+    "Average, and Best scores here. Daily Sprint and other practice sessions remain "
+    "visible in Attempt History below."
+)
+
+
+def build_verified_mock_performance_metrics(
+    attempts: List[Dict[str, Any]],
+    expected_question_count: int = 60,
+) -> Dict[str, Any]:
+    """Summarize score metrics from readiness-eligible full paid mock attempts only."""
+    verified_attempts = filter_readiness_attempts(attempts, expected_question_count)
+    if not verified_attempts:
+        return {
+            "has_verified_mocks": False,
+            "latest_score": None,
+            "average_score": None,
+            "best_score": None,
+            "verified_mock_count": 0,
+            "trend_attempts": [],
+        }
+
+    scores = [_safe_float(attempt.get("score"), 0.0) for attempt in verified_attempts]
+    return {
+        "has_verified_mocks": True,
+        "latest_score": scores[0],
+        "average_score": round(sum(scores) / len(scores), 2),
+        "best_score": round(max(scores), 2),
+        "verified_mock_count": len(verified_attempts),
+        "trend_attempts": list(reversed(verified_attempts)),
+    }
+
+
+def build_attempt_history_rows(
+    attempts: List[Dict[str, Any]],
+    preferred_timezone: str,
+) -> List[Dict[str, Any]]:
+    """Build Attempt History rows from all saved attempts."""
+    history_rows = []
+    for attempt in attempts:
+        history_rows.append(
+            {
+                "Attempt ID": attempt.get("id"),
+                "Completed At": format_user_datetime(attempt.get("completed_at"), preferred_timezone),
+                "Started At": format_user_datetime(attempt.get("started_at"), preferred_timezone),
+                "Mode": attempt.get("mode"),
+                "Category": attempt.get("category"),
+                "Score %": attempt.get("score"),
+                "Correct": get_correct_count(attempt),
+                "Total": attempt.get("total_questions"),
+                "Language": attempt.get("language_code"),
+            }
+        )
+    return history_rows
+
+
 def render_readiness_locked(full_mocks: int, required_mocks: int = 3) -> None:
     remaining = max(required_mocks - int(full_mocks or 0), 0)
     st.header("Overall Readiness")
@@ -541,30 +599,29 @@ else:
     render_readiness_card(readiness, passing_score, selected_exam)
 
 st.divider()
-st.header("Score Summary")
-scores = [_safe_float(a.get("score"), 0.0) for a in attempts]
-latest_score = scores[0] if scores else 0.0
-average_score = round(sum(scores) / len(scores), 2) if scores else 0.0
-best_score = round(max(scores), 2) if scores else 0.0
+st.header(VERIFIED_MOCK_PERFORMANCE_HEADER)
+mock_performance = build_verified_mock_performance_metrics(attempts, expected_question_count)
+if not mock_performance["has_verified_mocks"]:
+    st.info(VERIFIED_MOCK_PERFORMANCE_EMPTY_MESSAGE)
+else:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Latest Score", f"{mock_performance['latest_score']}%")
+    c2.metric("Average Score", f"{mock_performance['average_score']}%")
+    c3.metric("Best Score", f"{mock_performance['best_score']}%")
+    c4.metric("Verified Mocks", mock_performance["verified_mock_count"])
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Latest Score", f"{latest_score}%")
-c2.metric("Average Score", f"{average_score}%")
-c3.metric("Best Score", f"{best_score}%")
-c4.metric("All Exam Attempts", len(attempts))
-
-trend_rows = []
-for attempt in reversed(attempts):
-    trend_rows.append(
-        {
-            "Completed": format_user_datetime(attempt.get("completed_at") or attempt.get("started_at"), preferred_timezone),
-            "Score": _safe_float(attempt.get("score"), 0.0),
-        }
-    )
-if trend_rows:
-    st.subheader("Score Trend")
-    trend_df = pd.DataFrame(trend_rows)
-    st.line_chart(trend_df.set_index("Completed"))
+    trend_rows = []
+    for attempt in mock_performance["trend_attempts"]:
+        trend_rows.append(
+            {
+                "Completed": format_user_datetime(attempt.get("completed_at") or attempt.get("started_at"), preferred_timezone),
+                "Score": _safe_float(attempt.get("score"), 0.0),
+            }
+        )
+    if trend_rows:
+        st.subheader("Score Trend")
+        trend_df = pd.DataFrame(trend_rows)
+        st.line_chart(trend_df.set_index("Completed"))
 
 st.divider()
 st.header("Weak Areas by Domain")
@@ -579,19 +636,5 @@ else:
 
 st.divider()
 st.header("Attempt History")
-history_rows = []
-for attempt in attempts:
-    history_rows.append(
-        {
-            "Attempt ID": attempt.get("id"),
-            "Completed At": format_user_datetime(attempt.get("completed_at"), preferred_timezone),
-            "Started At": format_user_datetime(attempt.get("started_at"), preferred_timezone),
-            "Mode": attempt.get("mode"),
-            "Category": attempt.get("category"),
-            "Score %": attempt.get("score"),
-            "Correct": get_correct_count(attempt),
-            "Total": attempt.get("total_questions"),
-            "Language": attempt.get("language_code"),
-        }
-    )
+history_rows = build_attempt_history_rows(attempts, preferred_timezone)
 st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)
