@@ -31,6 +31,8 @@ Implemented handlers
                                orchestrates create→check→complete audit RPCs
   hybrid_audit         (8H) → runs deterministic checks, calls LLM provider,
                                merges findings, orchestrates audit lifecycle
+  certification_duplicate_audit → loads latest question versions for one
+                                  certification and orchestrates duplicate scan
 
 All other handlers are stubs that raise NotImplementedHandler.
 Use build_handler_registry(client, llm_provider=<provider>) to build the
@@ -581,19 +583,108 @@ def make_hybrid_audit_handler(client, llm_provider=None) -> Callable[..., dict]:
     return handle
 
 
+def make_certification_duplicate_audit_handler(client) -> Callable[..., dict]:
+    """Return the certification_duplicate_audit handler bound to *client*.
+
+    Loads the latest question version for each active live question in one
+    certification, then orchestrates duplicate stem detection and audit
+    persistence.
+
+    Expected payload fields
+    -----------------------
+    Required:
+      certification_exam_name  str  — certification / exam_name to scan
+
+    Optional:
+      created_by            str    — audit run actor (default certbound-worker)
+      ruleset_version       str    — duplicate detector ruleset (default 1.0.0)
+      near_exact_threshold  float  — lexical similarity threshold
+      metadata              dict   — extra audit-run metadata
+
+    Returns
+    -------
+      audit_run_id   str
+      run_status     str
+      finding_count  int
+      evidence_count int
+      question_count int
+
+    RPCs called:
+      list_certification_current_question_versions_v1
+      list_duplicate_question_pair_keys_v1 (via orchestration)
+      create_audit_run_v1, complete_audit_run_v1, end_audit_run_v1 (on failure)
+    """
+    from workers.certification_question_loader import (  # noqa: PLC0415
+        load_certification_current_question_versions,
+    )
+    from workers.duplicate_question_detector import (  # noqa: PLC0415
+        NEAR_EXACT_LEXICAL_THRESHOLD,
+    )
+
+    def handle(
+        job_id: str,
+        payload: dict,
+        checkpoint: dict,
+        attempt: int,
+        heartbeat_fn: Callable[[], None],
+    ) -> dict:
+        certification_exam_name = _require(payload, "certification_exam_name")
+        created_by = str(payload.get("created_by") or "certbound-worker").strip()
+        ruleset_version = payload.get("ruleset_version") or "1.0.0"
+        metadata = payload.get("metadata")
+        near_exact_threshold = payload.get("near_exact_threshold")
+        if near_exact_threshold is None:
+            near_exact_threshold = NEAR_EXACT_LEXICAL_THRESHOLD
+
+        rows = load_certification_current_question_versions(
+            client,
+            certification_exam_name,
+        )
+        heartbeat_fn()
+
+        if not rows:
+            raise HandlerPayloadError(
+                "no current question versions found for certification "
+                f"{certification_exam_name!r}"
+            )
+
+        from workers.duplicate_question_detector import (  # noqa: PLC0415
+            orchestrate_certification_duplicate_audit,
+        )
+
+        result = orchestrate_certification_duplicate_audit(
+            client,
+            rows=rows,
+            created_by=created_by,
+            ruleset_version=ruleset_version,
+            near_exact_threshold=float(near_exact_threshold),
+            metadata=metadata,
+        )
+        return {
+            **result,
+            "question_count": len(rows),
+            "certification_exam_name": certification_exam_name,
+        }
+
+    handle.__name__ = "handle_certification_duplicate_audit"
+    handle.__qualname__ = "handle_certification_duplicate_audit"
+    return handle
+
+
 # ===========================================================================
 # Stub-only registry (backwards-compatible default)
 # ===========================================================================
 
 HANDLER_REGISTRY: Dict[str, Callable[..., Any]] = {
-    "resource_ingestion":   _stub("resource_ingestion"),
-    "deterministic_audit":  _stub("deterministic_audit"),
-    "llm_audit":            _stub("llm_audit"),
-    "hybrid_audit":         _stub("hybrid_audit"),
-    "question_generation":  _stub("question_generation"),
-    "candidate_promotion":  _stub("candidate_promotion"),
-    "embedding_generation": _stub("embedding_generation"),
-    "other":                _stub("other"),
+    "resource_ingestion":              _stub("resource_ingestion"),
+    "deterministic_audit":             _stub("deterministic_audit"),
+    "llm_audit":                       _stub("llm_audit"),
+    "hybrid_audit":                    _stub("hybrid_audit"),
+    "certification_duplicate_audit":   _stub("certification_duplicate_audit"),
+    "question_generation":             _stub("question_generation"),
+    "candidate_promotion":             _stub("candidate_promotion"),
+    "embedding_generation":            _stub("embedding_generation"),
+    "other":                           _stub("other"),
 }
 
 
@@ -604,7 +695,8 @@ def build_handler_registry(
     """Build a complete handler registry with real handlers injected.
 
     Returns a new dict overriding resource_ingestion, candidate_promotion,
-    deterministic_audit, llm_audit, and hybrid_audit with real implementations.
+    deterministic_audit, llm_audit, hybrid_audit, and
+    certification_duplicate_audit with real implementations.
     question_generation, embedding_generation, and other remain stubs.
 
     Parameters
@@ -622,8 +714,9 @@ def build_handler_registry(
         "resource_ingestion":  make_resource_ingestion_handler(client),
         "candidate_promotion": make_candidate_promotion_handler(client),
         "deterministic_audit": make_deterministic_audit_handler(client),
-        "llm_audit":           make_llm_audit_handler(client, llm_provider=llm_provider),
-        "hybrid_audit":        make_hybrid_audit_handler(client, llm_provider=llm_provider),
+        "llm_audit":                       make_llm_audit_handler(client, llm_provider=llm_provider),
+        "hybrid_audit":                    make_hybrid_audit_handler(client, llm_provider=llm_provider),
+        "certification_duplicate_audit":   make_certification_duplicate_audit_handler(client),
     }
 
 
@@ -636,5 +729,6 @@ __all__ = [
     "make_deterministic_audit_handler",
     "make_llm_audit_handler",
     "make_hybrid_audit_handler",
+    "make_certification_duplicate_audit_handler",
     "build_handler_registry",
 ]
