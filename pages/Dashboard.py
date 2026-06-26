@@ -32,6 +32,7 @@ except Exception:
         return ""
 DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
+DAILY_SPRINT_QUESTION_COUNT = 10
 
 st.set_page_config(page_title="Dashboard", page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -130,6 +131,46 @@ def get_daily_sprint_domain(readiness: Dict[str, Any], domain_df: pd.DataFrame) 
         return safe_str(domain_df.iloc[0].get("Domain"))
 
     return ""
+
+
+def domain_has_sprint_capacity(domain: str, domain_counts: Dict[str, int], min_count: int = DAILY_SPRINT_QUESTION_COUNT) -> bool:
+    return safe_int(domain_counts.get(safe_str(domain)), 0) >= int(min_count or DAILY_SPRINT_QUESTION_COUNT)
+
+
+def select_daily_sprint_fallback_domain(
+    domain_counts: Dict[str, int],
+    min_count: int = DAILY_SPRINT_QUESTION_COUNT,
+) -> str:
+    """Pick a bank domain with enough practice-eligible questions for auto-start."""
+    eligible = sorted(
+        name
+        for name, count in (domain_counts or {}).items()
+        if safe_str(name) and safe_int(count, 0) >= int(min_count or DAILY_SPRINT_QUESTION_COUNT)
+    )
+    return eligible[0] if eligible else ""
+
+
+def resolve_daily_sprint_domain(
+    readiness: Optional[Dict[str, Any]],
+    domain_df: pd.DataFrame,
+    domain_counts: Dict[str, int],
+    min_count: int = DAILY_SPRINT_QUESTION_COUNT,
+) -> str:
+    """Resolve sprint domain: readiness weak > historical weak > bank fallback."""
+    weak_domains = readiness.get("weak_domains") if isinstance(readiness, dict) else None
+    if isinstance(weak_domains, list):
+        for domain in weak_domains:
+            candidate = safe_str(domain)
+            if candidate and domain_has_sprint_capacity(candidate, domain_counts, min_count):
+                return candidate
+
+    if domain_df is not None and not domain_df.empty and "Domain" in domain_df.columns:
+        for _, row in domain_df.iterrows():
+            candidate = safe_str(row.get("Domain"))
+            if candidate and domain_has_sprint_capacity(candidate, domain_counts, min_count):
+                return candidate
+
+    return select_daily_sprint_fallback_domain(domain_counts, min_count)
 
 
 def build_daily_sprint_href(page_path: str, exam_name: str, category: str, count: int = 10) -> str:
@@ -363,6 +404,36 @@ def fetch_question_health_for_exam(exam_name: str, language_code: str) -> Dict[s
         return {"approved_questions": 0, "free_questions": 0, "domains": 0}
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_practice_domain_counts(exam_name: str, language_code: str) -> Dict[str, int]:
+    """Count practice-eligible approved questions per domain/category."""
+    if not exam_name:
+        return {}
+
+    try:
+        questions_result = (
+            get_supabase_client()
+            .table("questions")
+            .select("category")
+            .eq("exam_name", exam_name)
+            .eq("language_code", language_code or "en")
+            .eq("is_active", True)
+            .eq("is_exam_eligible", True)
+            .eq("quality_status", "approved")
+            .eq("practice_eligible", True)
+            .execute()
+        )
+        counts: Dict[str, int] = {}
+        for row in questions_result.data or []:
+            category = safe_str(row.get("category"))
+            if not category:
+                continue
+            counts[category] = counts.get(category, 0) + 1
+        return counts
+    except Exception:
+        return {}
+
+
 def certification_display(cert: Dict[str, Any]) -> str:
     return safe_str(cert.get("display_name") or cert.get("exam_name"), "Certification")
 
@@ -575,13 +646,8 @@ def render_logged_in_dashboard(email: str) -> None:
     h2.metric("Free Preview Questions", question_health.get("free_questions", 0))
     h3.metric("Domains Covered", question_health.get("domains", 0))
 
-    if not attempts:
-        st.warning("No attempt data for this certification yet. Start with the mock exam. Dashboard intelligence stays weak until attempts exist.")
-        if not premium:
-            render_locked_premium_cards()
-        return
-
-    domain_df = build_domain_summary(attempts)
+    domain_df = build_domain_summary(attempts) if attempts else pd.DataFrame()
+    practice_domain_counts = fetch_practice_domain_counts(selected_exam, preferred_language)
     if calculate_readiness is not None:
         daily_domain_weights = fetch_domain_weights(selected_exam)
         daily_passing_score = safe_float(cert.get("passing_score"), 72 if "Business Analyst" in selected_exam else 68)
@@ -598,8 +664,14 @@ def render_logged_in_dashboard(email: str) -> None:
             time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
             captured_bank_size=extract_captured_bank_size(daily_readiness_attempts) if extract_captured_bank_size else None,
         )
-        daily_sprint_domain = get_daily_sprint_domain(daily_readiness, domain_df)
+        daily_sprint_domain = resolve_daily_sprint_domain(daily_readiness, domain_df, practice_domain_counts)
         render_daily_sprint_card(selected_exam, daily_sprint_domain, premium)
+
+    if not attempts:
+        st.warning("No attempt data for this certification yet. Start with the mock exam. Dashboard intelligence stays weak until attempts exist.")
+        if not premium:
+            render_locked_premium_cards()
+        return
 
     st.divider()
     if calculate_readiness is not None:
