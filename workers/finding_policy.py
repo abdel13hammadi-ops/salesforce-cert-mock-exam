@@ -42,6 +42,8 @@ CANONICAL_FINDING_CODES = frozenset({
     "SINGLE_SELECT_COUNT_MISMATCH",
     "DUPLICATE_CORRECT_OPTIONS",
     "OPTION_DISPLAY_ORDER_ISSUES",
+    "DUPLICATE_QUESTION_STEM_EXACT",
+    "DUPLICATE_QUESTION_STEM_NEAR_EXACT",
 })
 
 DETERMINISTIC_TO_CANONICAL: Dict[str, str] = {
@@ -64,6 +66,7 @@ BLOCKING_CODES = frozenset({
     "SINGLE_SELECT_COUNT_MISMATCH",
     "DUPLICATE_CORRECT_OPTIONS",
     "OPTION_DISPLAY_ORDER_ISSUES",
+    "DUPLICATE_QUESTION_STEM_EXACT",
 })
 
 WARNING_CODES = frozenset({
@@ -73,6 +76,7 @@ WARNING_CODES = frozenset({
     "SOURCE_SUPPORT_WEAK",
     "LOW_COGNITIVE_LEVEL",
     "DIFFICULTY_MISMATCH",
+    "DUPLICATE_QUESTION_STEM_NEAR_EXACT",
 })
 
 INFORMATIONAL_CODES = frozenset()
@@ -150,6 +154,10 @@ def canonicalize_llm_finding_code(finding: dict) -> str:
         return "OTHER_REVIEW_NEEDED"
 
     if finding_type == "duplication":
+        if any(token in text for token in ("exact", "identical", "duplicate stem")):
+            return "DUPLICATE_QUESTION_STEM_EXACT"
+        if any(token in text for token in ("near-exact", "near exact", "similar stem")):
+            return "DUPLICATE_QUESTION_STEM_NEAR_EXACT"
         return "OTHER_REVIEW_NEEDED"
 
     if finding_type == "policy":
@@ -201,6 +209,12 @@ def assign_materiality(finding: dict) -> str:
 
     if finding_type == "formatting":
         return "informational"
+
+    if finding_type == "duplication":
+        if code == "DUPLICATE_QUESTION_STEM_EXACT":
+            return "blocking"
+        if code == "DUPLICATE_QUESTION_STEM_NEAR_EXACT":
+            return "warning"
 
     if finding_type == "other":
         if any(token in text for token in ("style", "stylistic", "scenario-based", "enrichment")):
