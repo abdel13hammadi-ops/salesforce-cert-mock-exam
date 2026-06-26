@@ -466,6 +466,26 @@ def v5_grade_all_attempts(
     }
 
 
+def count_verified_unique_questions_seen(
+    attempts: List[Dict[str, Any]],
+    question_attempts: List[Dict[str, Any]],
+    expected_question_count: int = 60,
+) -> int:
+    """Count distinct question IDs from child rows linked to verified paid mocks."""
+    graded = v5_grade_all_attempts(attempts, question_attempts, expected_question_count)
+    verified_ids = {attempt_id for attempt_id in (graded.get("verified_ids") or []) if attempt_id is not None}
+    if not verified_ids:
+        return 0
+
+    seen = set()
+    for row in question_attempts or []:
+        exam_attempt_id = _v5_parse_strict_int(row.get("exam_attempt_id"))
+        question_id = row.get("question_id")
+        if exam_attempt_id in verified_ids and question_id is not None:
+            seen.add(question_id)
+    return len(seen)
+
+
 # ---------------------------------------------------------------------------
 # V5 repeat-evidence weights
 # ---------------------------------------------------------------------------
@@ -1772,6 +1792,11 @@ def calculate_readiness(
         result["full_mock_count"]        = verified_mock_count
         result["eligible_mock_count"]    = verified_mock_count
         result["formula_version"]        = READINESS_VERSION
+        result["unique_questions_seen"]  = count_verified_unique_questions_seen(
+            attempts,
+            question_attempts,
+            expected_question_count,
+        )
         return result
 
     # ── 5. Sort verified oldest → newest (V5 deterministic order) ──────────
