@@ -8,6 +8,7 @@ from utils.session_timeout import enforce_session_timeout, show_session_expired_
 from utils.access_control import (
     get_supabase_admin_client,
     render_app_chrome,
+    render_session_page_link,
     get_current_user_email as shared_get_current_user_email,
     require_login,
     has_premium_access,
@@ -17,6 +18,8 @@ from utils.version import APP_VERSION
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 DAILY_SPRINT_QUESTION_COUNT = 10
 DAILY_SPRINT_AUTO_START_GUARD = "daily_sprint_auto_start_attempted"
+DAILY_SPRINT_MODE_LABEL = "Daily Sprint"
+DAILY_SPRINT_DASHBOARD_PAGE = "pages/Dashboard.py"
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -199,6 +202,36 @@ def maybe_auto_start_daily_sprint(
     )
     rerun_fn()
     return True
+
+
+def is_daily_sprint_session(session_state) -> bool:
+    return str(session_state.get("practice_mode_label") or "").strip() == DAILY_SPRINT_MODE_LABEL
+
+
+def practice_results_heading(session_state) -> str:
+    return "Daily Sprint Complete" if is_daily_sprint_session(session_state) else "Practice Results"
+
+
+def format_practice_score_metric(score) -> str:
+    return f"{score}%"
+
+
+def format_practice_correct_metric(correct, total) -> str:
+    return f"{correct} / {total}"
+
+
+def build_practice_completion_view(score, correct, total, session_state) -> dict:
+    sprint = is_daily_sprint_session(session_state)
+    return {
+        "heading": practice_results_heading(session_state),
+        "score_metric": format_practice_score_metric(score),
+        "correct_metric": format_practice_correct_metric(correct, total),
+        "review_heading": "Answer Review",
+        "show_dashboard_return": sprint,
+        "dashboard_path": DAILY_SPRINT_DASHBOARD_PAGE,
+        "dashboard_label": "Back to Dashboard",
+        "show_primary_start_new_practice": not sprint,
+    }
 
 
 @st.cache_data(ttl=60)
@@ -733,13 +766,21 @@ else:
         except Exception as exc:
             st.warning(f"Practice completed, but saving to progress tracking failed: {exc}")
 
-    st.header("Practice Results")
+    completion_view = build_practice_completion_view(score, correct, total, st.session_state)
+    st.header(completion_view["heading"])
     c1, c2, c3 = st.columns(3)
-    c1.metric("Score", f"{score}%")
-    c2.metric("Correct", f"{correct} / {total}")
+    c1.metric("Score", completion_view["score_metric"])
+    c2.metric("Correct", completion_view["correct_metric"])
     c3.metric("Category", st.session_state.practice_category)
 
-    st.subheader("Answer Review")
+    if completion_view["show_dashboard_return"]:
+        render_session_page_link(
+            completion_view["dashboard_path"],
+            label=completion_view["dashboard_label"],
+            icon="🏠",
+        )
+
+    st.subheader(completion_view["review_heading"])
     for i, q in enumerate(questions):
         user_answer = answers.get(i, [])
         result_correct = is_correct(user_answer, q["correct_ids"])
@@ -756,5 +797,6 @@ else:
         st.info(q["explanation"])
         st.divider()
 
-    if st.button("Start New Practice", type="primary"):
-        reset_practice()
+    if completion_view["show_primary_start_new_practice"]:
+        if st.button("Start New Practice", type="primary"):
+            reset_practice()
