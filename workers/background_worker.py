@@ -20,10 +20,13 @@ Design rules
 ------------
 * The worker NEVER updates background_jobs directly.
 * All state transitions happen through RPCs:
+    recover_expired_background_jobs_v1
     claim_background_job_v1
     heartbeat_background_job_v1
     complete_background_job_v1
     fail_background_job_v1
+* Expired leases are reclaimed via recover_expired_background_jobs_v1 on
+  startup and periodically (see CERTBOUND_JOB_RECOVERY_* env vars).
 * Handlers are resolved from workers.job_handlers.HANDLER_REGISTRY by job_type.
 * An unknown job_type is failed immediately via fail_background_job_v1.
 * Any unhandled exception in a handler is caught, logged, and forwarded to
@@ -41,6 +44,78 @@ import time
 from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+ENV_RECOVERY_INTERVAL = "CERTBOUND_JOB_RECOVERY_INTERVAL_SECONDS"
+ENV_RECOVERY_LIMIT = "CERTBOUND_JOB_RECOVERY_LIMIT"
+ENV_RECOVERY_RETRY_DELAY = "CERTBOUND_JOB_RECOVERY_RETRY_DELAY_SECONDS"
+
+DEFAULT_RECOVERY_INTERVAL_SECONDS = 60
+DEFAULT_RECOVERY_LIMIT = 100
+DEFAULT_RECOVERY_RETRY_DELAY_SECONDS = 60
+MAX_RECOVERY_LIMIT = 1000
+MAX_RECOVERY_RETRY_DELAY_SECONDS = 86400
+
+
+def _parse_recovery_env_int(
+    name: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: Optional[int] = None,
+) -> int:
+    """Parse one recovery-related integer environment variable safely."""
+    raw = os.environ.get(name, "").strip()
+    if raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "%s must be an integer; using default %s",
+            name,
+            default,
+        )
+        return default
+    if value < minimum:
+        logger.warning(
+            "%s must be >= %s; using default %s",
+            name,
+            minimum,
+            default,
+        )
+        return default
+    if maximum is not None and value > maximum:
+        logger.warning(
+            "%s must be <= %s; using default %s",
+            name,
+            maximum,
+            default,
+        )
+        return default
+    return value
+
+
+def load_recovery_settings_from_env() -> dict:
+    """Load expired-lease recovery settings from environment variables."""
+    return {
+        "recovery_interval_seconds": _parse_recovery_env_int(
+            ENV_RECOVERY_INTERVAL,
+            default=DEFAULT_RECOVERY_INTERVAL_SECONDS,
+            minimum=0,
+        ),
+        "recovery_limit": _parse_recovery_env_int(
+            ENV_RECOVERY_LIMIT,
+            default=DEFAULT_RECOVERY_LIMIT,
+            minimum=1,
+            maximum=MAX_RECOVERY_LIMIT,
+        ),
+        "recovery_retry_delay_seconds": _parse_recovery_env_int(
+            ENV_RECOVERY_RETRY_DELAY,
+            default=DEFAULT_RECOVERY_RETRY_DELAY_SECONDS,
+            minimum=0,
+            maximum=MAX_RECOVERY_RETRY_DELAY_SECONDS,
+        ),
+    }
 
 
 # =============================================================================
@@ -104,6 +179,13 @@ class BackgroundWorker:
         Duration of each lease, 30–3600.  Also used for heartbeat renewals.
     sleep_interval:
         Seconds to sleep between poll iterations when no job is available.
+    recovery_interval_seconds:
+        Seconds between periodic recover_expired_background_jobs_v1 calls.
+        ``0`` disables periodic recovery; startup recovery still runs once.
+    recovery_limit:
+        ``p_limit`` passed to recover_expired_background_jobs_v1.
+    recovery_retry_delay_seconds:
+        ``p_retry_delay_seconds`` passed to recover_expired_background_jobs_v1.
     """
 
     def __init__(
@@ -114,6 +196,9 @@ class BackgroundWorker:
         job_types: Optional[List[str]] = None,
         lease_seconds: int = 300,
         sleep_interval: float = 5.0,
+        recovery_interval_seconds: int = DEFAULT_RECOVERY_INTERVAL_SECONDS,
+        recovery_limit: int = DEFAULT_RECOVERY_LIMIT,
+        recovery_retry_delay_seconds: int = DEFAULT_RECOVERY_RETRY_DELAY_SECONDS,
     ) -> None:
         if not str(worker_id).strip():
             raise ValueError("worker_id must not be empty")
@@ -123,7 +208,12 @@ class BackgroundWorker:
         self.job_types = job_types
         self.lease_seconds = lease_seconds
         self.sleep_interval = sleep_interval
+        self.recovery_interval_seconds = recovery_interval_seconds
+        self.recovery_limit = recovery_limit
+        self.recovery_retry_delay_seconds = recovery_retry_delay_seconds
         self._shutdown_requested = False
+        self._startup_recovery_done = False
+        self._last_recovery_at: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Shutdown
@@ -194,6 +284,56 @@ class BackgroundWorker:
             },
         )
 
+    def _recover_expired_jobs(self, *, reason: str) -> None:
+        """Reclaim expired leases via recover_expired_background_jobs_v1."""
+        try:
+            rows = self._rpc(
+                "recover_expired_background_jobs_v1",
+                {
+                    "p_limit":               self.recovery_limit,
+                    "p_retry_delay_seconds": self.recovery_retry_delay_seconds,
+                },
+            )
+            row = rows[0] if rows else {}
+            recovered = int(row.get("recovered_count") or 0)
+            dead_letter = int(row.get("dead_letter_count") or 0)
+            if recovered or dead_letter:
+                logger.info(
+                    "job recovery (%s) worker=%s recovered_count=%s dead_letter_count=%s",
+                    reason,
+                    self.worker_id,
+                    recovered,
+                    dead_letter,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "job recovery (%s) failed worker=%s error=%s",
+                reason,
+                self.worker_id,
+                exc,
+            )
+
+    def _ensure_startup_recovery(self) -> None:
+        """Run expired-lease recovery once before the first claim attempt."""
+        if self._startup_recovery_done:
+            return
+        self._recover_expired_jobs(reason="startup")
+        self._startup_recovery_done = True
+        self._last_recovery_at = time.monotonic()
+
+    def _maybe_periodic_recovery(self) -> None:
+        """Run expired-lease recovery when the configured interval has elapsed."""
+        if self.recovery_interval_seconds <= 0:
+            return
+        now = time.monotonic()
+        if (
+            self._last_recovery_at is not None
+            and (now - self._last_recovery_at) < self.recovery_interval_seconds
+        ):
+            return
+        self._recover_expired_jobs(reason="periodic")
+        self._last_recovery_at = now
+
     # ------------------------------------------------------------------
     # Dispatch
     # ------------------------------------------------------------------
@@ -256,6 +396,7 @@ class BackgroundWorker:
 
         Returns True when a job was processed, False when the queue was empty.
         """
+        self._ensure_startup_recovery()
         job = self._claim_job()
         if job is None:
             logger.info(
@@ -273,10 +414,17 @@ class BackgroundWorker:
         handler).  The current job always completes before the loop exits.
         """
         logger.info(
-            "worker=%s starting poll loop sleep=%.1fs lease=%ds job_types=%s",
-            self.worker_id, self.sleep_interval, self.lease_seconds, self.job_types,
+            "worker=%s starting poll loop sleep=%.1fs lease=%ds job_types=%s "
+            "recovery_interval=%ds",
+            self.worker_id,
+            self.sleep_interval,
+            self.lease_seconds,
+            self.job_types,
+            self.recovery_interval_seconds,
         )
+        self._ensure_startup_recovery()
         while not self._shutdown_requested:
+            self._maybe_periodic_recovery()
             try:
                 self.run_once()
             except Exception as exc:  # noqa: BLE001
@@ -348,6 +496,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     client = build_supabase_client()
     llm_provider = build_llm_provider_from_env()
 
+    recovery_settings = load_recovery_settings_from_env()
+
     worker = BackgroundWorker(
         worker_id=args.worker_id,
         client=client,
@@ -355,6 +505,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         job_types=job_types,
         lease_seconds=args.lease_seconds,
         sleep_interval=args.sleep,
+        **recovery_settings,
     )
 
     def _on_signal(signum: int, _frame) -> None:

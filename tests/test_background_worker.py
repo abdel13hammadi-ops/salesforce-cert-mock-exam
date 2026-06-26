@@ -33,7 +33,18 @@ from unittest.mock import patch
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from workers.background_worker import BackgroundWorker
+from workers.background_worker import (
+    BackgroundWorker,
+    DEFAULT_RECOVERY_INTERVAL_SECONDS,
+    DEFAULT_RECOVERY_LIMIT,
+    DEFAULT_RECOVERY_RETRY_DELAY_SECONDS,
+    ENV_RECOVERY_INTERVAL,
+    ENV_RECOVERY_LIMIT,
+    ENV_RECOVERY_RETRY_DELAY,
+    MAX_RECOVERY_LIMIT,
+    MAX_RECOVERY_RETRY_DELAY_SECONDS,
+    load_recovery_settings_from_env,
+)
 from workers.job_handlers import (
     HANDLER_REGISTRY,
     NotImplementedHandler,
@@ -172,11 +183,19 @@ class TestNoJobAvailable(unittest.TestCase):
 
     def test_only_claim_rpc_called(self):
         fake = FakeSupabase()
+        fake.set_response("recover_expired_background_jobs_v1",
+                          [{"recovered_count": 0, "dead_letter_count": 0}])
         fake.set_response("claim_background_job_v1", [])
         worker = _make_worker(fake)
         worker.run_once()
 
+        self.assertIn("recover_expired_background_jobs_v1", fake.called_rpc_names)
         self.assertIn("claim_background_job_v1", fake.called_rpc_names)
+        names = [c["name"] for c in fake.rpc_calls]
+        self.assertLess(
+            names.index("recover_expired_background_jobs_v1"),
+            names.index("claim_background_job_v1"),
+        )
         # heartbeat, complete, and fail must NOT be called
         for forbidden in (
             "heartbeat_background_job_v1",
@@ -220,6 +239,252 @@ class TestClaimAndDispatch(unittest.TestCase):
         self.assertEqual(received["payload"],   _SAMPLE_JOB["payload"])
         self.assertEqual(received["checkpoint"], _SAMPLE_JOB["checkpoint"])
         self.assertEqual(received["attempt"],   _SAMPLE_JOB["attempt_count"])
+
+
+class TestJobRecovery(unittest.TestCase):
+    """Expired-lease recovery via recover_expired_background_jobs_v1."""
+
+    @staticmethod
+    def _recover_response(recovered: int = 0, dead_letter: int = 0) -> List[dict]:
+        return [{"recovered_count": recovered, "dead_letter_count": dead_letter}]
+
+    def test_startup_recovery_occurs_before_claim(self):
+        fake = FakeSupabase()
+        fake.set_response("recover_expired_background_jobs_v1", self._recover_response())
+        fake.set_response("claim_background_job_v1", [])
+        worker = _make_worker(fake)
+
+        worker.run_once()
+
+        names = [c["name"] for c in fake.rpc_calls]
+        self.assertEqual(names[0], "recover_expired_background_jobs_v1")
+        self.assertEqual(names[1], "claim_background_job_v1")
+
+    def test_once_mode_performs_recovery_before_claim(self):
+        fake = FakeSupabase()
+        fake.set_response("recover_expired_background_jobs_v1", self._recover_response())
+        fake.set_response("claim_background_job_v1", [])
+        worker = _make_worker(fake)
+
+        worker.run_once()
+
+        recover_idx = next(
+            i for i, call in enumerate(fake.rpc_calls)
+            if call["name"] == "recover_expired_background_jobs_v1"
+        )
+        claim_idx = next(
+            i for i, call in enumerate(fake.rpc_calls)
+            if call["name"] == "claim_background_job_v1"
+        )
+        self.assertLess(recover_idx, claim_idx)
+
+    def test_periodic_recovery_respects_interval(self):
+        fake = FakeSupabase()
+        fake.set_response("recover_expired_background_jobs_v1", self._recover_response())
+        worker = BackgroundWorker(
+            worker_id="test-worker-1",
+            client=fake,
+            handlers={},
+            recovery_interval_seconds=60,
+        )
+        worker._startup_recovery_done = True
+        worker._last_recovery_at = 1000.0
+
+        with patch("workers.background_worker.time.monotonic", return_value=1030.0):
+            worker._maybe_periodic_recovery()
+        self.assertEqual(len(fake.calls_for("recover_expired_background_jobs_v1")), 0)
+
+        with patch("workers.background_worker.time.monotonic", return_value=1061.0):
+            worker._maybe_periodic_recovery()
+        self.assertEqual(len(fake.calls_for("recover_expired_background_jobs_v1")), 1)
+
+    def test_zero_interval_disables_periodic_recovery(self):
+        fake = FakeSupabase()
+        fake.set_response("recover_expired_background_jobs_v1", self._recover_response())
+        fake.set_response("claim_background_job_v1", [])
+        worker = BackgroundWorker(
+            worker_id="shutdown-test",
+            client=fake,
+            handlers={},
+            sleep_interval=0.0,
+            recovery_interval_seconds=0,
+        )
+
+        iterations = [0]
+        original_run_once = worker.run_once
+
+        def counting_run_once():
+            iterations[0] += 1
+            result = original_run_once()
+            if iterations[0] >= 3:
+                worker.request_shutdown()
+            return result
+
+        worker.run_once = counting_run_once
+
+        with patch("time.sleep"):
+            worker.run()
+
+        self.assertEqual(len(fake.calls_for("recover_expired_background_jobs_v1")), 1)
+
+    def test_recovery_rpc_failure_does_not_crash_worker(self):
+        fake = FakeSupabase()
+        fake.set_error_response("recover_expired_background_jobs_v1", "recovery unavailable")
+        fake.set_response("claim_background_job_v1", [])
+        worker = _make_worker(fake)
+
+        worker.run_once()
+
+        self.assertIn("claim_background_job_v1", fake.called_rpc_names)
+
+
+class TestRecoverySettingsFromEnv(unittest.TestCase):
+    """Validated parsing for CERTBOUND_JOB_RECOVERY_* environment variables."""
+
+    def test_missing_values_use_defaults(self):
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_recovery_settings_from_env()
+
+        self.assertEqual(
+            settings,
+            {
+                "recovery_interval_seconds": DEFAULT_RECOVERY_INTERVAL_SECONDS,
+                "recovery_limit": DEFAULT_RECOVERY_LIMIT,
+                "recovery_retry_delay_seconds": DEFAULT_RECOVERY_RETRY_DELAY_SECONDS,
+            },
+        )
+
+    def test_malformed_non_integer_uses_default_with_warning(self):
+        env = {ENV_RECOVERY_INTERVAL: "not-a-number"}
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertLogs("workers.background_worker", level="WARNING") as logs:
+                settings = load_recovery_settings_from_env()
+
+        self.assertEqual(settings["recovery_interval_seconds"], 60)
+        self.assertTrue(
+            any(ENV_RECOVERY_INTERVAL in message for message in logs.output)
+        )
+
+    def test_negative_interval_uses_default_with_warning(self):
+        env = {ENV_RECOVERY_INTERVAL: "-5"}
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertLogs("workers.background_worker", level="WARNING") as logs:
+                settings = load_recovery_settings_from_env()
+
+        self.assertEqual(settings["recovery_interval_seconds"], 60)
+        self.assertTrue(
+            any(ENV_RECOVERY_INTERVAL in message for message in logs.output)
+        )
+
+    def test_zero_or_negative_recovery_limit_uses_default_with_warning(self):
+        for invalid_value in ("0", "-1"):
+            with self.subTest(invalid_value=invalid_value):
+                env = {ENV_RECOVERY_LIMIT: invalid_value}
+                with patch.dict(os.environ, env, clear=True):
+                    with self.assertLogs("workers.background_worker", level="WARNING") as logs:
+                        settings = load_recovery_settings_from_env()
+
+                self.assertEqual(settings["recovery_limit"], 100)
+                self.assertTrue(
+                    any(ENV_RECOVERY_LIMIT in message for message in logs.output)
+                )
+
+    def test_negative_retry_delay_uses_default_with_warning(self):
+        env = {ENV_RECOVERY_RETRY_DELAY: "-10"}
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertLogs("workers.background_worker", level="WARNING") as logs:
+                settings = load_recovery_settings_from_env()
+
+        self.assertEqual(settings["recovery_retry_delay_seconds"], 60)
+        self.assertTrue(
+            any(ENV_RECOVERY_RETRY_DELAY in message for message in logs.output)
+        )
+
+    def test_valid_zero_interval_is_accepted(self):
+        env = {ENV_RECOVERY_INTERVAL: "0"}
+        with patch.dict(os.environ, env, clear=True):
+            settings = load_recovery_settings_from_env()
+
+        self.assertEqual(settings["recovery_interval_seconds"], 0)
+
+    def test_valid_custom_values_are_accepted(self):
+        env = {
+            ENV_RECOVERY_INTERVAL: "120",
+            ENV_RECOVERY_LIMIT: "25",
+            ENV_RECOVERY_RETRY_DELAY: "15",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            settings = load_recovery_settings_from_env()
+
+        self.assertEqual(
+            settings,
+            {
+                "recovery_interval_seconds": 120,
+                "recovery_limit": 25,
+                "recovery_retry_delay_seconds": 15,
+            },
+        )
+
+    def test_maximum_recovery_limit_is_preserved(self):
+        env = {ENV_RECOVERY_LIMIT: str(MAX_RECOVERY_LIMIT)}
+        with patch.dict(os.environ, env, clear=True):
+            settings = load_recovery_settings_from_env()
+
+        self.assertEqual(settings["recovery_limit"], MAX_RECOVERY_LIMIT)
+
+    def test_recovery_limit_one_above_maximum_falls_back_to_default(self):
+        env = {ENV_RECOVERY_LIMIT: str(MAX_RECOVERY_LIMIT + 1)}
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertLogs("workers.background_worker", level="WARNING") as logs:
+                settings = load_recovery_settings_from_env()
+
+        self.assertEqual(settings["recovery_limit"], DEFAULT_RECOVERY_LIMIT)
+        self.assertTrue(
+            any(ENV_RECOVERY_LIMIT in message for message in logs.output)
+        )
+        self.assertTrue(
+            any(str(MAX_RECOVERY_LIMIT) in message for message in logs.output)
+        )
+        self.assertTrue(
+            any(str(DEFAULT_RECOVERY_LIMIT) in message for message in logs.output)
+        )
+
+    def test_maximum_recovery_retry_delay_is_preserved(self):
+        env = {ENV_RECOVERY_RETRY_DELAY: str(MAX_RECOVERY_RETRY_DELAY_SECONDS)}
+        with patch.dict(os.environ, env, clear=True):
+            settings = load_recovery_settings_from_env()
+
+        self.assertEqual(
+            settings["recovery_retry_delay_seconds"],
+            MAX_RECOVERY_RETRY_DELAY_SECONDS,
+        )
+
+    def test_valid_zero_retry_delay_is_accepted(self):
+        env = {ENV_RECOVERY_RETRY_DELAY: "0"}
+        with patch.dict(os.environ, env, clear=True):
+            settings = load_recovery_settings_from_env()
+
+        self.assertEqual(settings["recovery_retry_delay_seconds"], 0)
+
+    def test_recovery_retry_delay_one_above_maximum_falls_back_to_default(self):
+        env = {ENV_RECOVERY_RETRY_DELAY: str(MAX_RECOVERY_RETRY_DELAY_SECONDS + 1)}
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertLogs("workers.background_worker", level="WARNING") as logs:
+                settings = load_recovery_settings_from_env()
+
+        self.assertEqual(
+            settings["recovery_retry_delay_seconds"],
+            DEFAULT_RECOVERY_RETRY_DELAY_SECONDS,
+        )
+        self.assertTrue(
+            any(ENV_RECOVERY_RETRY_DELAY in message for message in logs.output)
+        )
+        self.assertTrue(
+            any(str(MAX_RECOVERY_RETRY_DELAY_SECONDS) in message for message in logs.output)
+        )
+        self.assertTrue(
+            any(str(DEFAULT_RECOVERY_RETRY_DELAY_SECONDS) in message for message in logs.output)
+        )
 
 
 class TestSuccessfulHandler(unittest.TestCase):
