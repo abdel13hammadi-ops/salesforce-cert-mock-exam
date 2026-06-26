@@ -15,6 +15,8 @@ from utils.access_control import (
 
 from utils.version import APP_VERSION
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
+DAILY_SPRINT_QUESTION_COUNT = 10
+DAILY_SPRINT_AUTO_START_GUARD = "daily_sprint_auto_start_attempted"
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -89,6 +91,114 @@ def get_daily_sprint_params():
         return is_daily, exam_name, category, count
     except Exception:
         return False, "", "", 10
+
+
+def build_available_categories(domains, question_bank):
+    available_categories = [d for d in domains if any(q["category"] == d for q in question_bank)]
+    extra_categories = sorted({q["category"] for q in question_bank if q["category"] not in available_categories})
+    available_categories.extend(extra_categories)
+    return available_categories
+
+
+def select_practice_questions(question_bank, selected_category, selected_count):
+    """Select and shuffle questions using the Start Practice button logic."""
+    category_questions = [q for q in question_bank if q["category"] == selected_category]
+    grouped = defaultdict(list)
+    for q in category_questions:
+        grouped[q["difficulty"]].append(q)
+    for difficulty in grouped:
+        random.shuffle(grouped[difficulty])
+
+    selected = []
+    while len(selected) < selected_count and sum(len(v) for v in grouped.values()) > 0:
+        for d in ["easy", "medium", "hard"] + [x for x in grouped.keys() if x not in {"easy", "medium", "hard"}]:
+            if len(selected) >= selected_count:
+                break
+            if grouped.get(d):
+                selected.append(grouped[d].pop())
+    random.shuffle(selected)
+    for q in selected:
+        random.shuffle(q["options"])
+    return selected
+
+
+def initialize_practice_session(
+    selected,
+    selected_category,
+    selected_count,
+    selected_exam,
+    language_code,
+    mode_label,
+    session_state,
+):
+    session_state["practice_questions"] = selected
+    session_state["practice_category"] = selected_category
+    session_state["practice_count"] = selected_count
+    session_state["practice_exam_name"] = selected_exam
+    session_state["practice_language_code"] = language_code
+    session_state["practice_mode_label"] = mode_label
+    session_state["practice_started"] = True
+    session_state["practice_submitted"] = False
+    session_state["practice_current_index"] = 0
+    session_state["practice_answers"] = {}
+    session_state["practice_feedback_shown"] = False
+    session_state["practice_saved"] = False
+    session_state["practice_question_time_spent"] = {}
+    session_state["practice_question_entered_at"] = time.time()
+    session_state["practice_timing_index"] = int(session_state.get("practice_current_index") or 0)
+
+
+def maybe_auto_start_daily_sprint(
+    *,
+    is_daily_sprint,
+    daily_sprint_exam_name,
+    daily_sprint_category,
+    premium,
+    exam_names,
+    question_bank,
+    domains,
+    language_code,
+    session_state,
+    rerun_fn,
+):
+    """Auto-start Daily Sprint from deep-link params. Returns True after triggering rerun."""
+    if not is_daily_sprint or not premium:
+        return False
+    if session_state.get("practice_started"):
+        return False
+    if session_state.get(DAILY_SPRINT_AUTO_START_GUARD):
+        return False
+    if not daily_sprint_exam_name or not daily_sprint_category:
+        return False
+    if daily_sprint_exam_name not in exam_names:
+        return False
+
+    available_categories = build_available_categories(domains, question_bank)
+    if daily_sprint_category not in available_categories:
+        return False
+
+    selected_count = DAILY_SPRINT_QUESTION_COUNT
+    available_count = sum(1 for q in question_bank if q["category"] == daily_sprint_category)
+    if available_count < selected_count:
+        return False
+
+    session_state[DAILY_SPRINT_AUTO_START_GUARD] = True
+    selected = select_practice_questions(question_bank, daily_sprint_category, selected_count)
+    if len(selected) < selected_count:
+        session_state.pop(DAILY_SPRINT_AUTO_START_GUARD, None)
+        return False
+
+    initialize_practice_session(
+        selected,
+        daily_sprint_category,
+        selected_count,
+        daily_sprint_exam_name,
+        language_code,
+        "Daily Sprint",
+        session_state,
+    )
+    rerun_fn()
+    return True
 
 
 @st.cache_data(ttl=60)
@@ -220,8 +330,9 @@ def reset_practice():
     keys = [
         "practice_started", "practice_submitted", "practice_current_index", "practice_questions",
         "practice_answers", "practice_feedback_shown", "practice_saved", "practice_category",
-        "practice_count", "practice_exam_name", "practice_language_code",
+        "practice_count", "practice_exam_name", "practice_language_code", "practice_mode_label",
         "practice_question_time_spent", "practice_question_entered_at", "practice_timing_index",
+        DAILY_SPRINT_AUTO_START_GUARD,
     ]
     for key in keys:
         st.session_state.pop(key, None)
@@ -461,6 +572,23 @@ if not st.session_state.get("practice_started", False):
     if is_daily_sprint and daily_sprint_exam_name in exam_names:
         default_exam_index = exam_names.index(daily_sprint_exam_name)
 
+    if is_daily_sprint and daily_sprint_exam_name in exam_names:
+        sprint_domains = fetch_domains(daily_sprint_exam_name)
+        sprint_question_bank = fetch_question_bank(daily_sprint_exam_name, language_code)
+        if sprint_question_bank and maybe_auto_start_daily_sprint(
+            is_daily_sprint=is_daily_sprint,
+            daily_sprint_exam_name=daily_sprint_exam_name,
+            daily_sprint_category=daily_sprint_category,
+            premium=True,
+            exam_names=exam_names,
+            question_bank=sprint_question_bank,
+            domains=sprint_domains,
+            language_code=language_code,
+            session_state=st.session_state,
+            rerun_fn=st.rerun,
+        ):
+            st.stop()
+
     selected_exam = st.selectbox(
         "Choose certification",
         exam_names,
@@ -481,9 +609,7 @@ if not st.session_state.get("practice_started", False):
         st.error(f"No approved questions found for {display_by_exam.get(selected_exam, selected_exam)} in {language_label(language_code)}.")
         st.stop()
 
-    available_categories = [d for d in domains if any(q["category"] == d for q in question_bank)]
-    extra_categories = sorted({q["category"] for q in question_bank if q["category"] not in available_categories})
-    available_categories.extend(extra_categories)
+    available_categories = build_available_categories(domains, question_bank)
 
     default_category_index = 0
     if is_daily_sprint and daily_sprint_category in available_categories:
@@ -507,36 +633,16 @@ if not st.session_state.get("practice_started", False):
 
     start_label = "Start Daily Sprint" if is_daily_sprint else "Start Practice"
     if st.button(start_label, type="primary"):
-        category_questions = [q for q in question_bank if q["category"] == selected_category]
-        grouped = defaultdict(list)
-        for q in category_questions:
-            grouped[q["difficulty"]].append(q)
-        for difficulty in grouped:
-            random.shuffle(grouped[difficulty])
-
-        selected = []
-        while len(selected) < selected_count and sum(len(v) for v in grouped.values()) > 0:
-            for d in ["easy", "medium", "hard"] + [x for x in grouped.keys() if x not in {"easy", "medium", "hard"}]:
-                if len(selected) >= selected_count:
-                    break
-                if grouped.get(d):
-                    selected.append(grouped[d].pop())
-        random.shuffle(selected)
-        for q in selected:
-            random.shuffle(q["options"])
-
-        st.session_state.practice_questions = selected
-        st.session_state.practice_category = selected_category
-        st.session_state.practice_count = selected_count
-        st.session_state.practice_exam_name = selected_exam
-        st.session_state.practice_language_code = language_code
-        st.session_state.practice_mode_label = "Daily Sprint" if is_daily_sprint else "Practice by Category"
-        st.session_state.practice_started = True
-        st.session_state.practice_submitted = False
-        st.session_state.practice_current_index = 0
-        st.session_state.practice_answers = {}
-        st.session_state.practice_feedback_shown = False
-        st.session_state.practice_saved = False
+        selected = select_practice_questions(question_bank, selected_category, selected_count)
+        initialize_practice_session(
+            selected,
+            selected_category,
+            selected_count,
+            selected_exam,
+            language_code,
+            "Daily Sprint" if is_daily_sprint else "Practice by Category",
+            st.session_state,
+        )
         reset_practice_timing()
         st.rerun()
 
