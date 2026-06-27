@@ -1,4 +1,3 @@
-import json
 import random
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -17,6 +16,13 @@ from utils.access_control import (
 )
 
 from utils.version import APP_VERSION
+WEAK_AREAS_EVIDENCE_MODES = frozenset({
+    "Paid Mock Exam",
+    "Daily Sprint",
+    "Practice by Category",
+    "Weak Areas Practice",
+    "Free Mock Exam",
+})
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Weak Areas Practice", layout="wide", initial_sidebar_state="expanded")
@@ -133,6 +139,21 @@ def fetch_domains(exam_name):
 
 
 @st.cache_data(ttl=60)
+def fetch_question_attempts(user_email, exam_name, language_code):
+    if not user_email or not exam_name or not language_code:
+        return []
+    result = (
+        get_supabase_client().table("question_attempts")
+        .select("id,exam_attempt_id,question_id,category,is_correct,exam_name,language_code")
+        .eq("user_email", user_email)
+        .eq("exam_name", exam_name)
+        .eq("language_code", language_code)
+        .execute()
+    )
+    return result.data or []
+
+
+@st.cache_data(ttl=60)
 def fetch_attempts(user_email, exam_name, language_code):
     if not user_email or not exam_name or not language_code:
         return []
@@ -214,33 +235,52 @@ def fetch_question_bank(exam_name, language_code):
     return normalized
 
 
-def normalize_breakdown(value):
+def _parse_attempt_id(value):
     if value is None:
-        return {}
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            return {}
-    return {}
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
-def aggregate_domains(attempts):
+def filter_weak_areas_evidence_attempts(attempts):
+    """Keep completed activity attempts eligible for weak-area remediation evidence."""
+    filtered = []
+    for attempt in attempts or []:
+        mode = str(attempt.get("mode") or "").strip()
+        if mode not in WEAK_AREAS_EVIDENCE_MODES:
+            continue
+        if _parse_attempt_id(attempt.get("id")) is None:
+            continue
+        filtered.append(attempt)
+    return filtered
+
+
+def filter_weak_areas_question_attempts(attempts, question_attempts):
+    """Keep child rows linked to eligible attempts only."""
+    eligible_ids = {
+        attempt_id
+        for attempt_id in (_parse_attempt_id(attempt.get("id")) for attempt in filter_weak_areas_evidence_attempts(attempts))
+        if attempt_id is not None
+    }
+    if not eligible_ids:
+        return []
+    return [
+        row for row in (question_attempts or [])
+        if _parse_attempt_id(row.get("exam_attempt_id")) in eligible_ids
+    ]
+
+
+def aggregate_domains_from_evidence(attempts, question_attempts):
+    """Aggregate weak-domain stats from persisted question_attempt rows only."""
+    evidence_rows = filter_weak_areas_question_attempts(attempts, question_attempts)
     totals = defaultdict(lambda: {"correct": 0, "total": 0})
-    for attempt in attempts:
-        breakdown = normalize_breakdown(attempt.get("domain_breakdown"))
-        for name, data in breakdown.items():
-            if not isinstance(data, dict):
-                continue
-            correct = int(data.get("correct", 0) or 0)
-            total = int(data.get("total", 0) or 0)
-            if total <= 0:
-                continue
-            totals[name]["correct"] += correct
-            totals[name]["total"] += total
+    for row in evidence_rows:
+        name = str(row.get("category") or "Uncategorized")
+        totals[name]["total"] += 1
+        if bool(row.get("is_correct")):
+            totals[name]["correct"] += 1
 
     rows = []
     for name, data in totals.items():
@@ -248,6 +288,14 @@ def aggregate_domains(attempts):
         rows.append({"name": name, "correct": data["correct"], "total": data["total"], "accuracy": accuracy})
     rows.sort(key=lambda r: r["accuracy"])
     return rows
+
+
+def recommend_practice_categories(weak_domains, available_categories):
+    """Pick default domains for practice when evidence exists; otherwise first available."""
+    if not weak_domains:
+        return available_categories[:1]
+    recommended = [row["name"] for row in weak_domains[:2] if row["name"] in available_categories]
+    return recommended or available_categories[:1]
 
 
 def is_correct(user_ids, correct_ids):
@@ -507,6 +555,7 @@ if not st.session_state.get("weak_started", False):
     domains = fetch_domains(selected_exam)
     question_bank = fetch_question_bank(selected_exam, language_code)
     attempts = fetch_attempts(user_email, selected_exam, language_code)
+    question_attempts = fetch_question_attempts(user_email, selected_exam, language_code)
 
     if not question_bank:
         st.error(f"No approved questions found for {display_by_exam.get(selected_exam, selected_exam)} in {language_label(language_code)}.")
@@ -516,15 +565,15 @@ if not st.session_state.get("weak_started", False):
     extra_categories = sorted({q["category"] for q in question_bank if q["category"] not in available_categories})
     available_categories.extend(extra_categories)
 
-    weak_domains = aggregate_domains(attempts)
+    weak_domains = aggregate_domains_from_evidence(attempts, question_attempts)
     st.header("Build Practice from Your Weak Areas")
 
-    if not attempts or not weak_domains:
+    if not weak_domains:
         st.warning("No weak-area data found yet for this certification/language. Complete a mock exam or practice set first, or manually choose a domain.")
-        recommended_categories = available_categories[:1]
+        recommended_categories = recommend_practice_categories(weak_domains, available_categories)
     else:
-        recommended_categories = [r["name"] for r in weak_domains[:2] if r["name"] in available_categories] or available_categories[:1]
-        st.success("Your weakest domains were detected from saved attempts for this certification.")
+        recommended_categories = recommend_practice_categories(weak_domains, available_categories)
+        st.success("Your weakest domains were detected from saved question-level practice evidence for this certification.")
         st.subheader("Weakest Domains")
         st.dataframe(pd.DataFrame(weak_domains[:5]).rename(columns={"name": "Domain", "accuracy": "Accuracy %", "correct": "Correct", "total": "Total"}), use_container_width=True, hide_index=True)
 
