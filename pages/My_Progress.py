@@ -12,7 +12,11 @@ from utils.access_control import (
     has_premium_access,
     get_supabase_client,
 )
-from utils.readiness import calculate_readiness, readiness_methodology_text
+from utils.readiness import (
+    build_verified_mock_performance_metrics,
+    calculate_readiness,
+    readiness_methodology_text,
+)
 from utils.readiness_persistence import extract_captured_bank_size
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.version import APP_VERSION
@@ -329,33 +333,6 @@ VERIFIED_MOCK_PERFORMANCE_EMPTY_MESSAGE = (
 )
 
 
-def build_verified_mock_performance_metrics(
-    attempts: List[Dict[str, Any]],
-    expected_question_count: int = 60,
-) -> Dict[str, Any]:
-    """Summarize score metrics from readiness-eligible full paid mock attempts only."""
-    verified_attempts = filter_readiness_attempts(attempts, expected_question_count)
-    if not verified_attempts:
-        return {
-            "has_verified_mocks": False,
-            "latest_score": None,
-            "average_score": None,
-            "best_score": None,
-            "verified_mock_count": 0,
-            "trend_attempts": [],
-        }
-
-    scores = [_safe_float(attempt.get("score"), 0.0) for attempt in verified_attempts]
-    return {
-        "has_verified_mocks": True,
-        "latest_score": scores[0],
-        "average_score": round(sum(scores) / len(scores), 2),
-        "best_score": round(max(scores), 2),
-        "verified_mock_count": len(verified_attempts),
-        "trend_attempts": list(reversed(verified_attempts)),
-    }
-
-
 def build_attempt_history_rows(
     attempts: List[Dict[str, Any]],
     preferred_timezone: str,
@@ -600,7 +577,11 @@ else:
 
 st.divider()
 st.header(VERIFIED_MOCK_PERFORMANCE_HEADER)
-mock_performance = build_verified_mock_performance_metrics(attempts, expected_question_count)
+mock_performance = build_verified_mock_performance_metrics(
+    attempts,
+    question_attempts,
+    expected_question_count,
+)
 if not mock_performance["has_verified_mocks"]:
     st.info(VERIFIED_MOCK_PERFORMANCE_EMPTY_MESSAGE)
 else:
