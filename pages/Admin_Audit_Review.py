@@ -22,6 +22,13 @@ from utils.audit_review import (
     load_immutable_question_version,
     record_finding_decision,
 )
+from utils.publication_gate import (
+    PublicationGateError,
+    format_blocking_findings_summary,
+    format_publication_status_message,
+    get_publication_status,
+    publish_question_version,
+)
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.version import APP_VERSION
 
@@ -226,6 +233,47 @@ def _render_finding_detail(finding_id: str) -> None:
             "Immutable question version snapshot is unavailable. "
             "The page will not substitute the current live question."
         )
+
+    version_id = detail.get("target_question_version_id")
+    if version_id:
+        st.markdown("**Publication gate**")
+        try:
+            pub_status = get_publication_status(_client(), question_version_id=str(version_id))
+            if pub_status.get("publishable"):
+                st.success(format_publication_status_message(pub_status))
+            else:
+                st.error(format_publication_status_message(pub_status))
+                summary = format_blocking_findings_summary(pub_status)
+                if summary:
+                    st.caption(f"Blocking findings: {escape_review_text(summary)}")
+                st.caption(
+                    "Accepted findings remain blocking. Rejected or resolved findings release the gate."
+                )
+        except PublicationGateError as exc:
+            st.error(f"Could not load publication status: {escape_review_text(exc)}")
+
+        with st.expander("Manual publish attempt (admin only)"):
+            st.caption(
+                "Publication is enforced in the database. This action does not bypass the audit gate."
+            )
+            publish_reason = st.text_input(
+                "Publish reason",
+                key=f"audit_review_publish_reason_{finding_id}",
+            )
+            if st.button("Attempt publish", key=f"audit_review_publish_{finding_id}"):
+                reviewer_email = get_current_user_email()
+                try:
+                    publish_question_version(
+                        _client(),
+                        question_version_id=str(version_id),
+                        actor_email=reviewer_email or "",
+                        reason=publish_reason,
+                    )
+                    st.success("Version published successfully.")
+                    st.cache_data.clear()
+                    st.rerun()
+                except PublicationGateError as exc:
+                    st.error(escape_review_text(exc))
 
     references = contract.get("supporting_references") or detail.get("evidence") or []
     if references:
