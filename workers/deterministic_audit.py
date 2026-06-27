@@ -22,6 +22,7 @@ Finding codes
 
 from __future__ import annotations
 
+import re
 from typing import List
 
 from workers.finding_policy import normalize_deterministic_finding
@@ -93,6 +94,56 @@ def check_select_count(question: dict) -> List[dict]:
             metadata={"select_count": sc},
         )]
     return []
+
+
+_STEM_SELECT_PATTERN = re.compile(
+    r"\(\s*Select\s+(ONE|TWO|THREE|FOUR|FIVE)\s*\)",
+    re.IGNORECASE,
+)
+
+_STEM_WORD_TO_COUNT = {
+    "ONE": 1,
+    "TWO": 2,
+    "THREE": 3,
+    "FOUR": 4,
+    "FIVE": 5,
+}
+
+
+def check_stem_select_count(question: dict) -> List[dict]:
+    """STEM_COUNT_MISMATCH — stem (Select N) disagrees with select_count."""
+    if question.get("question_type") != "multiple":
+        return []
+
+    select_count = question.get("select_count")
+    if not isinstance(select_count, int):
+        return []
+
+    question_text = question.get("question_text") or ""
+    match = _STEM_SELECT_PATTERN.search(question_text)
+    if not match:
+        return []
+
+    expected_count = _STEM_WORD_TO_COUNT[match.group(1).upper()]
+    if select_count == expected_count:
+        return []
+
+    return [_finding(
+        finding_code="STEM_COUNT_MISMATCH",
+        finding_type="correctness",
+        severity="critical",
+        title="Stem select count does not match select_count",
+        description=(
+            f"Stem requires Select {match.group(1).upper()} ({expected_count}), "
+            f"but select_count is {select_count}."
+        ),
+        field_path="question.select_count",
+        metadata={
+            "select_count": select_count,
+            "stem_required_count": expected_count,
+            "stem_token": match.group(1).upper(),
+        },
+    )]
 
 
 def check_option_count(question: dict) -> List[dict]:
@@ -305,6 +356,7 @@ def check_display_order(question: dict) -> List[dict]:
 _CHECKS = [
     check_question_text,
     check_select_count,
+    check_stem_select_count,
     check_option_count,
     check_empty_option_text,
     check_duplicate_option_labels,
@@ -317,7 +369,7 @@ _CHECKS = [
 ]
 
 _FINDING_CODES = frozenset(
-    "EMPTY_QUESTION_TEXT INVALID_SELECT_COUNT TOO_FEW_OPTIONS "
+    "EMPTY_QUESTION_TEXT INVALID_SELECT_COUNT STEM_COUNT_MISMATCH TOO_FEW_OPTIONS "
     "EMPTY_OPTION_TEXT DUPLICATE_OPTION_LABELS DUPLICATE_OPTION_TEXT "
     "CORRECT_COUNT_MISMATCH MISSING_EXPLANATION SINGLE_SELECT_COUNT_MISMATCH "
     "DUPLICATE_CORRECT_OPTIONS OPTION_DISPLAY_ORDER_ISSUES".split()
