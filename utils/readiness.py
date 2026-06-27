@@ -502,6 +502,64 @@ def filter_verified_mock_attempts(
     ]
 
 
+def filter_verified_question_attempts(
+    attempts: List[Dict[str, Any]],
+    question_attempts: List[Dict[str, Any]],
+    expected_question_count: int = 60,
+) -> List[Dict[str, Any]]:
+    """Return child question rows linked to VERIFIED paid mock attempts only."""
+    graded = v5_grade_all_attempts(attempts, question_attempts, expected_question_count)
+    verified_ids = {attempt_id for attempt_id in (graded.get("verified_ids") or []) if attempt_id is not None}
+    if not verified_ids:
+        return []
+    filtered: List[Dict[str, Any]] = []
+    for row in question_attempts or []:
+        exam_attempt_id = _v5_parse_strict_int(row.get("exam_attempt_id"))
+        if exam_attempt_id in verified_ids:
+            filtered.append(row)
+    return filtered
+
+
+def build_verified_domain_table_rows(
+    attempts: List[Dict[str, Any]],
+    question_attempts: List[Dict[str, Any]],
+    expected_question_count: int = 60,
+) -> List[Dict[str, Any]]:
+    """Build Weak Areas by Domain rows from verified question attempts only."""
+    verified_qa = filter_verified_question_attempts(
+        attempts,
+        question_attempts,
+        expected_question_count,
+    )
+    if not verified_qa:
+        return []
+
+    stats = _build_domain_stats(verified_qa, [])
+    rows: List[Dict[str, Any]] = []
+    for name, data in stats.items():
+        total = _safe_float(data.get("total"), 0.0)
+        correct = _safe_float(data.get("correct"), 0.0)
+        rows.append(
+            {
+                "Domain": name,
+                "Correct": int(correct),
+                "Total": int(total),
+                "Accuracy %": round((correct / total) * 100, 2) if total > 0 else 0.0,
+            }
+        )
+    rows.sort(key=lambda row: row["Accuracy %"])
+    return rows
+
+
+def select_weakest_verified_domain(
+    domain_rows: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Return the lowest-accuracy domain row from build_verified_domain_table_rows output."""
+    if not domain_rows:
+        return None
+    return domain_rows[0]
+
+
 def build_verified_mock_performance_metrics(
     attempts: List[Dict[str, Any]],
     question_attempts: List[Dict[str, Any]],

@@ -13,9 +13,11 @@ from utils.access_control import (
     get_supabase_client,
 )
 from utils.readiness import (
+    build_verified_domain_table_rows,
     build_verified_mock_performance_metrics,
     calculate_readiness,
     readiness_methodology_text,
+    select_weakest_verified_domain,
 )
 from utils.readiness_persistence import extract_captured_bank_size
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
@@ -267,35 +269,6 @@ def get_correct_count(attempt: Dict[str, Any]) -> int:
     return _safe_int(attempt.get("correct_count"), 0)
 
 
-def build_domain_table(attempts: List[Dict[str, Any]]) -> pd.DataFrame:
-    totals: Dict[str, Dict[str, float]] = {}
-    for attempt in attempts:
-        breakdown = normalize_breakdown(attempt.get("domain_breakdown"))
-        for name, data in breakdown.items():
-            if not isinstance(data, dict):
-                continue
-            correct = _safe_float(data.get("correct"), 0.0)
-            total = _safe_float(data.get("total"), 0.0)
-            if total <= 0:
-                continue
-            if name not in totals:
-                totals[name] = {"correct": 0.0, "total": 0.0}
-            totals[name]["correct"] += correct
-            totals[name]["total"] += total
-
-    rows = []
-    for name, data in totals.items():
-        total = data["total"]
-        correct = data["correct"]
-        accuracy = round((correct / total) * 100, 2) if total else 0.0
-        rows.append({"Domain": name, "Correct": int(correct), "Total": int(total), "Accuracy %": accuracy})
-
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.sort_values("Accuracy %", ascending=True)
-    return df
-
-
 def paid_full_mock_count(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> int:
     count = 0
     for attempt in attempts or []:
@@ -330,6 +303,11 @@ VERIFIED_MOCK_PERFORMANCE_EMPTY_MESSAGE = (
     "No verified full paid mock exams yet. Complete a full paid mock exam to see Latest, "
     "Average, and Best scores here. Daily Sprint and other practice sessions remain "
     "visible in Attempt History below."
+)
+VERIFIED_DOMAIN_EMPTY_MESSAGE = (
+    "No verified mock domain evidence yet. Complete a full paid mock exam with saved "
+    "question-level results to see Weak Areas by Domain. Daily Sprint, practice sessions, "
+    "and legacy mock summaries are excluded from this section."
 )
 
 
@@ -606,14 +584,20 @@ else:
 
 st.divider()
 st.header("Weak Areas by Domain")
-domain_df = build_domain_table(attempts)
-if domain_df.empty:
-    st.warning("No domain breakdown data saved yet. Future exam attempts should save domain_breakdown for stronger readiness scoring.")
+domain_rows = build_verified_domain_table_rows(
+    attempts,
+    question_attempts,
+    expected_question_count,
+)
+if not domain_rows:
+    st.info(VERIFIED_DOMAIN_EMPTY_MESSAGE)
 else:
+    domain_df = pd.DataFrame(domain_rows)
     st.dataframe(domain_df, use_container_width=True, hide_index=True)
     st.bar_chart(domain_df.set_index("Domain")["Accuracy %"])
-    weakest = domain_df.iloc[0]
-    st.info(f"Weakest domain: {weakest['Domain']} ({weakest['Accuracy %']}%)")
+    weakest = select_weakest_verified_domain(domain_rows)
+    if weakest is not None:
+        st.info(f"Weakest domain: {weakest['Domain']} ({weakest['Accuracy %']}%)")
 
 st.divider()
 st.header("Attempt History")
