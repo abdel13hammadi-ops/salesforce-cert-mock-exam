@@ -14,6 +14,7 @@ from utils.question_answer_key import (
     is_answer_correct,
     is_answer_key_valid,
     is_multiple_select,
+    reconcile_multi_select_selection,
     resolve_required_select_count,
     validate_question_answer_key,
 )
@@ -81,6 +82,7 @@ class TestQuestionAnswerKey(unittest.TestCase):
         self.assertTrue(is_multiple_select(question))
         self.assertEqual(resolve_required_select_count(question), 2)
         self.assertEqual(get_correct_selection(question), ["1", "3"])
+        self.assertEqual(reconcile_multi_select_selection(["1", "3", "4"], ["1", "3"], 2), ["1", "3"])
         self.assertEqual(cap_multi_select_selection(["1", "3", "4"], 2), ["1", "3"])
 
     def test_valid_select_three(self):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from workers.deterministic_audit import (
     check_correct_count,
@@ -117,6 +117,163 @@ def is_answer_correct(user_selection: Any, question: Dict[str, Any]) -> bool:
 
 def cap_multi_select_selection(selected: List[Any], required_count: int) -> List[Any]:
     """Keep at most the canonical number of multi-select answers."""
+    return reconcile_multi_select_selection(selected, [], required_count)
+
+
+def _dedupe_selection(values: List[Any]) -> List[str]:
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for value in values or []:
+        normalized = str(value)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def normalize_option_entries(options: List[Any]) -> List[Dict[str, str]]:
+    """Normalize exam text options and practice dict options to a shared shape."""
+    if not options:
+        return []
+    if isinstance(options[0], str):
+        return [{"id": text, "label": text} for text in options]
+    entries: List[Dict[str, str]] = []
+    for opt in options:
+        if isinstance(opt, dict):
+            option_id = opt.get("id", opt.get("text") or opt.get("option_text"))
+            label = opt.get("text") or opt.get("option_text") or str(option_id)
+        else:
+            option_id = opt
+            label = str(opt)
+        entries.append({"id": str(option_id), "label": str(label)})
+    return entries
+
+
+def reconcile_multi_select_selection(
+    checked_ids: List[Any],
+    previous_ids: List[Any],
+    required_count: int,
+) -> List[str]:
+    """Keep at most required_count selections, rejecting new extras over a valid prior set."""
     if required_count < 1:
         return []
-    return list(selected or [])[:required_count]
+
+    checked = _dedupe_selection(checked_ids)
+    previous = _dedupe_selection(previous_ids)
+
+    if len(checked) <= required_count:
+        return checked
+
+    previous_set = set(previous)
+    if (
+        len(previous) <= required_count
+        and len(previous) > 0
+        and previous_set.issubset(set(checked))
+        and len(checked) > len(previous)
+    ):
+        return previous
+
+    return checked[:required_count]
+
+
+def build_multi_select_checkbox_plan(
+    options: List[Any],
+    selected_ids: List[Any],
+    required_count: int,
+) -> List[Dict[str, Any]]:
+    """Return per-option checkbox metadata for enforcing the selection cap in the UI."""
+    selected = set(_dedupe_selection(selected_ids))
+    at_limit = len(selected) >= required_count
+    plan: List[Dict[str, Any]] = []
+    for entry in normalize_option_entries(options):
+        checked = entry["id"] in selected
+        plan.append(
+            {
+                "id": entry["id"],
+                "label": entry["label"],
+                "checked": checked,
+                "disabled": at_limit and not checked,
+            }
+        )
+    return plan
+
+
+def _checkbox_widget_key(key_prefix: str, option_id: str) -> str:
+    return f"{key_prefix}_{option_id}"
+
+
+def read_multi_select_widget_selection(
+    session_state: Any,
+    key_prefix: str,
+    options: List[Any],
+) -> List[str]:
+    selected: List[str] = []
+    for entry in normalize_option_entries(options):
+        if session_state.get(_checkbox_widget_key(key_prefix, entry["id"])):
+            selected.append(entry["id"])
+    return selected
+
+
+def sync_multi_select_widget_selection(
+    session_state: Any,
+    key_prefix: str,
+    options: List[Any],
+    selected_ids: List[Any],
+) -> None:
+    selected = set(_dedupe_selection(selected_ids))
+    for entry in normalize_option_entries(options):
+        session_state[_checkbox_widget_key(key_prefix, entry["id"])] = entry["id"] in selected
+
+
+def apply_multi_select_answer_ui(
+    question: Dict[str, Any],
+    *,
+    previous_selection: List[Any],
+    key_prefix: str,
+    session_state: Any,
+    checkbox_fn: Callable[..., bool],
+    warning_fn: Optional[Callable[[str], Any]] = None,
+    limit_message_fn: Optional[Callable[[int], Any]] = None,
+) -> List[str]:
+    """Render capped multi-select checkboxes and return the canonical stored selection."""
+    required_count = resolve_required_select_count(question)
+    options = question.get("options") or []
+    previous_ids = reconcile_multi_select_selection(
+        previous_selection or [],
+        previous_selection or [],
+        required_count,
+    )
+
+    # Streamlit checkbox widget keys outlive capped answer lists; align widgets first.
+    sync_multi_select_widget_selection(session_state, key_prefix, options, previous_ids)
+
+    widget_checked = read_multi_select_widget_selection(session_state, key_prefix, options)
+    rejected_extra = len(widget_checked) > required_count
+    if rejected_extra:
+        sync_multi_select_widget_selection(session_state, key_prefix, options, previous_ids)
+
+    if warning_fn is not None:
+        warning_fn(f"Choose {required_count} answers.")
+
+    plan = build_multi_select_checkbox_plan(options, previous_ids, required_count)
+    checked_now: List[str] = []
+    for item in plan:
+        if checkbox_fn(
+            item["label"],
+            value=bool(session_state.get(_checkbox_widget_key(key_prefix, item["id"]), item["checked"])),
+            disabled=item["disabled"],
+            key=_checkbox_widget_key(key_prefix, item["id"]),
+        ):
+            checked_now.append(item["id"])
+
+    reconciled = reconcile_multi_select_selection(checked_now, previous_ids, required_count)
+    if reconciled != checked_now:
+        rejected_extra = True
+
+    sync_multi_select_widget_selection(session_state, key_prefix, options, reconciled)
+
+    if rejected_extra and limit_message_fn is not None:
+        limit_message_fn(required_count)
+
+    return reconciled

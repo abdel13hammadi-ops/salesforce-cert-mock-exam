@@ -1903,21 +1903,22 @@ elif not st.session_state.submitted:
         st.subheader(q["question"])
 
         from utils.question_answer_key import (
-            cap_multi_select_selection,
+            apply_multi_select_answer_ui,
             is_multiple_select,
-            resolve_required_select_count,
         )
 
         if is_multiple_select(q):
-            required_count = resolve_required_select_count(q)
-            st.warning(f"Choose {required_count} answers.")
-            selected_answers = []
-            previous_answers = st.session_state.answers.get(q_index, [])
-            for option in options:
-                checked = option in previous_answers
-                if st.checkbox(option, value=checked, key=f"q_{q_index}_{option}"):
-                    selected_answers.append(option)
-            selected_answers = cap_multi_select_selection(selected_answers, required_count)
+            selected_answers = apply_multi_select_answer_ui(
+                q,
+                previous_selection=st.session_state.answers.get(q_index, []),
+                key_prefix=f"q_{q_index}",
+                session_state=st.session_state,
+                checkbox_fn=st.checkbox,
+                warning_fn=st.warning,
+                limit_message_fn=lambda count: st.info(
+                    f"You can only select {count} answers. Deselect an option to choose a different one."
+                ),
+            )
             if selected_answers:
                 st.session_state.answers[q_index] = selected_answers
             elif q_index in st.session_state.answers:

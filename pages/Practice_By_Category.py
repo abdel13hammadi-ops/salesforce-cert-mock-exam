@@ -15,11 +15,17 @@ from utils.access_control import (
 )
 
 from utils.question_answer_key import (
-    cap_multi_select_selection,
+    apply_multi_select_answer_ui,
     is_answer_correct,
     is_answer_key_valid,
     is_multiple_select,
-    resolve_required_select_count,
+)
+from utils.practice_session_persistence import (
+    capture_option_orders,
+    clear_category_practice_state,
+    decode_pending_category_practice_state,
+    persist_category_practice_state,
+    restore_category_practice_session,
 )
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 DAILY_SPRINT_QUESTION_COUNT = 10
@@ -140,13 +146,18 @@ def initialize_practice_session(
     mode_label,
     session_state,
 ):
+    from utils.practice_session_persistence import capture_option_orders, clear_category_practice_state
+
+    clear_category_practice_state()
     session_state["practice_questions"] = selected
+    session_state["practice_option_orders"] = capture_option_orders(selected)
     session_state["practice_category"] = selected_category
     session_state["practice_count"] = selected_count
     session_state["practice_exam_name"] = selected_exam
     session_state["practice_language_code"] = language_code
     session_state["practice_mode_label"] = mode_label
     session_state["practice_started"] = True
+    session_state["practice_started_at"] = time.time()
     session_state["practice_submitted"] = False
     session_state["practice_current_index"] = 0
     session_state["practice_answers"] = {}
@@ -369,11 +380,16 @@ def fetch_question_bank(exam_name, language_code):
 
 
 def reset_practice():
+    from utils.practice_session_persistence import clear_category_practice_state
+
+    clear_category_practice_state()
     keys = [
         "practice_started", "practice_submitted", "practice_current_index", "practice_questions",
         "practice_answers", "practice_feedback_shown", "practice_saved", "practice_category",
         "practice_count", "practice_exam_name", "practice_language_code", "practice_mode_label",
+        "practice_option_orders", "practice_started_at",
         "practice_question_time_spent", "practice_question_entered_at", "practice_timing_index",
+        "_category_practice_restored_once",
         DAILY_SPRINT_AUTO_START_GUARD,
     ]
     for key in keys:
@@ -608,8 +624,41 @@ if not certifications:
     st.info("Admin setup required: add active rows in the certifications table.")
     st.stop()
 
+def maybe_restore_category_practice(user_email, language_code):
+    if st.session_state.get("practice_started") or st.session_state.get("_category_practice_restored_once"):
+        return False
+
+    pending = st.session_state.get("_pending_category_practice_state")
+    if pending is None:
+        pending = decode_pending_category_practice_state()
+    if not pending:
+        return False
+
+    exam_name = pending.get("exam_name")
+    restore_language = pending.get("language_code") or language_code
+    if not exam_name:
+        clear_category_practice_state()
+        return False
+
+    question_bank = fetch_question_bank(exam_name, restore_language)
+    if restore_category_practice_session(pending, question_bank, user_email, st.session_state):
+        st.session_state.pop("_pending_category_practice_state", None)
+        return True
+
+    clear_category_practice_state()
+    st.session_state.pop("_pending_category_practice_state", None)
+    return False
+
+
+pending_category_practice_state = decode_pending_category_practice_state()
+if pending_category_practice_state and "_pending_category_practice_state" not in st.session_state:
+    st.session_state["_pending_category_practice_state"] = pending_category_practice_state
+
 exam_names = [c["exam_name"] for c in certifications if c.get("exam_name")]
 display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications if c.get("exam_name")}
+
+if maybe_restore_category_practice(user_email, language_code):
+    st.rerun()
 
 if not st.session_state.get("practice_started", False):
     default_exam_index = 0
@@ -677,6 +726,7 @@ if not st.session_state.get("practice_started", False):
 
     start_label = "Start Daily Sprint" if is_daily_sprint else "Start Practice"
     if st.button(start_label, type="primary"):
+        clear_category_practice_state()
         selected = select_practice_questions(question_bank, selected_category, selected_count)
         initialize_practice_session(
             selected,
@@ -705,14 +755,21 @@ elif not st.session_state.get("practice_submitted", False):
 
     previous_answer = st.session_state.get("practice_answers", {}).get(index, [])
     if is_multiple_select(q):
-        required_count = resolve_required_select_count(q)
-        st.warning(f"Choose {required_count} answers.")
-        selected_ids = []
-        previous_answer = st.session_state.get("practice_answers", {}).get(index, [])
-        for opt in q["options"]:
-            if st.checkbox(opt["text"], value=opt["id"] in previous_answer, key=f"practice_{index}_{opt['id']}"):
-                selected_ids.append(opt["id"])
-        st.session_state.practice_answers[index] = cap_multi_select_selection(selected_ids, required_count)
+        selected_ids = apply_multi_select_answer_ui(
+            q,
+            previous_selection=previous_answer,
+            key_prefix=f"practice_{index}",
+            session_state=st.session_state,
+            checkbox_fn=st.checkbox,
+            warning_fn=st.warning,
+            limit_message_fn=lambda count: st.info(
+                f"You can only select {count} answers. Deselect an option to choose a different one."
+            ),
+        )
+        if selected_ids:
+            st.session_state.practice_answers[index] = selected_ids
+        elif index in st.session_state.get("practice_answers", {}):
+            del st.session_state.practice_answers[index]
     else:
         option_texts = [opt["text"] for opt in q["options"]]
         id_by_text = {opt["text"]: opt["id"] for opt in q["options"]}
@@ -741,6 +798,7 @@ elif not st.session_state.get("practice_submitted", False):
             if st.button("Finish Practice"):
                 record_current_practice_time()
                 st.session_state.practice_submitted = True
+                clear_category_practice_state()
                 st.rerun()
 
     if st.session_state.get("practice_feedback_shown", False):
@@ -755,6 +813,8 @@ elif not st.session_state.get("practice_submitted", False):
         st.write("Your answer: " + (", ".join(selected_texts) if selected_texts else "No answer selected"))
         st.write("Correct answer: " + ", ".join(correct_texts))
         st.info(q["explanation"])
+
+    persist_category_practice_state(st.session_state, user_email)
 
     st.divider()
     if st.button("Start New Practice"):
@@ -774,6 +834,7 @@ else:
         try:
             save_practice_attempt(score, correct, total, st.session_state.practice_category, domain_breakdown, difficulty_breakdown, st.session_state.practice_exam_name, st.session_state.practice_language_code)
             st.session_state.practice_saved = True
+            clear_category_practice_state()
             st.success("Practice attempt saved to progress tracking ✅")
         except Exception as exc:
             st.warning(f"Practice completed, but saving to progress tracking failed: {exc}")

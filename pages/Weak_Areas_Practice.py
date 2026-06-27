@@ -16,11 +16,17 @@ from utils.access_control import (
 )
 
 from utils.question_answer_key import (
-    cap_multi_select_selection,
+    apply_multi_select_answer_ui,
     is_answer_correct,
     is_answer_key_valid,
     is_multiple_select,
-    resolve_required_select_count,
+)
+from utils.practice_session_persistence import (
+    capture_option_orders,
+    clear_weak_practice_state,
+    decode_pending_weak_practice_state,
+    persist_weak_practice_state,
+    restore_weak_practice_session,
 )
 from utils.version import APP_VERSION
 WEAK_AREAS_EVIDENCE_MODES = frozenset({
@@ -450,10 +456,13 @@ def save_weak_attempt(score, correct, total, category_label, domain_breakdown, d
 
 
 def reset_weak():
+    clear_weak_practice_state()
     for key in [
         "weak_started", "weak_submitted", "weak_current_index", "weak_answers", "weak_feedback_shown",
         "weak_saved", "weak_questions", "weak_categories", "weak_exam_name", "weak_language_code",
+        "weak_option_orders", "weak_started_at",
         "weak_question_time_spent", "weak_question_entered_at", "weak_timing_index",
+        "_weak_practice_restored_once",
     ]:
         st.session_state.pop(key, None)
     st.rerun()
@@ -554,8 +563,41 @@ if not certifications:
     st.info("Admin setup required: add active rows in the certifications table.")
     st.stop()
 
+def maybe_restore_weak_practice(user_email, language_code):
+    if st.session_state.get("weak_started") or st.session_state.get("_weak_practice_restored_once"):
+        return False
+
+    pending = st.session_state.get("_pending_weak_practice_state")
+    if pending is None:
+        pending = decode_pending_weak_practice_state()
+    if not pending:
+        return False
+
+    exam_name = pending.get("exam_name")
+    restore_language = pending.get("language_code") or language_code
+    if not exam_name:
+        clear_weak_practice_state()
+        return False
+
+    question_bank = fetch_question_bank(exam_name, restore_language)
+    if restore_weak_practice_session(pending, question_bank, user_email, st.session_state):
+        st.session_state.pop("_pending_weak_practice_state", None)
+        return True
+
+    clear_weak_practice_state()
+    st.session_state.pop("_pending_weak_practice_state", None)
+    return False
+
+
+pending_weak_practice_state = decode_pending_weak_practice_state()
+if pending_weak_practice_state and "_pending_weak_practice_state" not in st.session_state:
+    st.session_state["_pending_weak_practice_state"] = pending_weak_practice_state
+
 exam_names = [c["exam_name"] for c in certifications if c.get("exam_name")]
 display_by_exam = {c["exam_name"]: c.get("display_name") or c["exam_name"] for c in certifications if c.get("exam_name")}
+
+if maybe_restore_weak_practice(user_email, language_code):
+    st.rerun()
 
 if not st.session_state.get("weak_started", False):
     selected_exam = st.selectbox(
@@ -596,6 +638,7 @@ if not st.session_state.get("weak_started", False):
         if not selected_categories:
             st.error("Choose at least one category.")
             st.stop()
+        clear_weak_practice_state()
         selected_questions = choose_questions(question_bank, selected_categories, int(question_count))
         if not selected_questions:
             st.error("No questions found for these settings.")
@@ -603,10 +646,12 @@ if not st.session_state.get("weak_started", False):
         for q in selected_questions:
             random.shuffle(q["options"])
         st.session_state.weak_questions = selected_questions
+        st.session_state.weak_option_orders = capture_option_orders(selected_questions)
         st.session_state.weak_categories = selected_categories
         st.session_state.weak_exam_name = selected_exam
         st.session_state.weak_language_code = language_code
         st.session_state.weak_started = True
+        st.session_state.weak_started_at = time.time()
         st.session_state.weak_submitted = False
         st.session_state.weak_current_index = 0
         st.session_state.weak_answers = {}
@@ -629,14 +674,19 @@ elif not st.session_state.get("weak_submitted", False):
     st.subheader(q["question"])
 
     current_answer = st.session_state.get("weak_answers", {}).get(q_index, [])
-    selected_ids = []
+    selected_ids: list = []
     if is_multiple_select(q):
-        required_count = resolve_required_select_count(q)
-        st.warning(f"Choose {required_count} answers.")
-        for opt in q["options"]:
-            if st.checkbox(opt["text"], value=opt["id"] in current_answer, key=f"weak_{q_index}_{opt['id']}"):
-                selected_ids.append(opt["id"])
-        selected_ids = cap_multi_select_selection(selected_ids, required_count)
+        selected_ids = apply_multi_select_answer_ui(
+            q,
+            previous_selection=current_answer,
+            key_prefix=f"weak_{q_index}",
+            session_state=st.session_state,
+            checkbox_fn=st.checkbox,
+            warning_fn=st.warning,
+            limit_message_fn=lambda count: st.info(
+                f"You can only select {count} answers. Deselect an option to choose a different one."
+            ),
+        )
     else:
         option_labels = [opt["text"] for opt in q["options"]]
         id_by_text = {opt["text"]: opt["id"] for opt in q["options"]}
@@ -669,6 +719,7 @@ elif not st.session_state.get("weak_submitted", False):
             if st.button("Submit Practice", type="primary"):
                 record_current_weak_time()
                 st.session_state.weak_submitted = True
+                clear_weak_practice_state()
                 st.rerun()
 
     if st.session_state.get("weak_feedback_shown", False):
@@ -682,6 +733,8 @@ elif not st.session_state.get("weak_submitted", False):
         st.write("Your answer: " + (", ".join(selected_texts) if selected_texts else "No answer selected"))
         st.write("Correct answer: " + ", ".join(correct_texts))
         st.info(q["explanation"])
+
+    persist_weak_practice_state(st.session_state, user_email)
 
 else:
     questions = st.session_state.weak_questions
@@ -704,6 +757,7 @@ else:
         try:
             save_weak_attempt(score, correct, total, category_label, domain_breakdown, difficulty_breakdown, st.session_state.weak_exam_name, st.session_state.weak_language_code)
             st.session_state.weak_saved = True
+            clear_weak_practice_state()
             st.success("Weak areas practice attempt saved to progress tracking ✅")
         except Exception as exc:
             st.error(f"Practice result was calculated, but saving to Supabase failed: {exc}")
