@@ -312,6 +312,7 @@ def make_deterministic_audit_handler(client) -> Callable[..., dict]:
             resource_snapshot=resource_snapshot,
             metadata=metadata,
             check_fn=lambda: run_deterministic_checks(question, ruleset_version),
+            question_snapshot=question,
         )
 
     handle.__name__ = "handle_deterministic_audit"
@@ -397,6 +398,7 @@ def make_llm_audit_handler(client, llm_provider=None) -> Callable[..., dict]:
 
         # Closure captures token info filled by the provider call.
         token_info: dict = {}
+        provider_info: dict = {}
 
         def check_fn() -> list:
             response = llm_provider(
@@ -414,6 +416,7 @@ def make_llm_audit_handler(client, llm_provider=None) -> Callable[..., dict]:
             token_info["output_tokens"]       = response.output_tokens
             token_info["actual_cost_usd"]     = response.actual_cost_usd
             token_info["provider_request_id"] = response.provider_request_id
+            provider_info["provider_request_id"] = response.provider_request_id
             # Validate and normalise the provider's JSON payload.
             return validate_llm_response(response.parsed_response)
 
@@ -427,6 +430,10 @@ def make_llm_audit_handler(client, llm_provider=None) -> Callable[..., dict]:
             resource_snapshot=resource_snapshot,
             metadata=metadata,
             check_fn=check_fn,
+            question_snapshot=question if isinstance(question, dict) else None,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            provider_info=provider_info,
         )
 
         return {
@@ -531,6 +538,7 @@ def make_hybrid_audit_handler(client, llm_provider=None) -> Callable[..., dict]:
 
         # Closure captures token info written by the provider call.
         token_info: dict = {}
+        provider_info: dict = {}
 
         def check_fn() -> list:
             # Step 1: deterministic checks (designed never to raise).
@@ -552,6 +560,7 @@ def make_hybrid_audit_handler(client, llm_provider=None) -> Callable[..., dict]:
             token_info["output_tokens"]       = response.output_tokens
             token_info["actual_cost_usd"]     = response.actual_cost_usd
             token_info["provider_request_id"] = response.provider_request_id
+            provider_info["provider_request_id"] = response.provider_request_id
 
             # Step 3: validate LLM response.
             llm_findings = validate_llm_response(response.parsed_response)
@@ -569,6 +578,10 @@ def make_hybrid_audit_handler(client, llm_provider=None) -> Callable[..., dict]:
             resource_snapshot=resource_snapshot,
             metadata=metadata,
             check_fn=check_fn,
+            question_snapshot=question,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            provider_info=provider_info,
         )
 
         return {

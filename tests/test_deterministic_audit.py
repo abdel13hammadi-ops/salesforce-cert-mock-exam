@@ -588,12 +588,24 @@ class TestOrchestrateAudit(unittest.TestCase):
             }
         ]
         fake = self._make_client()
-        orchestrate_audit(fake, **self._base_kwargs(lambda: findings))
+        orchestrate_audit(
+            fake,
+            **self._base_kwargs(lambda: findings),
+            question_snapshot={"question_id": "cccccccc-0000-0000-0000-000000000001"},
+        )
 
         complete_calls = fake.calls_for("complete_audit_run_v1")
         self.assertEqual(len(complete_calls), 1)
         sent_findings = complete_calls[0]["params"]["p_findings"]
-        self.assertEqual(sent_findings, findings)
+        self.assertEqual(len(sent_findings), 1)
+        sent = sent_findings[0]
+        self.assertEqual(sent["finding_code"], findings[0]["finding_code"])
+        self.assertEqual(sent["description"], findings[0]["description"])
+        self.assertIn("evidence_contract", sent["metadata"])
+        self.assertEqual(
+            sent["metadata"]["evidence_contract"]["question_version_id"],
+            _QUESTION_VSID,
+        )
 
     # ---- failure after creation calls end_audit_run_v1 ----
 

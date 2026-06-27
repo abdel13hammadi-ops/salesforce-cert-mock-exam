@@ -61,6 +61,10 @@ def orchestrate_audit(
     resource_snapshot: Optional[dict],
     metadata: Optional[dict],
     check_fn: Callable[[], List[dict]],
+    question_snapshot: Optional[dict] = None,
+    model_name: Optional[str] = None,
+    prompt_version: Optional[str] = None,
+    provider_info: Optional[dict] = None,
 ) -> Dict[str, object]:
     """Manage one audit run lifecycle.
 
@@ -83,6 +87,12 @@ def orchestrate_audit(
     check_fn:
         Zero-argument callable that executes the audit engine and returns
         a list of finding dicts compatible with ``complete_audit_run_v1``.
+    question_snapshot:
+        Optional immutable question snapshot used to anchor evidence contracts.
+    model_name / prompt_version / provider_info:
+        Optional LLM provenance attached to evidence contracts.  Handlers may
+        populate ``provider_info`` from inside ``check_fn`` (e.g. provider
+        request id) before evidence attachment runs.
 
     Returns
     -------
@@ -115,6 +125,11 @@ def orchestrate_audit(
     )
 
     # ---- Step 2: execute the audit engine ----
+    from workers.audit_evidence_contract import (  # noqa: PLC0415
+        AuditEvidenceContext,
+        attach_evidence_contracts,
+    )
+
     try:
         findings = check_fn()
     except Exception as exc:
@@ -140,6 +155,19 @@ def orchestrate_audit(
                 "end_audit_run_v1 also failed: audit_run_id=%s", audit_run_id
             )
         raise  # re-raise the original check_fn exception
+
+    evidence_context = AuditEvidenceContext.from_orchestration(
+        audit_type=audit_type,
+        target_question_version_id=target_question_version_id,
+        target_candidate_id=target_candidate_id,
+        ruleset_version=ruleset_version,
+        question_snapshot=question_snapshot,
+        model_name=model_name,
+        prompt_version=prompt_version,
+        provider_request_id=(provider_info or {}).get("provider_request_id"),
+        run_metadata=metadata,
+    )
+    findings = attach_evidence_contracts(findings, evidence_context)
 
     # ---- Step 3: complete the run ----
     complete_row = _call_rpc(
