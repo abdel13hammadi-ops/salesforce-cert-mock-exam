@@ -1,7 +1,6 @@
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -20,7 +19,9 @@ from utils.readiness import (
     select_weakest_verified_domain,
 )
 from utils.readiness_persistence import extract_captured_bank_size
+from utils.datetime_display import DEFAULT_DISPLAY_TIMEZONE, format_user_datetime
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
+from utils.user_errors import PROGRESS_LOAD_ERROR_MESSAGE, log_and_get_user_message
 from utils.version import APP_VERSION
 
 st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
@@ -74,26 +75,6 @@ def _parse_dt(value: Any) -> datetime:
         return parsed.astimezone(timezone.utc)
     except Exception:
         return datetime.min.replace(tzinfo=timezone.utc)
-
-
-def format_user_datetime(value: Any, preferred_timezone: str = "UTC") -> str:
-    if not value:
-        return "Not recorded"
-
-    parsed = _parse_dt(value)
-    if parsed == datetime.min.replace(tzinfo=timezone.utc):
-        return str(value)
-
-    tz_name = str(preferred_timezone or "UTC").strip() or "UTC"
-    try:
-        user_tz = ZoneInfo(tz_name)
-    except Exception:
-        user_tz = timezone.utc
-        tz_name = "UTC"
-
-    local_dt = parsed.astimezone(user_tz)
-    # Example: Jun 17, 2026, 12:06 AM EDT
-    return local_dt.strftime("%b %d, %Y, %I:%M %p %Z").replace(", 0", ", ", 1)
 
 
 def sort_attempts(attempts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -215,7 +196,8 @@ def load_attempts(user_email: str, exam_name: str | None = None) -> Dict[str, An
         result = query.execute()
         return {"rows": sort_attempts(result.data or []), "error": None}
     except Exception as exc:
-        return {"rows": [], "error": str(exc)}
+        log_and_get_user_message("load_attempts failed", PROGRESS_LOAD_ERROR_MESSAGE, exc=exc)
+        return {"rows": [], "error": PROGRESS_LOAD_ERROR_MESSAGE}
 
 
 @st.cache_data(ttl=60)
@@ -238,7 +220,12 @@ def load_question_attempts(user_email: str, exam_name: str | None = None) -> Dic
         result = query.order("answered_at", desc=True).execute()
         return {"rows": result.data or [], "error": None}
     except Exception as exc:
-        return {"rows": [], "error": str(exc)}
+        log_and_get_user_message(
+            "load_question_attempts failed",
+            PROGRESS_LOAD_ERROR_MESSAGE,
+            exc=exc,
+        )
+        return {"rows": [], "error": PROGRESS_LOAD_ERROR_MESSAGE}
 
 
 @st.cache_data(ttl=60)
@@ -458,7 +445,11 @@ if not user_email:
 
 profile = fetch_user_profile(user_email)
 preferred_language = _safe_lower(profile.get("preferred_language_code"), "en") or "en"
-preferred_timezone = str(profile.get("preferred_timezone") or st.session_state.get("preferred_timezone") or "UTC").strip() or "UTC"
+preferred_timezone = str(
+    profile.get("preferred_timezone")
+    or st.session_state.get("preferred_timezone")
+    or DEFAULT_DISPLAY_TIMEZONE
+).strip() or DEFAULT_DISPLAY_TIMEZONE
 subscription_status = _safe_lower(profile.get("subscription_status") or st.session_state.get("subscription_status"), "free")
 
 if not has_premium_access(user_email):
@@ -498,13 +489,11 @@ with st.expander("Progress query diagnostics", expanded=False):
     st.write(f"Attempts returned: `{len(attempts)}`")
     st.write(f"Question attempts returned: `{len(question_attempts)}`")
     st.write(f"Approved question bank size: `{question_bank_total}`")
-    if query_error:
-        st.error(query_error)
-    if question_attempt_error:
-        st.error(question_attempt_error)
+    if query_error or question_attempt_error:
+        st.write("Database query status: unavailable")
 
 if query_error or question_attempt_error:
-    st.error("Progress could not be loaded because a database query failed. This is a setup/code issue, not 'no attempts'.")
+    st.error(PROGRESS_LOAD_ERROR_MESSAGE)
     st.stop()
 
 if not attempts:

@@ -28,6 +28,7 @@ from utils.practice_session_persistence import (
     persist_weak_practice_state,
     restore_weak_practice_session,
 )
+from utils.user_errors import PRACTICE_SAVE_ERROR_MESSAGE, log_and_get_user_message
 from utils.version import APP_VERSION
 WEAK_AREAS_EVIDENCE_MODES = frozenset({
     "Paid Mock Exam",
@@ -760,7 +761,12 @@ else:
             clear_weak_practice_state()
             st.success("Weak areas practice attempt saved to progress tracking ✅")
         except Exception as exc:
-            st.error(f"Practice result was calculated, but saving to Supabase failed: {exc}")
+            log_and_get_user_message(
+                "weak areas practice save failed",
+                PRACTICE_SAVE_ERROR_MESSAGE,
+                exc=exc,
+            )
+            st.error(PRACTICE_SAVE_ERROR_MESSAGE)
 
     st.divider()
     st.subheader("Breakdown by Domain")

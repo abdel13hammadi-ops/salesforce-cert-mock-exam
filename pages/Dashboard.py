@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import random
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -19,6 +18,7 @@ from utils.access_control import (
     render_app_chrome,
     render_session_page_link,
 )
+from utils.datetime_display import DEFAULT_DISPLAY_TIMEZONE, format_user_datetime
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.version import APP_VERSION
 
@@ -75,20 +75,6 @@ def parse_dt(value: Any) -> datetime:
         return parsed.astimezone(timezone.utc)
     except Exception:
         return datetime.min.replace(tzinfo=timezone.utc)
-
-
-def format_user_datetime(value: Any, preferred_timezone: str = "America/New_York") -> str:
-    if not value:
-        return "Not recorded"
-    parsed = parse_dt(value)
-    if parsed == datetime.min.replace(tzinfo=timezone.utc):
-        return str(value)
-    tz_name = safe_str(preferred_timezone, "America/New_York") or "America/New_York"
-    try:
-        user_tz = ZoneInfo(tz_name)
-    except Exception:
-        user_tz = ZoneInfo("America/New_York")
-    return parsed.astimezone(user_tz).strftime("%b %d, %Y, %I:%M %p %Z").replace(", 0", ", ", 1)
 
 
 def paid_full_mock_count(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> int:
@@ -550,7 +536,10 @@ def render_logged_in_dashboard(email: str) -> None:
     access_level = get_user_access_level(email)
     subscription_status = safe_lower(profile.get("subscription_status") or st.session_state.get("subscription_status"), "free")
     preferred_language = safe_lower(profile.get("preferred_language_code") or st.session_state.get("preferred_language_code"), "en") or "en"
-    preferred_timezone = safe_str(profile.get("preferred_timezone") or st.session_state.get("preferred_timezone"), "America/New_York") or "America/New_York"
+    preferred_timezone = safe_str(
+        profile.get("preferred_timezone") or st.session_state.get("preferred_timezone"),
+        DEFAULT_DISPLAY_TIMEZONE,
+    ) or DEFAULT_DISPLAY_TIMEZONE
     full_name = safe_str(profile.get("full_name") or st.session_state.get("full_name"), "")
     display_name = full_name or email.split("@", 1)[0]
 

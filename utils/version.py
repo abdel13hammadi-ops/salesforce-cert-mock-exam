@@ -1,9 +1,7 @@
-"""Single source of truth for the application build version.
+"""Single source of truth for the application build version label.
 
-To update for any code change:
-  1. Increment the numeric prefix (V32 â†’ V33, etc.).
-  2. Update the suffix to describe the change (e.g. V33_FEATURE_NAME).
-  3. All pages import from here â€” one edit updates every page simultaneously.
+Display-only: runtime behavior must not depend on this value.
+All learner and admin pages import APP_VERSION from here.
 """
 
-APP_VERSION = "V43_ACCESS_AND_READINESS_INTEGRATION"
+APP_VERSION = "V45_MVP_LAUNCH_HARDENING"

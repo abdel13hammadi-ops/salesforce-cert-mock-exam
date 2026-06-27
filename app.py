@@ -12,6 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code, PAID_STATUS_VALUES
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
+from utils.user_errors import EXAM_BANK_LOAD_ERROR_MESSAGE, log_and_get_user_message
 from utils.version import APP_VERSION
 import streamlit.components.v1 as components
 CONFIG_FILE = "exam_config.json"
@@ -945,7 +946,13 @@ def generate_free_mock_questions(bank, category_counts=None):
 
 def ensure_exam_generated(exam_access_type, exam_name, language_code, category_counts):
     free_mock_only = (exam_access_type != "paid")
-    bank, meta = fetch_question_bank(exam_name, language_code, free_mock_only=free_mock_only)
+    try:
+        bank, meta = fetch_question_bank(exam_name, language_code, free_mock_only=free_mock_only)
+    except Exception as exc:
+        log_and_get_user_message("fetch_question_bank failed", EXAM_BANK_LOAD_ERROR_MESSAGE, exc=exc)
+        st.error(EXAM_BANK_LOAD_ERROR_MESSAGE)
+        st.stop()
+
     st.session_state.bank_meta = meta
 
     if meta.get("error"):

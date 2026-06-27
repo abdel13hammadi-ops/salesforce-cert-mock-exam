@@ -27,6 +27,8 @@ from utils.practice_session_persistence import (
     persist_category_practice_state,
     restore_category_practice_session,
 )
+from utils.user_errors import PRACTICE_SAVE_ERROR_MESSAGE, log_and_get_user_message
+from utils.version import APP_VERSION
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 DAILY_SPRINT_QUESTION_COUNT = 10
 DAILY_SPRINT_AUTO_START_GUARD = "daily_sprint_auto_start_attempted"
@@ -837,7 +839,12 @@ else:
             clear_category_practice_state()
             st.success("Practice attempt saved to progress tracking ✅")
         except Exception as exc:
-            st.warning(f"Practice completed, but saving to progress tracking failed: {exc}")
+            log_and_get_user_message(
+                "category practice save failed",
+                PRACTICE_SAVE_ERROR_MESSAGE,
+                exc=exc,
+            )
+            st.warning(PRACTICE_SAVE_ERROR_MESSAGE)
 
     completion_view = build_practice_completion_view(score, correct, total, st.session_state)
     st.header(completion_view["heading"])
