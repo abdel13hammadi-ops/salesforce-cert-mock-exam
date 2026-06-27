@@ -1,3 +1,5 @@
+import logging
+
 import streamlit as st
 
 from utils.access_control import (
@@ -12,6 +14,7 @@ from utils.audit_review import (
     ALLOWED_DECISIONS,
     AuditReviewAccessError,
     AuditReviewError,
+    DECISION_PERSISTENCE_ERROR_MESSAGE,
     build_evidence_contract_view,
     escape_review_text,
     format_finding_label,
@@ -31,6 +34,8 @@ from utils.publication_gate import (
 )
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.version import APP_VERSION
+
+logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="Admin Audit Review", layout="wide")
 render_app_chrome()
@@ -328,7 +333,16 @@ def _render_decision_form(detail: dict) -> None:
         except AuditReviewAccessError as exc:
             st.error(escape_review_text(exc))
         except AuditReviewError as exc:
-            st.error(escape_review_text(exc))
+            if str(exc) == DECISION_PERSISTENCE_ERROR_MESSAGE:
+                st.error(DECISION_PERSISTENCE_ERROR_MESSAGE)
+            else:
+                st.error(escape_review_text(exc))
+        except Exception:
+            logger.exception(
+                "Unexpected error recording audit finding decision finding_id=%s",
+                finding_id,
+            )
+            st.error(DECISION_PERSISTENCE_ERROR_MESSAGE)
         else:
             if result.get("idempotent"):
                 st.info("Finding already has this status; no duplicate decision was recorded.")

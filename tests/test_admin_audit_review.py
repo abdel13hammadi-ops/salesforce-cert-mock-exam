@@ -17,6 +17,7 @@ from utils.audit_review import (
     ALLOWED_DECISIONS,
     AuditReviewAccessError,
     AuditReviewError,
+    DECISION_PERSISTENCE_ERROR_MESSAGE,
     assert_admin_reviewer,
     build_evidence_contract_view,
     escape_review_text,
@@ -36,6 +37,12 @@ MIGRATION_PATH = (
     / "supabase"
     / "migrations"
     / "20260624230000_v45_audit_finding_review_workflow.sql"
+)
+CORRECTIVE_MIGRATION_PATH = (
+    REPO_ROOT
+    / "supabase"
+    / "migrations"
+    / "20260624250000_v45_fix_record_audit_finding_decision_ambiguity.sql"
 )
 
 _RUN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
@@ -63,12 +70,20 @@ class FakeSupabase:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
         self._responses: dict[str, list] = {}
+        self._errors: dict[str, str] = {}
 
     def set_response(self, name: str, data: list):
         self._responses[name] = data
+        self._errors.pop(name, None)
+
+    def set_error(self, name: str, message: str):
+        self._errors[name] = message
+        self._responses.pop(name, None)
 
     def rpc(self, name, params):
         self.calls.append((name, params))
+        if name in self._errors:
+            return _FakeRpcBuilder(data=[], error=self._errors[name])
         return _FakeRpcBuilder(self._responses.get(name, []))
 
 
@@ -289,6 +304,75 @@ class TestDecisionPersistence(unittest.TestCase):
             _REVIEWER,
         )
 
+    def test_rejected_decision_persists(self):
+        self.fake.set_response(
+            "record_audit_finding_decision_v1",
+            [{
+                "finding_id": _FINDING_ID,
+                "previous_status": "open",
+                "new_status": "rejected",
+                "reviewer_email": _REVIEWER,
+                "reviewer_note": "False positive.",
+                "decision_id": "eeeeeeee-0000-0000-0000-000000000002",
+                "created_at": "2026-06-24T11:05:00+00:00",
+                "idempotent": False,
+            }],
+        )
+        row = record_finding_decision(
+            self.fake,
+            finding_id=_FINDING_ID,
+            decision="rejected",
+            reviewer_email=_REVIEWER,
+            reviewer_note="False positive.",
+            is_admin_user=True,
+            is_admin_unlocked=True,
+        )
+        self.assertEqual(row["new_status"], "rejected")
+
+    def test_resolved_decision_persists(self):
+        self.fake.set_response(
+            "record_audit_finding_decision_v1",
+            [{
+                "finding_id": _FINDING_ID,
+                "previous_status": "open",
+                "new_status": "resolved",
+                "reviewer_email": _REVIEWER,
+                "reviewer_note": "Fixed upstream.",
+                "decision_id": "eeeeeeee-0000-0000-0000-000000000003",
+                "created_at": "2026-06-24T11:10:00+00:00",
+                "idempotent": False,
+            }],
+        )
+        row = record_finding_decision(
+            self.fake,
+            finding_id=_FINDING_ID,
+            decision="resolved",
+            reviewer_email=_REVIEWER,
+            reviewer_note="Fixed upstream.",
+            is_admin_user=True,
+            is_admin_unlocked=True,
+        )
+        self.assertEqual(row["new_status"], "resolved")
+
+    def test_rpc_failure_is_sanitized_for_decision_writes(self):
+        self.fake.set_error(
+            "record_audit_finding_decision_v1",
+            'column reference "created_at" is ambiguous',
+        )
+        with self.assertRaises(AuditReviewError) as ctx:
+            record_finding_decision(
+                self.fake,
+                finding_id=_FINDING_ID,
+                decision="accepted",
+                reviewer_email=_REVIEWER,
+                reviewer_note="Valid concern.",
+                is_admin_user=True,
+                is_admin_unlocked=True,
+            )
+        self.assertEqual(str(ctx.exception), DECISION_PERSISTENCE_ERROR_MESSAGE)
+        self.assertNotIn("created_at", str(ctx.exception).lower())
+        self.assertNotIn("ambiguous", str(ctx.exception).lower())
+
     def test_reviewer_note_required(self):
         with self.assertRaises(AuditReviewError):
             validate_reviewer_note("   ")
@@ -362,6 +446,57 @@ class TestMigrationArtifacts(unittest.TestCase):
         self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", page_source)
         self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", utils_source)
         self.assertNotIn("create_client(", page_source)
+
+
+class TestRecordDecisionAmbiguityFix(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.sql = CORRECTIVE_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    def test_migration_replaces_record_audit_finding_decision_v1(self):
+        self.assertIn(
+            "CREATE OR REPLACE FUNCTION public.record_audit_finding_decision_v1(",
+            self.sql,
+        )
+
+    def test_insert_returning_qualifies_created_at(self):
+        self.assertIn("RETURNING afd.id, afd.created_at INTO v_decision_id, v_created_at", self.sql)
+        self.assertNotIn("RETURNING id, created_at INTO v_decision_id, v_created_at", self.sql)
+
+    def test_tables_use_aliases_for_potentially_colliding_columns(self):
+        self.assertIn("FROM   public.audit_findings AS af", self.sql)
+        self.assertIn("FROM   public.audit_finding_decisions AS afd", self.sql)
+        self.assertIn("INSERT INTO public.audit_finding_decisions AS afd", self.sql)
+        self.assertIn("UPDATE public.audit_findings AS af", self.sql)
+        self.assertIn("WHERE  afd.finding_id = p_finding_id", self.sql)
+        self.assertIn("WHERE  af.id = p_finding_id", self.sql)
+
+    def test_no_bare_created_at_reference_in_returning(self):
+        import re
+
+        self.assertIsNone(
+            re.search(
+                r"RETURNING\s+(?!afd\.)created_at",
+                self.sql,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    def test_service_role_only_grants_reapplied(self):
+        self.assertIn(
+            "GRANT EXECUTE ON FUNCTION public.record_audit_finding_decision_v1",
+            self.sql,
+        )
+        self.assertIn(
+            "REVOKE EXECUTE ON FUNCTION public.record_audit_finding_decision_v1",
+            self.sql,
+        )
+
+    def test_transition_and_idempotency_logic_preserved(self):
+        self.assertIn("IF v_previous = v_decision THEN", self.sql)
+        self.assertIn("IF v_previous IN ('resolved', 'overridden') THEN", self.sql)
+        self.assertIn("IF v_decision = 'resolved' THEN", self.sql)
+        self.assertIn("idempotent       boolean", self.sql)
 
 
 class TestPageImport(unittest.TestCase):

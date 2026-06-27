@@ -9,8 +9,15 @@ service_role-only at the database boundary.
 from __future__ import annotations
 
 import html
+import logging
 import re
 from typing import Any, Dict, List, Mapping, Optional
+
+logger = logging.getLogger(__name__)
+
+DECISION_PERSISTENCE_ERROR_MESSAGE = (
+    "Unable to record the review decision. No decision was saved."
+)
 
 from workers.audit_evidence_contract import (
     AuditEvidenceContext,
@@ -95,9 +102,25 @@ def escape_review_text(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
 
-def _call_rpc(client, name: str, params: dict) -> List[dict]:
-    result = client.rpc(name, params).execute()
+def _call_rpc(
+    client,
+    name: str,
+    params: dict,
+    *,
+    sanitize_error: bool = False,
+) -> List[dict]:
+    try:
+        result = client.rpc(name, params).execute()
+    except Exception:
+        logger.exception("RPC %s call raised an exception", name)
+        if sanitize_error:
+            raise AuditReviewError(DECISION_PERSISTENCE_ERROR_MESSAGE) from None
+        raise
+
     if getattr(result, "error", None):
+        logger.error("RPC %s returned error: %s", name, result.error)
+        if sanitize_error:
+            raise AuditReviewError(DECISION_PERSISTENCE_ERROR_MESSAGE)
         raise AuditReviewError(f"RPC {name!r} failed: {result.error}")
     return list(result.data or [])
 
@@ -232,6 +255,7 @@ def record_finding_decision(
             "p_reviewer_email": email,
             "p_reviewer_note": note,
         },
+        sanitize_error=True,
     )
     if not rows:
         raise AuditReviewError("record_audit_finding_decision_v1 returned no rows")
