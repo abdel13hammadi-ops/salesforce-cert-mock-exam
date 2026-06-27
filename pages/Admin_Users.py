@@ -256,10 +256,12 @@ def fetch_attempts(email: str, limit: int = 50) -> List[Dict[str, Any]]:
 
 
 def upsert_app_user(email: str, status: str) -> None:
+    """Operator override: manual subscription_status changes bypass stale Stripe events."""
     existing = fetch_app_user(email)
     payload = {
         "email": normalize_email(email),
         "subscription_status": str(status or "free").strip().lower(),
+        "billing_admin_override_at": utc_now_iso(),
         "updated_at": utc_now_iso(),
     }
     if existing:
@@ -282,6 +284,7 @@ def create_app_user_profile(
         "full_name": str(full_name or "").strip(),
         "preferred_language_code": str(preferred_language_code or "en").strip().lower() or "en",
         "subscription_status": str(subscription_status or "free").strip().lower(),
+        "billing_admin_override_at": utc_now_iso(),
         "updated_at": utc_now_iso(),
     }
     if auth_user_id:
@@ -541,6 +544,10 @@ if st.button("🔐 Send Password Reset Email", use_container_width=True, disable
 
 st.divider()
 st.subheader("Access Actions")
+st.caption(
+    "Manual grant/revoke sets billing_admin_override_at so newer explicit operator changes "
+    "are not overwritten by stale Stripe webhook events."
+)
 
 col1, col2, col3 = st.columns(3)
 

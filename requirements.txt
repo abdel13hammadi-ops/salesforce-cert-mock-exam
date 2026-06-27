@@ -8,3 +8,4 @@ supabase
 streamlit-js-eval
 sentry-sdk
 anthropic
+stripe==11.6.0

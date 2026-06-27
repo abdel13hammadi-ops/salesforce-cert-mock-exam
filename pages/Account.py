@@ -20,6 +20,7 @@ from utils.access_control import (
     get_supabase_admin_client,
     get_supabase_auth_client,
     get_subscription_status,
+    has_premium_access,
     is_admin_user,
     is_admin_unlocked,
     render_app_chrome,
@@ -28,6 +29,8 @@ from utils.access_control import (
 )
 
 from utils.version import APP_VERSION
+from utils.billing_config import CHECKOUT_PENDING_MESSAGE
+from utils.billing_stripe import BillingActionError, create_checkout_session_url, create_portal_session_url
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -481,6 +484,55 @@ if current_email:
     st.caption("Login persistence enabled: refresh should keep you signed in on this browser.")
     status = get_subscription_status(current_email)
     st.write(f"Subscription status: **{status}**")
+
+    billing_return = get_query_param("billing")
+    if billing_return == "success":
+        refreshed_status = get_subscription_status(current_email)
+        if has_premium_access(current_email):
+            st.success("Premium access is active on your account.")
+        else:
+            st.info(CHECKOUT_PENDING_MESSAGE)
+    elif billing_return == "cancel":
+        st.warning("Checkout was canceled. You can upgrade whenever you are ready.")
+
+    st.subheader("Premium Billing")
+    stripe_customer_id = str(profile.get("stripe_customer_id") or "").strip()
+    stripe_sub_status = str(profile.get("stripe_subscription_status") or "").strip().lower()
+    if has_premium_access(current_email):
+        st.success("Premium access is enabled for your account.")
+        if stripe_sub_status:
+            st.caption(f"Stripe subscription status: {stripe_sub_status}")
+        if stripe_customer_id:
+            if st.button("Manage subscription"):
+                try:
+                    portal_url = create_portal_session_url(
+                        current_email,
+                        secrets_getter=get_secret_value,
+                    )
+                    st.session_state["_billing_portal_url"] = portal_url
+                    st.rerun()
+                except BillingActionError as exc:
+                    st.error(str(exc))
+            portal_url = st.session_state.get("_billing_portal_url")
+            if portal_url:
+                st.link_button("Open Stripe Customer Portal", portal_url, type="primary")
+        else:
+            st.caption("Premium access was granted without a Stripe subscription mapping.")
+    else:
+        st.info("Upgrade to unlock full mock exams, practice modes, progress tracking, and readiness.")
+        if st.button("Upgrade to Premium", type="primary"):
+            try:
+                checkout_url = create_checkout_session_url(
+                    current_email,
+                    secrets_getter=get_secret_value,
+                )
+                st.session_state["_billing_checkout_url"] = checkout_url
+                st.rerun()
+            except BillingActionError as exc:
+                st.error(str(exc))
+        checkout_url = st.session_state.get("_billing_checkout_url")
+        if checkout_url:
+            st.link_button("Continue to Stripe Checkout", checkout_url, type="primary")
 
     st.subheader("Profile")
     saved_language = profile.get("preferred_language_code") or st.session_state.get("preferred_language_code", detected_default_language)
