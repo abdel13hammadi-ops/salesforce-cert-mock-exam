@@ -115,6 +115,27 @@ def is_answer_correct(user_selection: Any, question: Dict[str, Any]) -> bool:
     return len(selected) == required and set(selected) == set(correct)
 
 
+EXPLANATION_GATE_HINT = "Select your answer before viewing the explanation."
+
+
+def is_answer_selection_complete(user_selection: Any, question: Dict[str, Any]) -> bool:
+    """Return True when the learner selected exactly the required number of options."""
+    required = resolve_required_select_count(question)
+    selected = _dedupe_selection([str(value) for value in (user_selection or [])])
+    return len(selected) == required
+
+
+def effective_explanation_feedback_shown(
+    feedback_shown: bool,
+    user_selection: Any,
+    question: Dict[str, Any],
+) -> bool:
+    """Return True only when feedback was requested and the current answer is complete."""
+    if not feedback_shown:
+        return False
+    return is_answer_selection_complete(user_selection, question)
+
+
 def cap_multi_select_selection(selected: List[Any], required_count: int) -> List[Any]:
     """Keep at most the canonical number of multi-select answers."""
     return reconcile_multi_select_selection(selected, [], required_count)

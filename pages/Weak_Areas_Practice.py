@@ -17,8 +17,11 @@ from utils.access_control import (
 
 from utils.question_answer_key import (
     apply_multi_select_answer_ui,
+    effective_explanation_feedback_shown,
+    EXPLANATION_GATE_HINT,
     is_answer_correct,
     is_answer_key_valid,
+    is_answer_selection_complete,
     is_multiple_select,
 )
 from utils.practice_session_persistence import (
@@ -363,6 +366,7 @@ def move_to_weak_question(new_index):
     st.session_state.weak_current_index = int(new_index)
     st.session_state.weak_question_entered_at = time.time()
     st.session_state.weak_timing_index = int(new_index)
+    st.session_state.weak_feedback_shown = False
 
 
 def option_texts_by_id(question, ids):
@@ -701,20 +705,24 @@ elif not st.session_state.get("weak_submitted", False):
     elif q_index in st.session_state.get("weak_answers", {}):
         del st.session_state.weak_answers[q_index]
 
+    user_answer = st.session_state.weak_answers.get(q_index, [])
+    answer_complete = is_answer_selection_complete(user_answer, q)
+    if st.session_state.get("weak_feedback_shown") and not answer_complete:
+        st.session_state.weak_feedback_shown = False
+
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("Previous") and q_index > 0:
             move_to_weak_question(q_index - 1)
-            st.session_state.weak_feedback_shown = False
             st.rerun()
     with col2:
-        if st.button("Show Explanation"):
+        if st.button("Show Explanation", disabled=not answer_complete):
             st.session_state.weak_feedback_shown = True
+            st.rerun()
     with col3:
         if q_index < len(questions) - 1:
             if st.button("Next", type="primary"):
                 move_to_weak_question(q_index + 1)
-                st.session_state.weak_feedback_shown = False
                 st.rerun()
         else:
             if st.button("Submit Practice", type="primary"):
@@ -723,8 +731,15 @@ elif not st.session_state.get("weak_submitted", False):
                 clear_weak_practice_state()
                 st.rerun()
 
-    if st.session_state.get("weak_feedback_shown", False):
-        user_ids = st.session_state.weak_answers.get(q_index, [])
+    if not answer_complete:
+        st.caption(EXPLANATION_GATE_HINT)
+
+    if effective_explanation_feedback_shown(
+        st.session_state.get("weak_feedback_shown", False),
+        user_answer,
+        q,
+    ):
+        user_ids = user_answer
         if is_correct(user_ids, q["correct_ids"], question=q):
             st.success("Correct")
         else:

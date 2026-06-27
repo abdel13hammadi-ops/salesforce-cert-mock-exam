@@ -289,7 +289,15 @@ def restore_category_practice_session(
     session_state["practice_saved"] = False
     session_state["practice_current_index"] = current_index
     session_state["practice_answers"] = _restore_answers(state.get("answers") or {})
-    session_state["practice_feedback_shown"] = bool(state.get("feedback_shown"))
+    current_question = restored_questions[current_index]
+    current_answer = session_state["practice_answers"].get(current_index, [])
+    from utils.question_answer_key import effective_explanation_feedback_shown  # noqa: PLC0415
+
+    session_state["practice_feedback_shown"] = effective_explanation_feedback_shown(
+        bool(state.get("feedback_shown")),
+        current_answer,
+        current_question,
+    )
     session_state["practice_question_time_spent"] = _restore_time_spent(state.get("question_time_spent") or {})
     session_state["practice_question_entered_at"] = time.time()
     session_state["practice_timing_index"] = current_index
@@ -326,7 +334,15 @@ def restore_weak_practice_session(
     session_state["weak_saved"] = False
     session_state["weak_current_index"] = current_index
     session_state["weak_answers"] = _restore_answers(state.get("answers") or {})
-    session_state["weak_feedback_shown"] = bool(state.get("feedback_shown"))
+    current_question = restored_questions[current_index]
+    current_answer = session_state["weak_answers"].get(current_index, [])
+    from utils.question_answer_key import effective_explanation_feedback_shown  # noqa: PLC0415
+
+    session_state["weak_feedback_shown"] = effective_explanation_feedback_shown(
+        bool(state.get("feedback_shown")),
+        current_answer,
+        current_question,
+    )
     session_state["weak_question_time_spent"] = _restore_time_spent(state.get("question_time_spent") or {})
     session_state["weak_question_entered_at"] = time.time()
     session_state["weak_timing_index"] = current_index

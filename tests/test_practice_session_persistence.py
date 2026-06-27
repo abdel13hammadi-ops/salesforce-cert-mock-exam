@@ -83,6 +83,7 @@ class TestPracticeSessionPersistence(unittest.TestCase):
         self.assertEqual([q["id"] for q in restored["practice_questions"]], [101, 102, 103])
         self.assertEqual(restored["practice_current_index"], 1)
         self.assertEqual(restored["practice_answers"], {0: ["101-a"], 1: ["102-b"]})
+        self.assertTrue(restored["practice_feedback_shown"])
         self.assertEqual(restored["practice_mode_label"], "Daily Sprint")
         self.assertEqual(
             [opt["id"] for opt in restored["practice_questions"][0]["options"]],
