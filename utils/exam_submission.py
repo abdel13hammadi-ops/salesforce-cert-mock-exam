@@ -38,7 +38,11 @@ VALID_STATES = {STATE_IDLE, STATE_SAVING, STATE_SAVED, STATE_FAILED}
 
 # ── Scoring (mirrors app.is_correct / calculate_breakdown / plain_breakdown) ────
 
-def _is_correct(user_answer, correct_answers) -> bool:
+def _is_correct(user_answer, correct_answers, question=None) -> bool:
+    from utils.question_answer_key import is_answer_correct
+
+    if question is not None:
+        return is_answer_correct(user_answer, question)
     return set(user_answer or []) == set(correct_answers or [])
 
 
@@ -61,7 +65,7 @@ def _breakdown(questions: list, answers: dict, field: str) -> dict:
         value = q.get(field, "Uncategorized") or "Uncategorized"
         bucket = stats.setdefault(value, {"correct": 0, "total": 0})
         bucket["total"] += 1
-        if _is_correct(answers.get(i, []), q.get("answers", [])):
+        if _is_correct(answers.get(i, []), q.get("answers", []), question=q):
             bucket["correct"] += 1
     return _plain_breakdown(stats)
 

@@ -15,6 +15,13 @@ from utils.access_control import (
     has_premium_access,
 )
 
+from utils.question_answer_key import (
+    cap_multi_select_selection,
+    is_answer_correct,
+    is_answer_key_valid,
+    is_multiple_select,
+    resolve_required_select_count,
+)
 from utils.version import APP_VERSION
 WEAK_AREAS_EVIDENCE_MODES = frozenset({
     "Paid Mock Exam",
@@ -232,6 +239,9 @@ def fetch_question_bank(exam_name, language_code):
             "content_version": q.get("content_version"),
             "external_key": q.get("external_key"),
         })
+        if not is_answer_key_valid(normalized[-1]):
+            normalized.pop()
+            continue
     return normalized
 
 
@@ -298,7 +308,9 @@ def recommend_practice_categories(weak_domains, available_categories):
     return recommended or available_categories[:1]
 
 
-def is_correct(user_ids, correct_ids):
+def is_correct(user_ids, correct_ids, question=None):
+    if question is not None:
+        return is_answer_correct(user_ids, question)
     return set(user_ids or []) == set(correct_ids or [])
 
 
@@ -368,7 +380,7 @@ def build_question_attempt_rows(exam_attempt_id, user_email, questions, answers)
             "difficulty": str(q.get("difficulty") or "medium").strip().lower(),
             "selected_options": option_texts_by_id(q, selected_ids),
             "correct_options": option_texts_by_id(q, correct_ids),
-            "is_correct": is_correct(selected_ids, correct_ids),
+            "is_correct": is_correct(selected_ids, correct_ids, question=q),
             "time_spent_seconds": _clamped_seconds(question_times.get(idx, 0)),
             "answered_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -389,7 +401,7 @@ def build_breakdown(questions, answers, field):
     for i, q in enumerate(questions):
         value = q.get(field, "Unknown") or "Unknown"
         stats[value]["total"] += 1
-        if is_correct(answers.get(i, []), q.get("correct_ids", [])):
+        if is_correct(answers.get(i, []), q.get("correct_ids", []), question=q):
             stats[value]["correct"] += 1
     return dict(stats)
 
@@ -618,12 +630,13 @@ elif not st.session_state.get("weak_submitted", False):
 
     current_answer = st.session_state.get("weak_answers", {}).get(q_index, [])
     selected_ids = []
-    if q["type"] == "multiple":
-        count_text = q.get("select_count") or len(q["correct_ids"])
-        st.warning(f"Choose {count_text} answers.")
+    if is_multiple_select(q):
+        required_count = resolve_required_select_count(q)
+        st.warning(f"Choose {required_count} answers.")
         for opt in q["options"]:
             if st.checkbox(opt["text"], value=opt["id"] in current_answer, key=f"weak_{q_index}_{opt['id']}"):
                 selected_ids.append(opt["id"])
+        selected_ids = cap_multi_select_selection(selected_ids, required_count)
     else:
         option_labels = [opt["text"] for opt in q["options"]]
         id_by_text = {opt["text"]: opt["id"] for opt in q["options"]}
@@ -660,7 +673,7 @@ elif not st.session_state.get("weak_submitted", False):
 
     if st.session_state.get("weak_feedback_shown", False):
         user_ids = st.session_state.weak_answers.get(q_index, [])
-        if is_correct(user_ids, q["correct_ids"]):
+        if is_correct(user_ids, q["correct_ids"], question=q):
             st.success("Correct")
         else:
             st.error("Incorrect")
@@ -673,7 +686,7 @@ elif not st.session_state.get("weak_submitted", False):
 else:
     questions = st.session_state.weak_questions
     answers = st.session_state.weak_answers
-    correct = sum(1 for i, q in enumerate(questions) if is_correct(answers.get(i, []), q["correct_ids"]))
+    correct = sum(1 for i, q in enumerate(questions) if is_correct(answers.get(i, []), q["correct_ids"], question=q))
     total = len(questions)
     score = round((correct / total) * 100, 2) if total else 0
     domain_breakdown = build_breakdown(questions, answers, "category")
@@ -705,7 +718,7 @@ else:
     st.header("Answer Review")
     for i, q in enumerate(questions):
         user_ids = answers.get(i, [])
-        result_correct = is_correct(user_ids, q["correct_ids"])
+        result_correct = is_correct(user_ids, q["correct_ids"], question=q)
         if result_correct:
             st.success(f"Question {i + 1} — Correct")
         else:

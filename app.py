@@ -644,6 +644,9 @@ def fetch_question_bank(exam_name, language_code, free_mock_only=False):
 
     normalized = []
     skipped_no_options = 0
+    skipped_invalid_answer_key = 0
+
+    from utils.question_answer_key import is_answer_key_valid
 
     for q in raw_questions:
         opts = options_by_question.get(q["id"], [])
@@ -691,10 +694,16 @@ def fetch_question_bank(exam_name, language_code, free_mock_only=False):
             "content_version": q.get("content_version"),
             "external_key": q.get("external_key"),
         })
+        candidate = normalized[-1]
+        if not is_answer_key_valid(candidate):
+            normalized.pop()
+            skipped_invalid_answer_key += 1
+            continue
 
     meta = {
         "total_bank_questions": len(normalized),
         "skipped_no_options_or_answers": skipped_no_options,
+        "skipped_invalid_answer_key": skipped_invalid_answer_key,
         "exam_name": exam_name,
         "language_code": language_code,
         "bank_category_counts": dict(Counter(q["category"] for q in normalized)),
@@ -1364,8 +1373,12 @@ def get_options(q_index, q):
     return st.session_state.choice_orders[q_index]
 
 
-def is_correct(user_answer, correct_answers):
-    return set(user_answer) == set(correct_answers)
+def is_correct(user_answer, correct_answers, question=None):
+    from utils.question_answer_key import is_answer_correct
+
+    if question is not None:
+        return is_answer_correct(user_answer, question)
+    return set(user_answer or []) == set(correct_answers or [])
 
 
 def calculate_breakdown(field):
@@ -1373,7 +1386,7 @@ def calculate_breakdown(field):
     for i, q in enumerate(questions):
         value = q.get(field, "Uncategorized")
         stats[value]["total"] += 1
-        if is_correct(st.session_state.answers.get(i, []), q["answers"]):
+        if is_correct(st.session_state.answers.get(i, []), q["answers"], question=q):
             stats[value]["correct"] += 1
     return stats
 
@@ -1889,15 +1902,22 @@ elif not st.session_state.submitted:
         )
         st.subheader(q["question"])
 
-        question_type = q.get("type", "single")
-        if question_type == "multiple":
-            select_count = q.get("select_count") or len(q.get("answers", []))
-            st.warning(f"Choose {select_count} answers.")
+        from utils.question_answer_key import (
+            cap_multi_select_selection,
+            is_multiple_select,
+            resolve_required_select_count,
+        )
+
+        if is_multiple_select(q):
+            required_count = resolve_required_select_count(q)
+            st.warning(f"Choose {required_count} answers.")
             selected_answers = []
+            previous_answers = st.session_state.answers.get(q_index, [])
             for option in options:
-                checked = option in st.session_state.answers.get(q_index, [])
+                checked = option in previous_answers
                 if st.checkbox(option, value=checked, key=f"q_{q_index}_{option}"):
                     selected_answers.append(option)
+            selected_answers = cap_multi_select_selection(selected_answers, required_count)
             if selected_answers:
                 st.session_state.answers[q_index] = selected_answers
             elif q_index in st.session_state.answers:
@@ -2097,7 +2117,7 @@ else:
     for i, q in enumerate(snap_questions):
         user_answer = snap_answers.get(i, [])
         correct_answers = q["answers"]
-        result_correct = is_correct(user_answer, correct_answers)
+        result_correct = is_correct(user_answer, correct_answers, question=q)
 
         if review_filter == "Incorrect Only" and result_correct:
             continue
