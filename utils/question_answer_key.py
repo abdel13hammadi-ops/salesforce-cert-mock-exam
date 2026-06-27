@@ -239,39 +239,44 @@ def apply_multi_select_answer_ui(
     """Render capped multi-select checkboxes and return the canonical stored selection."""
     required_count = resolve_required_select_count(question)
     options = question.get("options") or []
-    previous_ids = reconcile_multi_select_selection(
+    canonical_ids = reconcile_multi_select_selection(
         previous_selection or [],
         previous_selection or [],
         required_count,
     )
 
-    # Streamlit checkbox widget keys outlive capped answer lists; align widgets first.
-    sync_multi_select_widget_selection(session_state, key_prefix, options, previous_ids)
-
     widget_checked = read_multi_select_widget_selection(session_state, key_prefix, options)
+    if widget_checked:
+        display_ids = reconcile_multi_select_selection(widget_checked, canonical_ids, required_count)
+    else:
+        display_ids = list(canonical_ids)
+
     rejected_extra = len(widget_checked) > required_count
-    if rejected_extra:
-        sync_multi_select_widget_selection(session_state, key_prefix, options, previous_ids)
+    if widget_checked != display_ids:
+        rejected_extra = True
+        # Streamlit only allows widget-key writes before the widget is instantiated.
+        sync_multi_select_widget_selection(session_state, key_prefix, options, display_ids)
+    elif canonical_ids and not widget_checked:
+        sync_multi_select_widget_selection(session_state, key_prefix, options, display_ids)
 
     if warning_fn is not None:
         warning_fn(f"Choose {required_count} answers.")
 
-    plan = build_multi_select_checkbox_plan(options, previous_ids, required_count)
+    plan = build_multi_select_checkbox_plan(options, display_ids, required_count)
     checked_now: List[str] = []
     for item in plan:
+        widget_key = _checkbox_widget_key(key_prefix, item["id"])
         if checkbox_fn(
             item["label"],
-            value=bool(session_state.get(_checkbox_widget_key(key_prefix, item["id"]), item["checked"])),
+            value=item["checked"],
             disabled=item["disabled"],
-            key=_checkbox_widget_key(key_prefix, item["id"]),
+            key=widget_key,
         ):
             checked_now.append(item["id"])
 
-    reconciled = reconcile_multi_select_selection(checked_now, previous_ids, required_count)
-    if reconciled != checked_now:
+    reconciled = reconcile_multi_select_selection(checked_now, display_ids, required_count)
+    if len(checked_now) > required_count or reconciled != checked_now:
         rejected_extra = True
-
-    sync_multi_select_widget_selection(session_state, key_prefix, options, reconciled)
 
     if rejected_extra and limit_message_fn is not None:
         limit_message_fn(required_count)

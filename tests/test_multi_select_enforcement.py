@@ -44,6 +44,18 @@ class _FakeSessionState(dict):
     pass
 
 
+class _GuardedSessionState(_FakeSessionState):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.checkbox_instantiated = False
+        self.post_checkbox_widget_writes: List[str] = []
+
+    def __setitem__(self, key, value):
+        if self.checkbox_instantiated and isinstance(key, str):
+            self.post_checkbox_widget_writes.append(key)
+        super().__setitem__(key, value)
+
+
 class _RecordingCheckbox:
     def __init__(self):
         self.calls: List[Dict[str, Any]] = []
@@ -52,6 +64,8 @@ class _RecordingCheckbox:
         self.calls.append(
             {"label": label, "value": value, "disabled": disabled, "key": key}
         )
+        if hasattr(self.session_state, "checkbox_instantiated"):
+            self.session_state.checkbox_instantiated = True
         if key is not None:
             return bool(self.session_state.get(key, value))
         return bool(value)
@@ -176,6 +190,83 @@ class TestMultiSelectEnforcement(unittest.TestCase):
     def test_required_count_comes_from_select_count(self):
         question = _multiple_question(select_count=3, correct_ids=["1", "2", "4"])
         self.assertEqual(resolve_required_select_count(question), 3)
+
+    def test_apply_helper_does_not_sync_widgets_after_checkbox_creation(self):
+        source = (REPO_ROOT / "utils" / "question_answer_key.py").read_text(encoding="utf-8")
+        fn_body = source.split("def apply_multi_select_answer_ui", 1)[1].split("\ndef ", 1)[0]
+        loop_marker = "for item in plan:"
+        loop_start = fn_body.index(loop_marker)
+        before_loop = fn_body[:loop_start]
+        after_loop = fn_body[loop_start:]
+        self.assertIn("sync_multi_select_widget_selection", before_loop)
+        self.assertNotIn(
+            "sync_multi_select_widget_selection",
+            after_loop.split("return reconciled", 1)[0],
+        )
+
+    def test_select_two_render_does_not_mutate_widget_keys_after_instantiation(self):
+        session_state = _GuardedSessionState(
+            {
+                "practice_0_1": True,
+                "practice_0_2": True,
+                "practice_0_3": True,
+            }
+        )
+        checkbox = _RecordingCheckbox().bind(session_state)
+        question = _multiple_question(select_count=2, correct_ids=["1", "3"])
+
+        selected = apply_multi_select_answer_ui(
+            question,
+            previous_selection=["1", "2"],
+            key_prefix="practice_0",
+            session_state=session_state,
+            checkbox_fn=checkbox,
+        )
+
+        self.assertEqual(selected, ["1", "2"])
+        self.assertEqual(session_state.post_checkbox_widget_writes, [])
+
+    def test_restored_practice_state_with_valid_multi_select_answers_renders_safely(self):
+        session_state = _GuardedSessionState()
+        checkbox = _RecordingCheckbox().bind(session_state)
+        question = _multiple_question(select_count=2, correct_ids=["1", "3"])
+
+        selected = apply_multi_select_answer_ui(
+            question,
+            previous_selection=["1", "3"],
+            key_prefix="practice_2",
+            session_state=session_state,
+            checkbox_fn=checkbox,
+        )
+
+        self.assertEqual(selected, ["1", "3"])
+        self.assertEqual(session_state.post_checkbox_widget_writes, [])
+        self.assertTrue(session_state["practice_2_1"])
+        self.assertTrue(session_state["practice_2_3"])
+
+    def test_restored_stale_overflow_state_is_normalized_before_render(self):
+        session_state = _GuardedSessionState(
+            {
+                "weak_4_1": True,
+                "weak_4_2": True,
+                "weak_4_3": True,
+                "weak_4_4": True,
+            }
+        )
+        checkbox = _RecordingCheckbox().bind(session_state)
+        question = _multiple_question(select_count=3, correct_ids=["1", "2", "4"])
+
+        selected = apply_multi_select_answer_ui(
+            question,
+            previous_selection=["1", "2", "3"],
+            key_prefix="weak_4",
+            session_state=session_state,
+            checkbox_fn=checkbox,
+        )
+
+        self.assertEqual(selected, ["1", "2", "3"])
+        self.assertFalse(session_state["weak_4_4"])
+        self.assertEqual(session_state.post_checkbox_widget_writes, [])
 
 
 if __name__ == "__main__":
