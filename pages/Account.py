@@ -288,21 +288,16 @@ def browser_js_value(js_expression: str, key: str) -> str:
         return ""
 
 
-def redirect_to_external_url(url: str, *, key: str) -> None:
-    """Navigate the browser to a server-generated external URL."""
+def redirect_to_external_url(url: str) -> None:
+    """Navigate the top-level browser tab to a server-generated external URL."""
     target = str(url or "").strip()
     if not target:
         return
     js_url = json.dumps(target)
-    if streamlit_js_eval is not None:
-        streamlit_js_eval(
-            js_expressions=f"window.location.assign({js_url})",
-            key=key,
-        )
-        return
     components.html(
-        f"<script>window.top.location.assign({js_url});</script>",
+        f"<script>window.top.location.replace({js_url});</script>",
         height=0,
+        scrolling=False,
     )
 
 
@@ -526,13 +521,19 @@ if current_email:
         if stripe_sub_status:
             st.caption(f"Stripe subscription status: {stripe_sub_status}")
         if stripe_customer_id:
+            pending_portal_redirect = st.session_state.pop("_billing_portal_redirect", None)
+            if pending_portal_redirect:
+                redirect_to_external_url(pending_portal_redirect)
+                st.stop()
+
             if st.button("Manage subscription"):
                 try:
                     portal_url = create_portal_session_url(
                         current_email,
                         secrets_getter=get_secret_value,
                     )
-                    redirect_to_external_url(portal_url, key="billing_portal_redirect_v1")
+                    st.session_state["_billing_portal_redirect"] = portal_url
+                    st.rerun()
                 except BillingActionError as exc:
                     st.error(str(exc))
         else:

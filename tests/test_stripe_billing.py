@@ -755,14 +755,25 @@ class TestAccountPortalControls(unittest.TestCase):
     def test_open_stripe_customer_portal_removed(self):
         self.assertNotIn("Open Stripe Customer Portal", self.text)
 
-    def test_manage_subscription_invokes_portal_creator_and_redirect(self):
+    def test_manage_subscription_invokes_portal_creator_once_per_click(self):
         start = self.text.index('st.button("Manage subscription")')
         window = self.text[start:start + 500]
-        self.assertIn("create_portal_session_url", window)
-        self.assertIn("redirect_to_external_url", window)
+        self.assertEqual(window.count("create_portal_session_url"), 1)
+        self.assertIn("st.rerun()", window)
 
-    def test_portal_url_not_persisted_in_session_state(self):
+    def test_redirect_uses_same_tab_top_level_replace(self):
+        start = self.text.index("def redirect_to_external_url")
+        block = self.text[start:start + 400]
+        self.assertIn("json.dumps", block)
+        self.assertIn("window.top.location.replace", block)
+        self.assertNotIn("window.open", block)
+        self.assertNotIn("streamlit_js_eval", block)
+        self.assertNotIn("window.location.assign", block)
+
+    def test_ephemeral_portal_redirect_state_not_permanent_link(self):
         self.assertNotIn("_billing_portal_url", self.text)
+        self.assertIn("_billing_portal_redirect", self.text)
+        self.assertIn("st.session_state.pop(\"_billing_portal_redirect\"", self.text)
 
     def test_unmapped_paid_user_message_preserved(self):
         self.assertIn(
