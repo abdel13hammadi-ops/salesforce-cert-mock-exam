@@ -22,6 +22,7 @@ from utils.access_control import (
     has_premium_access,
     is_admin_user,
     is_admin_unlocked,
+    is_session_restoration_pending,
     render_app_chrome,
     save_logged_in_user,
     unlock_admin,
@@ -489,6 +490,10 @@ question_language_codes = load_question_language_codes()
 detected_timezone = detected_browser_timezone()
 detected_default_language = default_language_from_browser(language_codes, question_language_codes)
 
+if is_session_restoration_pending():
+    st.info("Restoring your session...")
+    st.stop()
+
 current_email = get_current_user_email()
 billing_return = get_query_param("billing")
 
@@ -510,7 +515,9 @@ if current_email:
     status = get_subscription_status(current_email)
     st.write(f"Subscription status: **{status}**")
 
-    if billing_return == "success":
+    if billing_return == "portal":
+        st.success("Welcome back. Your CertBound session has been restored.")
+    elif billing_return == "success":
         if has_premium_access(current_email):
             st.success("Premium access is active on your account.")
         else:
@@ -522,10 +529,16 @@ if current_email:
     st.subheader("Premium Billing")
     stripe_customer_id = str(profile.get("stripe_customer_id") or "").strip()
     stripe_sub_status = str(profile.get("stripe_subscription_status") or "").strip().lower()
+    stripe_cancel_at_period_end = bool(profile.get("stripe_cancel_at_period_end"))
     if has_premium_access(current_email):
         st.success("Premium access is enabled for your account.")
         if stripe_sub_status:
             st.caption(f"Stripe subscription status: {stripe_sub_status}")
+        if stripe_cancel_at_period_end:
+            st.info(
+                "Your subscription is scheduled to cancel at the end of the current billing period. "
+                "Premium access remains active until then."
+            )
         if stripe_customer_id:
             try:
                 portal_url = resolve_portal_session_url(
@@ -608,7 +621,9 @@ if current_email:
                     st.error("Invalid admin password or email is not allowed.")
 
 else:
-    if billing_return == "success":
+    if billing_return == "portal":
+        st.info("Welcome back. Sign in to confirm access if your session was not restored automatically.")
+    elif billing_return == "success":
         st.success("Your payment succeeded.")
         st.info(CHECKOUT_SUCCESS_SIGNIN_MESSAGE)
     elif billing_return == "cancel":

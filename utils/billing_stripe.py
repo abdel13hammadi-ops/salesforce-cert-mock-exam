@@ -257,6 +257,16 @@ def release_pending_checkout_claim(
     release_checkout_claim(app_user_id=user_id)
 
 
+def _portal_return_url_with_marker(*, secrets_getter: Optional[Callable[[str, str], str]] = None) -> str:
+    return_url = get_stripe_portal_return_url(secrets_getter=secrets_getter)
+    if not return_url:
+        return ""
+    if "billing=" in return_url:
+        return return_url
+    joiner = "&" if "?" in return_url else "?"
+    return f"{return_url}{joiner}billing=portal"
+
+
 def create_portal_session_url(
     email: str,
     *,
@@ -273,7 +283,7 @@ def create_portal_session_url(
     if not customer_id:
         raise BillingActionError(PORTAL_UNAVAILABLE_MESSAGE)
 
-    return_url = get_stripe_portal_return_url(secrets_getter=secrets_getter)
+    return_url = _portal_return_url_with_marker(secrets_getter=secrets_getter)
     if not return_url:
         raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE)
 

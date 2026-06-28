@@ -276,22 +276,101 @@ def restore_login_from_signed_url() -> bool:
     if not payload:
         _clear_query_param(SESSION_PARAM)
         return False
+    _hydrate_session_from_payload(payload, token)
+    return True
+
+
+def _hydrate_session_from_payload(payload: Dict[str, Any], token: str) -> None:
     email = str(payload.get("user_email") or payload.get("email") or "").strip().lower()
     st.session_state["user_email"] = email
     st.session_state["auth_user_id"] = str(payload.get("auth_user_id") or "")
     st.session_state["full_name"] = str(payload.get("full_name") or "")
-    st.session_state["preferred_language_code"] = str(payload.get("preferred_language_code") or "en").strip().lower() or "en"
+    st.session_state["preferred_language_code"] = str(
+        payload.get("preferred_language_code") or "en"
+    ).strip().lower() or "en"
     st.session_state["preferred_timezone"] = str(payload.get("preferred_timezone") or "UTC").strip() or "UTC"
     st.session_state["subscription_status"] = str(payload.get("subscription_status") or "free").strip().lower()
     st.session_state["signed_session_token"] = token
     if bool(payload.get("admin_unlocked")) and _email_is_configured_admin(email):
         st.session_state["admin_unlocked"] = True
     st.session_state["auth_restored_from_url"] = True
-    # Restore last_activity_at from the token so enforce_session_timeout() can
-    # check idle time correctly even after a full browser navigation wipes session_state.
-    # Falls back to now for tokens created before this field was added.
     stored_activity = payload.get("last_activity_at")
-    st.session_state["last_activity_at"] = float(stored_activity) if stored_activity is not None else time.time()
+    st.session_state["last_activity_at"] = (
+        float(stored_activity) if stored_activity is not None else time.time()
+    )
+
+
+def _read_browser_session_token_via_js_eval() -> Optional[str]:
+    """Read the signed session token from browser localStorage.
+
+    Returns None while streamlit-js-eval is still waiting on the browser callback.
+    """
+    try:
+        from streamlit_js_eval import streamlit_js_eval  # noqa: PLC0415
+    except Exception:
+        return ""
+
+    js = f"""
+    (function() {{
+        try {{
+            const storage = window.localStorage;
+            if (!storage) return '';
+            return storage.getItem({json.dumps(BROWSER_SESSION_STORAGE_KEY)}) || '';
+        }} catch (e) {{
+            return '';
+        }}
+    }})()
+    """
+    try:
+        value = streamlit_js_eval(js_expressions=js, key="certbound_fr_session_read_v1")
+    except Exception:
+        return ""
+    if value is None:
+        return None
+    return str(value or "").strip()
+
+
+def is_session_restoration_pending() -> bool:
+    """True while a direct page load is waiting on browser session hydration."""
+    if st.session_state.get("user_email"):
+        return False
+    if st.session_state.get("user_session_expired"):
+        return False
+    return bool(st.session_state.get("_session_restoration_pending"))
+
+
+def bootstrap_signed_session() -> bool:
+    """Restore signed session from URL or browser storage before page auth UI renders."""
+    if st.session_state.get("user_session_expired"):
+        st.session_state.pop("_session_restoration_pending", None)
+        return False
+    if st.session_state.get("user_email"):
+        st.session_state.pop("_session_restoration_pending", None)
+        return True
+
+    if restore_login_from_signed_url():
+        st.session_state.pop("_session_restoration_pending", None)
+        if st.session_state.pop("auth_restored_from_url", False):
+            st.rerun()
+        return True
+
+    token = _read_browser_session_token_via_js_eval()
+    if token is None:
+        st.session_state["_session_restoration_pending"] = True
+        return False
+
+    st.session_state.pop("_session_restoration_pending", None)
+    if not token:
+        return False
+
+    payload = verify_signed_session(token)
+    if not payload:
+        _mark_browser_session_clear_needed()
+        return False
+
+    _hydrate_session_from_payload(payload, token)
+    _persist_token_to_url(token)
+    st.rerun()
     return True
 
 
@@ -388,6 +467,7 @@ def clear_login_state() -> None:
         # re-trigger timeout the moment the user logs back in after expiry.
         "last_activity_at",
         "_last_activity_stamp_at",
+        "_session_restoration_pending",
     ]:
         st.session_state.pop(key, None)
     clear_persisted_login()
@@ -687,7 +767,7 @@ def render_app_chrome() -> None:
         init_sentry()
     except Exception:
         pass
-    restore_login_from_signed_url()
+    bootstrap_signed_session()
     _sync_existing_session_token_to_url()
     _render_browser_session_bridge()
     render_sidebar_navigation()

@@ -750,6 +750,11 @@ class TestPortal(unittest.TestCase):
             ),
         )
         self.assertEqual(stripe.billing_portal.Session.create.call_args.kwargs["customer"], CUSTOMER_ID)
+        self.assertIn(
+            "billing=portal",
+            stripe.billing_portal.Session.create.call_args.kwargs["return_url"],
+        )
+        self.assertNotIn("fr_session", stripe.billing_portal.Session.create.call_args.kwargs["return_url"])
 
 
 class TestAccountPortalControls(unittest.TestCase):
@@ -782,6 +787,7 @@ class TestAccountPortalControls(unittest.TestCase):
 
     def test_logout_clears_cached_portal_session(self):
         self.assertIn("clear_cached_portal_session(st.session_state)", self.text)
+        self.assertIn("clear_login_state()", self.text)
 
     def test_unmapped_paid_user_message_preserved(self):
         self.assertIn(
