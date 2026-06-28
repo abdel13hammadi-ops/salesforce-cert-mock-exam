@@ -75,6 +75,7 @@ from utils.access_control import PAID_STATUS_VALUES
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = REPO_ROOT / "supabase" / "migrations" / "20260625000000_v46_stripe_billing_foundation.sql"
 CLAIMS_MIGRATION_PATH = REPO_ROOT / "supabase" / "migrations" / "20260625120000_v46_stripe_checkout_claims.sql"
+ORDERING_MIGRATION_PATH = REPO_ROOT / "supabase" / "migrations" / "20260628180000_v46_stripe_subscription_event_ordering.sql"
 EDGE_FUNCTION_PATH = REPO_ROOT / "supabase" / "functions" / "stripe-webhook" / "index.ts"
 ACCOUNT_PATH = REPO_ROOT / "pages" / "Account.py"
 ADMIN_USERS_PATH = REPO_ROOT / "pages" / "Admin_Users.py"
@@ -685,6 +686,9 @@ class TestWebhookState(unittest.TestCase):
     def test_stale_event_protection_remains_in_migration(self):
         sql = MIGRATION_PATH.read_text(encoding="utf-8")
         self.assertIn("stale stripe event", sql)
+        ordering_sql = ORDERING_MIGRATION_PATH.read_text(encoding="utf-8")
+        self.assertIn("stale stripe subscription event", ordering_sql)
+        self.assertIn("stripe_last_subscription_event_created_at", ordering_sql)
 
 
 class TestPortal(unittest.TestCase):
