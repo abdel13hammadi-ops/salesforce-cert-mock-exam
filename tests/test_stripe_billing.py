@@ -744,6 +744,50 @@ class TestPortal(unittest.TestCase):
         self.assertEqual(stripe.billing_portal.Session.create.call_args.kwargs["customer"], CUSTOMER_ID)
 
 
+class TestAccountPortalControls(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.text = ACCOUNT_PATH.read_text(encoding="utf-8")
+
+    def test_only_one_manage_subscription_control(self):
+        self.assertEqual(self.text.count('"Manage subscription"'), 1)
+
+    def test_open_stripe_customer_portal_removed(self):
+        self.assertNotIn("Open Stripe Customer Portal", self.text)
+
+    def test_manage_subscription_invokes_portal_creator_and_redirect(self):
+        start = self.text.index('st.button("Manage subscription")')
+        window = self.text[start:start + 500]
+        self.assertIn("create_portal_session_url", window)
+        self.assertIn("redirect_to_external_url", window)
+
+    def test_portal_url_not_persisted_in_session_state(self):
+        self.assertNotIn("_billing_portal_url", self.text)
+
+    def test_unmapped_paid_user_message_preserved(self):
+        self.assertIn(
+            "Premium access was granted without a Stripe subscription mapping.",
+            self.text,
+        )
+
+    @patch("utils.billing_stripe._stripe_client")
+    @patch("utils.billing_stripe.get_user_profile")
+    def test_portal_errors_are_sanitized(self, mock_profile, mock_stripe_client):
+        mock_profile.return_value = None
+        with self.assertRaises(BillingActionError) as ctx:
+            create_portal_session_url(
+                "learner@example.com",
+                secrets_getter=_secrets(
+                    STRIPE_SECRET_KEY="sk_test_x",
+                    STRIPE_PRICE_ID=PRICE_ID,
+                    STRIPE_SUCCESS_URL="https://app.example/success",
+                    STRIPE_CANCEL_URL="https://app.example/cancel",
+                    STRIPE_PORTAL_RETURN_URL="https://app.example/Account",
+                ),
+            )
+        self.assertNotIn("sk_test", str(ctx.exception))
+
+
 class TestCompatibility(unittest.TestCase):
     def test_admin_manual_override_preserved(self):
         text = ADMIN_USERS_PATH.read_text(encoding="utf-8")

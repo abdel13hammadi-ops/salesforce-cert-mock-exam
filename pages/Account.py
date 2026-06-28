@@ -288,6 +288,24 @@ def browser_js_value(js_expression: str, key: str) -> str:
         return ""
 
 
+def redirect_to_external_url(url: str, *, key: str) -> None:
+    """Navigate the browser to a server-generated external URL."""
+    target = str(url or "").strip()
+    if not target:
+        return
+    js_url = json.dumps(target)
+    if streamlit_js_eval is not None:
+        streamlit_js_eval(
+            js_expressions=f"window.location.assign({js_url})",
+            key=key,
+        )
+        return
+    components.html(
+        f"<script>window.top.location.assign({js_url});</script>",
+        height=0,
+    )
+
+
 def normalize_timezone(value: str | None, default: str = "UTC") -> str:
     value = str(value or "").strip()
     if not value:
@@ -514,13 +532,9 @@ if current_email:
                         current_email,
                         secrets_getter=get_secret_value,
                     )
-                    st.session_state["_billing_portal_url"] = portal_url
-                    st.rerun()
+                    redirect_to_external_url(portal_url, key="billing_portal_redirect_v1")
                 except BillingActionError as exc:
                     st.error(str(exc))
-            portal_url = st.session_state.get("_billing_portal_url")
-            if portal_url:
-                st.link_button("Open Stripe Customer Portal", portal_url, type="primary")
         else:
             st.caption("Premium access was granted without a Stripe subscription mapping.")
     else:
