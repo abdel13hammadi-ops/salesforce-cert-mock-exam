@@ -760,6 +760,14 @@ def render_sidebar_navigation() -> None:
                 _sidebar_nav_link("pages/Admin_Audit_Review.py", label="Admin Audit Review", icon="🔍")
                 _sidebar_nav_link("pages/Admin_Support_Tickets.py", label="Admin Support Tickets", icon="🎫")
 
+        st.divider()
+        st.markdown("### Legal")
+        from utils.legal_policy_pages import PRIVACY_PAGE, REFUND_PAGE, TERMS_PAGE
+
+        _sidebar_nav_link(TERMS_PAGE, label="Terms of Service")
+        _sidebar_nav_link(PRIVACY_PAGE, label="Privacy Policy")
+        _sidebar_nav_link(REFUND_PAGE, label="Refund and Cancellation Policy")
+
 
 def render_app_chrome() -> None:
     try:

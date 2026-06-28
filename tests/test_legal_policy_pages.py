@@ -24,6 +24,7 @@ from utils.legal_policy_pages import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ACCOUNT_PATH = REPO_ROOT / "pages" / "Account.py"
+ACCESS_CONTROL_PATH = REPO_ROOT / "utils" / "access_control.py"
 POLICY_PAGES = {
     "Terms of Service": REPO_ROOT / "pages" / "Terms_of_Service.py",
     "Privacy Policy": REPO_ROOT / "pages" / "Privacy_Policy.py",
@@ -42,42 +43,49 @@ class TestPublicAccessibility(unittest.TestCase):
                 self.assertNotIn("render_app_chrome()", source)
                 self.assertNotIn("enforce_session_timeout()", source)
 
-    def test_policy_link_helper_declares_all_public_pages(self):
+    def test_policy_page_paths_are_declared(self):
         source = LEGAL_UTILS_PATH.read_text(encoding="utf-8")
         self.assertIn(TERMS_PAGE, source)
         self.assertIn(PRIVACY_PAGE, source)
         self.assertIn(REFUND_PAGE, source)
-        self.assertIn("def render_legal_policy_links", source)
 
 
-class TestNavigationLinks(unittest.TestCase):
+class TestSidebarLegalNavigation(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.sidebar_source = ACCESS_CONTROL_PATH.read_text(encoding="utf-8")
         cls.account_source = ACCOUNT_PATH.read_text(encoding="utf-8")
-
-    def test_account_links_to_all_policy_pages(self):
-        legal_source = LEGAL_UTILS_PATH.read_text(encoding="utf-8")
-        for page_path in (TERMS_PAGE, PRIVACY_PAGE, REFUND_PAGE):
-            self.assertIn(page_path, legal_source)
-        self.assertIn("render_legal_policy_links()", self.account_source)
-
-    def test_account_imports_policy_link_helper(self):
-        self.assertIn("render_legal_policy_links", self.account_source)
-
-    def test_login_tab_renders_policy_links(self):
-        login_block = self.account_source.split('with sign_in_tab:', 1)[1].split("with sign_up_tab:", 1)[0]
-        self.assertIn("render_legal_policy_links()", login_block)
-
-    def test_signup_tab_renders_policy_links(self):
-        signup_block = self.account_source.split("with sign_up_tab:", 1)[1].split("with reset_tab:", 1)[0]
-        self.assertIn("render_legal_policy_links()", signup_block)
-
-    def test_billing_area_renders_policy_links(self):
-        billing_block = self.account_source.split('st.subheader("Premium Billing")', 1)[1].split(
-            'st.subheader("Profile")',
+        cls.legal_sidebar_block = cls.sidebar_source.split("### Legal", 1)[1].split(
+            "def render_app_chrome",
             1,
         )[0]
-        self.assertIn("render_legal_policy_links()", billing_block)
+
+    def test_sidebar_includes_legal_section(self):
+        self.assertIn("### Legal", self.sidebar_source)
+
+    def test_sidebar_renders_all_three_policy_links(self):
+        for page_constant, label in (
+            ("TERMS_PAGE", "Terms of Service"),
+            ("PRIVACY_PAGE", "Privacy Policy"),
+            ("REFUND_PAGE", "Refund and Cancellation Policy"),
+        ):
+            with self.subTest(label=label):
+                self.assertIn(page_constant, self.legal_sidebar_block)
+                self.assertIn(f'label="{label}"', self.legal_sidebar_block)
+
+    def test_sidebar_links_are_stacked_individually(self):
+        self.assertEqual(self.legal_sidebar_block.count("_sidebar_nav_link"), 3)
+        self.assertNotIn("st.columns", self.legal_sidebar_block)
+        self.assertNotIn("st.page_link", self.legal_sidebar_block)
+
+    def test_legal_section_is_outside_primary_learner_navigation(self):
+        premium_idx = self.sidebar_source.index("### Premium")
+        legal_idx = self.sidebar_source.index("### Legal")
+        self.assertLess(premium_idx, legal_idx)
+
+    def test_account_no_longer_renders_horizontal_policy_row(self):
+        self.assertNotIn("render_legal_policy_links", self.account_source)
+        self.assertNotIn("Legal policies", self.account_source)
 
 
 class TestRequiredPolicyHeadings(unittest.TestCase):

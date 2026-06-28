@@ -54,18 +54,6 @@ def render_public_policy_page_header(title: str, page_icon: str) -> None:
     )
 
 
-def render_legal_policy_links() -> None:
-    """Render links to all public legal policy pages."""
-    st.markdown("**Legal policies**")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.page_link(TERMS_PAGE, label="Terms of Service")
-    with col2:
-        st.page_link(PRIVACY_PAGE, label="Privacy Policy")
-    with col3:
-        st.page_link(REFUND_PAGE, label="Refund and Cancellation Policy")
-
-
 def render_terms_content() -> None:
     st.markdown(
         "These Terms of Service govern your use of CertBound, an independent "
@@ -168,7 +156,8 @@ def render_refund_content() -> None:
     st.markdown(
         "CertBound does not automatically promise refunds for partial billing periods, "
         "unused time, or previously processed subscription charges. Refund requests, "
-        "if any, are reviewed case by case at CertBound LLC's discretion."    )
+        "if any, are reviewed case by case at CertBound LLC's discretion."
+    )
     st.subheader("Contact")
     st.markdown(
         f"Billing questions may be sent to {SUPPORT_EMAIL}. "
