@@ -36,10 +36,18 @@ from utils.billing_mapping import (
 )
 from utils.billing_stripe import (
     BillingActionError,
+    PORTAL_MANAGE_LABEL,
+    PORTAL_SESSION_CACHE_SECONDS,
     STRIPE_METADATA_USER_KEY,
+    cache_portal_session_url,
+    clear_cached_portal_session,
     create_checkout_session_url,
     create_portal_session_url,
+    get_cached_portal_session_url,
+    render_portal_session_link_markdown,
+    resolve_portal_session_url,
     release_pending_checkout_claim,
+    validate_stripe_portal_url,
 )
 from utils.billing_webhook import (
     WebhookVerificationError,
@@ -340,7 +348,7 @@ class TestCheckout(unittest.TestCase):
         self.assertNotIn("sk_test", text)
         self.assertNotIn("STRIPE_SECRET_KEY", text.replace("secrets_getter", ""))
         self.assertIn("Upgrade to Premium", text)
-        self.assertIn("Manage subscription", text)
+        self.assertIn("render_portal_session_link_markdown", text)
 
 
 class TestWebhookSecurity(unittest.TestCase):
@@ -748,32 +756,32 @@ class TestAccountPortalControls(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.text = ACCOUNT_PATH.read_text(encoding="utf-8")
+        cls.portal_block = cls.text.split("if stripe_customer_id:", 1)[1].split(
+            'st.caption("Premium access was granted without a Stripe subscription mapping.")',
+            1,
+        )[0]
 
     def test_only_one_manage_subscription_control(self):
-        self.assertEqual(self.text.count('"Manage subscription"'), 1)
+        self.assertEqual(self.portal_block.count("render_portal_session_link_markdown"), 1)
+        self.assertNotIn('st.button("Manage subscription")', self.text)
 
     def test_open_stripe_customer_portal_removed(self):
         self.assertNotIn("Open Stripe Customer Portal", self.text)
 
-    def test_manage_subscription_invokes_portal_creator_once_per_click(self):
-        start = self.text.index('st.button("Manage subscription")')
-        window = self.text[start:start + 500]
-        self.assertEqual(window.count("create_portal_session_url"), 1)
-        self.assertIn("st.rerun()", window)
+    def test_portal_url_created_before_native_anchor(self):
+        resolve_idx = self.portal_block.index("resolve_portal_session_url")
+        render_idx = self.portal_block.index("render_portal_session_link_markdown")
+        self.assertLess(resolve_idx, render_idx)
 
-    def test_redirect_uses_same_tab_top_level_replace(self):
-        start = self.text.index("def redirect_to_external_url")
-        block = self.text[start:start + 400]
-        self.assertIn("json.dumps", block)
-        self.assertIn("window.top.location.replace", block)
-        self.assertNotIn("window.open", block)
-        self.assertNotIn("streamlit_js_eval", block)
-        self.assertNotIn("window.location.assign", block)
+    def test_no_javascript_redirect_or_rerun_remains(self):
+        self.assertNotIn("redirect_to_external_url", self.text)
+        self.assertNotIn("_billing_portal_redirect", self.text)
+        self.assertNotIn("window.top.location", self.text)
+        self.assertNotIn("window.open", self.portal_block)
+        self.assertNotIn("components.html", self.portal_block)
 
-    def test_ephemeral_portal_redirect_state_not_permanent_link(self):
-        self.assertNotIn("_billing_portal_url", self.text)
-        self.assertIn("_billing_portal_redirect", self.text)
-        self.assertIn("st.session_state.pop(\"_billing_portal_redirect\"", self.text)
+    def test_logout_clears_cached_portal_session(self):
+        self.assertIn("clear_cached_portal_session(st.session_state)", self.text)
 
     def test_unmapped_paid_user_message_preserved(self):
         self.assertIn(
@@ -797,6 +805,127 @@ class TestAccountPortalControls(unittest.TestCase):
                 ),
             )
         self.assertNotIn("sk_test", str(ctx.exception))
+
+
+class TestPortalNativeLink(unittest.TestCase):
+    PORTAL_URL = "https://billing.stripe.com/p/session/test_safe"
+
+    def test_rendered_anchor_uses_target_top(self):
+        html = render_portal_session_link_markdown(self.PORTAL_URL)
+        self.assertIn('target="_top"', html)
+        self.assertIn('rel="noopener noreferrer"', html)
+        self.assertIn(PORTAL_MANAGE_LABEL, html)
+
+    def test_rendered_url_is_html_escaped(self):
+        unsafe = 'https://billing.stripe.com/p/session/test?q="onmouseover=alert(1)"'
+        html = render_portal_session_link_markdown(unsafe)
+        self.assertNotIn('"onmouseover=alert(1)"', html)
+        self.assertIn("&quot;", html)
+
+    def test_validate_accepts_https_stripe_portal_url(self):
+        self.assertEqual(
+            validate_stripe_portal_url(self.PORTAL_URL),
+            self.PORTAL_URL,
+        )
+
+    def test_validate_rejects_non_https(self):
+        with self.assertRaises(BillingActionError):
+            validate_stripe_portal_url("http://billing.stripe.com/p/session/test")
+
+    def test_validate_rejects_non_stripe_host(self):
+        with self.assertRaises(BillingActionError):
+            validate_stripe_portal_url("https://evil.example.com/p/session/test")
+
+    def test_cache_reused_for_same_user_customer(self):
+        state = {}
+        now = 1_000_000.0
+        cache_portal_session_url(
+            app_user_id=USER_ID,
+            stripe_customer_id=CUSTOMER_ID,
+            url=self.PORTAL_URL,
+            session_state=state,
+            now=now,
+        )
+        cached = get_cached_portal_session_url(
+            app_user_id=USER_ID,
+            stripe_customer_id=CUSTOMER_ID,
+            session_state=state,
+            now=now + 60,
+        )
+        self.assertEqual(cached, self.PORTAL_URL)
+
+    def test_cache_regenerated_when_expired(self):
+        state = {}
+        now = 1_000_000.0
+        cache_portal_session_url(
+            app_user_id=USER_ID,
+            stripe_customer_id=CUSTOMER_ID,
+            url=self.PORTAL_URL,
+            session_state=state,
+            now=now,
+            ttl_seconds=PORTAL_SESSION_CACHE_SECONDS,
+        )
+        cached = get_cached_portal_session_url(
+            app_user_id=USER_ID,
+            stripe_customer_id=CUSTOMER_ID,
+            session_state=state,
+            now=now + PORTAL_SESSION_CACHE_SECONDS + 1,
+        )
+        self.assertIsNone(cached)
+
+    def test_cache_regenerated_when_customer_mismatch(self):
+        state = {}
+        now = 1_000_000.0
+        cache_portal_session_url(
+            app_user_id=USER_ID,
+            stripe_customer_id=CUSTOMER_ID,
+            url=self.PORTAL_URL,
+            session_state=state,
+            now=now,
+        )
+        cached = get_cached_portal_session_url(
+            app_user_id=USER_ID,
+            stripe_customer_id="cus_other",
+            session_state=state,
+            now=now + 10,
+        )
+        self.assertIsNone(cached)
+
+    @patch("utils.billing_stripe.create_portal_session_url")
+    @patch("utils.billing_stripe.get_user_profile")
+    def test_resolve_portal_session_url_creates_once_then_reuses_cache(
+        self,
+        mock_profile,
+        mock_create_portal,
+    ):
+        mock_profile.return_value = _profile(stripe_customer_id=CUSTOMER_ID)
+        mock_create_portal.return_value = self.PORTAL_URL
+        state = {}
+        now = 2_000_000.0
+        first = resolve_portal_session_url(
+            "learner@example.com",
+            session_state=state,
+            now=now,
+        )
+        second = resolve_portal_session_url(
+            "learner@example.com",
+            session_state=state,
+            now=now + 30,
+        )
+        self.assertEqual(first, self.PORTAL_URL)
+        self.assertEqual(second, self.PORTAL_URL)
+        mock_create_portal.assert_called_once()
+
+    def test_clear_cached_portal_session_removes_cache(self):
+        state = {}
+        cache_portal_session_url(
+            app_user_id=USER_ID,
+            stripe_customer_id=CUSTOMER_ID,
+            url=self.PORTAL_URL,
+            session_state=state,
+        )
+        clear_cached_portal_session(state)
+        self.assertNotIn("_billing_portal_session_cache", state)
 
 
 class TestCompatibility(unittest.TestCase):

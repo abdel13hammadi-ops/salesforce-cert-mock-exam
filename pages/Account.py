@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import streamlit as st
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
-import streamlit.components.v1 as components
 
 try:
     from streamlit_js_eval import streamlit_js_eval
@@ -32,8 +31,10 @@ from utils.version import APP_VERSION
 from utils.billing_config import CHECKOUT_PENDING_MESSAGE, CHECKOUT_SUCCESS_SIGNIN_MESSAGE
 from utils.billing_stripe import (
     BillingActionError,
+    clear_cached_portal_session,
     create_checkout_session_url,
-    create_portal_session_url,
+    render_portal_session_link_markdown,
+    resolve_portal_session_url,
     release_pending_checkout_claim,
 )
 
@@ -47,6 +48,24 @@ show_session_expired_notice()
 
 
 DUPLICATE_ACCOUNT_MESSAGE = "An account already exists for this email. Please log in or use a different email."
+PORTAL_LINK_STYLE = """
+<style>
+a.portal-manage-link {
+    display: inline-block;
+    padding: 0.45rem 1rem;
+    background-color: rgb(255, 75, 75);
+    color: #ffffff !important;
+    text-decoration: none;
+    border-radius: 0.5rem;
+    font-weight: 650;
+    line-height: 1.4;
+}
+a.portal-manage-link:hover {
+    color: #ffffff !important;
+    opacity: 0.92;
+}
+</style>
+"""
 
 
 def normalize_email(email: str | None) -> str:
@@ -288,19 +307,6 @@ def browser_js_value(js_expression: str, key: str) -> str:
         return ""
 
 
-def redirect_to_external_url(url: str) -> None:
-    """Navigate the top-level browser tab to a server-generated external URL."""
-    target = str(url or "").strip()
-    if not target:
-        return
-    js_url = json.dumps(target)
-    components.html(
-        f"<script>window.top.location.replace({js_url});</script>",
-        height=0,
-        scrolling=False,
-    )
-
-
 def normalize_timezone(value: str | None, default: str = "UTC") -> str:
     value = str(value or "").strip()
     if not value:
@@ -521,21 +527,19 @@ if current_email:
         if stripe_sub_status:
             st.caption(f"Stripe subscription status: {stripe_sub_status}")
         if stripe_customer_id:
-            pending_portal_redirect = st.session_state.pop("_billing_portal_redirect", None)
-            if pending_portal_redirect:
-                redirect_to_external_url(pending_portal_redirect)
-                st.stop()
-
-            if st.button("Manage subscription"):
-                try:
-                    portal_url = create_portal_session_url(
-                        current_email,
-                        secrets_getter=get_secret_value,
-                    )
-                    st.session_state["_billing_portal_redirect"] = portal_url
-                    st.rerun()
-                except BillingActionError as exc:
-                    st.error(str(exc))
+            try:
+                portal_url = resolve_portal_session_url(
+                    current_email,
+                    session_state=st.session_state,
+                    secrets_getter=get_secret_value,
+                )
+                st.markdown(PORTAL_LINK_STYLE, unsafe_allow_html=True)
+                st.markdown(
+                    render_portal_session_link_markdown(portal_url),
+                    unsafe_allow_html=True,
+                )
+            except BillingActionError as exc:
+                st.error(str(exc))
         else:
             st.caption("Premium access was granted without a Stripe subscription mapping.")
     else:
@@ -584,6 +588,7 @@ if current_email:
             st.rerun()
     with c2:
         if st.button("Log Out"):
+            clear_cached_portal_session(st.session_state)
             clear_login_state()
             st.success("Logged out.")
             st.rerun()

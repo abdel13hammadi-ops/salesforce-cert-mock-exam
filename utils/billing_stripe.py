@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
+from html import escape
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 from utils.access_control import get_user_profile
 from utils.billing_checkout import (
@@ -32,6 +35,10 @@ from utils.billing_mapping import (
 logger = logging.getLogger(__name__)
 
 STRIPE_METADATA_USER_KEY = "certbound_user_id"
+PORTAL_MANAGE_LABEL = "Manage subscription"
+PORTAL_SESSION_CACHE_SECONDS = 300
+PORTAL_CACHE_SESSION_KEY = "_billing_portal_session_cache"
+PORTAL_SCOPE_SESSION_KEY = "_billing_portal_scope"
 CHECKOUT_BLOCKED_SUBSCRIPTION_STATUSES = (
     "active",
     "trialing",
@@ -281,3 +288,126 @@ def create_portal_session_url(
     if not url:
         raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE)
     return url
+
+
+def validate_stripe_portal_url(url: str) -> str:
+    """Validate a Stripe-hosted Customer Portal URL before rendering."""
+    cleaned = str(url or "").strip()
+    parsed = urlparse(cleaned)
+    if parsed.scheme != "https":
+        raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE)
+    host = str(parsed.hostname or "").strip().lower()
+    if not host.endswith(".stripe.com"):
+        raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE)
+    if not str(parsed.path or "").strip():
+        raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE)
+    return cleaned
+
+
+def clear_cached_portal_session(session_state) -> None:
+    session_state.pop(PORTAL_CACHE_SESSION_KEY, None)
+    session_state.pop(PORTAL_SCOPE_SESSION_KEY, None)
+
+
+def sync_portal_session_scope(
+    *,
+    app_user_id: str,
+    stripe_customer_id: str,
+    session_state,
+) -> None:
+    scope = f"{app_user_id}:{stripe_customer_id}"
+    if session_state.get(PORTAL_SCOPE_SESSION_KEY) == scope:
+        return
+    clear_cached_portal_session(session_state)
+    session_state[PORTAL_SCOPE_SESSION_KEY] = scope
+
+
+def get_cached_portal_session_url(
+    *,
+    app_user_id: str,
+    stripe_customer_id: str,
+    session_state,
+    now: float | None = None,
+) -> str | None:
+    cache = session_state.get(PORTAL_CACHE_SESSION_KEY) or {}
+    if cache.get("app_user_id") != app_user_id or cache.get("stripe_customer_id") != stripe_customer_id:
+        return None
+    expires_at = float(cache.get("expires_at") or 0)
+    if (now or time.time()) >= expires_at:
+        return None
+    url = str(cache.get("url") or "").strip()
+    if not url:
+        return None
+    try:
+        return validate_stripe_portal_url(url)
+    except BillingActionError:
+        return None
+
+
+def cache_portal_session_url(
+    *,
+    app_user_id: str,
+    stripe_customer_id: str,
+    url: str,
+    session_state,
+    ttl_seconds: int = PORTAL_SESSION_CACHE_SECONDS,
+    now: float | None = None,
+) -> str:
+    validated = validate_stripe_portal_url(url)
+    ts = float(now or time.time())
+    session_state[PORTAL_CACHE_SESSION_KEY] = {
+        "app_user_id": app_user_id,
+        "stripe_customer_id": stripe_customer_id,
+        "url": validated,
+        "expires_at": ts + max(int(ttl_seconds), 60),
+    }
+    return validated
+
+
+def resolve_portal_session_url(
+    email: str,
+    *,
+    session_state,
+    secrets_getter: Optional[Callable[[str, str], str]] = None,
+    now: float | None = None,
+) -> str:
+    """Return a validated portal URL, reusing a short-lived cached session when valid."""
+    profile = _require_profile(email)
+    app_user_id = str(profile.get("id") or "").strip()
+    stripe_customer_id = str(profile.get("stripe_customer_id") or "").strip()
+    sync_portal_session_scope(
+        app_user_id=app_user_id,
+        stripe_customer_id=stripe_customer_id,
+        session_state=session_state,
+    )
+    cached = get_cached_portal_session_url(
+        app_user_id=app_user_id,
+        stripe_customer_id=stripe_customer_id,
+        session_state=session_state,
+        now=now,
+    )
+    if cached:
+        return cached
+    url = create_portal_session_url(email, secrets_getter=secrets_getter)
+    return cache_portal_session_url(
+        app_user_id=app_user_id,
+        stripe_customer_id=stripe_customer_id,
+        url=url,
+        session_state=session_state,
+        now=now,
+    )
+
+
+def render_portal_session_link_markdown(
+    url: str,
+    *,
+    label: str = PORTAL_MANAGE_LABEL,
+) -> str:
+    """Render one native same-tab portal anchor for Streamlit markdown."""
+    validated = validate_stripe_portal_url(url)
+    safe_href = escape(validated, quote=True)
+    safe_label = escape(label, quote=False)
+    return (
+        f'<a href="{safe_href}" target="_top" rel="noopener noreferrer" '
+        f'class="portal-manage-link">{safe_label}</a>'
+    )
