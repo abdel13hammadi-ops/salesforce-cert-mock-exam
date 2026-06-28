@@ -7,6 +7,12 @@ import uuid
 from typing import Any, Callable, Dict, Optional
 
 from utils.access_control import get_user_profile
+from utils.billing_checkout import (
+    CHECKOUT_CLAIM_TTL_SECONDS,
+    checkout_idempotency_key,
+    claim_checkout_session,
+    release_checkout_claim,
+)
 from utils.billing_config import (
     ALREADY_SUBSCRIBED_MESSAGE,
     BILLING_UNAVAILABLE_MESSAGE,
@@ -18,11 +24,22 @@ from utils.billing_config import (
     get_stripe_secret_key,
     get_stripe_success_url,
 )
-from utils.billing_mapping import user_has_blocking_stripe_subscription
+from utils.billing_mapping import (
+    customer_subscriptions_block_checkout,
+    user_has_blocking_stripe_subscription,
+)
 
 logger = logging.getLogger(__name__)
 
 STRIPE_METADATA_USER_KEY = "certbound_user_id"
+CHECKOUT_BLOCKED_SUBSCRIPTION_STATUSES = (
+    "active",
+    "trialing",
+    "past_due",
+    "unpaid",
+    "incomplete",
+    "paused",
+)
 
 
 class BillingActionError(Exception):
@@ -57,9 +74,56 @@ def _stripe_client(*, secrets_getter: Optional[Callable[[str, str], str]] = None
     return stripe
 
 
+def _admin_client():
+    from utils.access_control import get_supabase_admin_client  # noqa: PLC0415
+
+    return get_supabase_admin_client()
+
+
 def _ensure_checkout_allowed(profile: Dict[str, Any]) -> None:
     if user_has_blocking_stripe_subscription(profile):
         raise BillingActionError(ALREADY_SUBSCRIBED_MESSAGE)
+
+
+def _get_pending_checkout_url(app_user_id: str, *, admin_client=None) -> str:
+    client = admin_client or _admin_client()
+    client.rpc("expire_billing_checkout_claims_v1", {"p_app_user_id": app_user_id}).execute()
+    result = (
+        client.table("billing_checkout_claims")
+        .select("checkout_url")
+        .eq("app_user_id", app_user_id)
+        .eq("claim_status", "pending")
+        .gt("expires_at", "now()")
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
+        return ""
+    return str((rows[0] or {}).get("checkout_url") or "").strip()
+
+
+def _stripe_customer_blocks_checkout(
+    stripe,
+    customer_id: str,
+) -> bool:
+    if not customer_id:
+        return False
+    subscriptions = stripe.Subscription.list(
+        customer=customer_id,
+        status="all",
+        limit=100,
+    )
+    data = []
+    for subscription in getattr(subscriptions, "data", None) or subscriptions.get("data") or []:
+        if hasattr(subscription, "to_dict"):
+            data.append(subscription.to_dict())
+        elif isinstance(subscription, dict):
+            data.append(subscription)
+        else:
+            data.append({"status": getattr(subscription, "status", "")})
+    return customer_subscriptions_block_checkout(data)
 
 
 def _get_or_create_customer(
@@ -84,9 +148,7 @@ def _get_or_create_customer(
     if not customer_id:
         raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE)
 
-    from utils.access_control import get_supabase_admin_client  # noqa: PLC0415
-
-    get_supabase_admin_client().table("app_users").update(
+    _admin_client().table("app_users").update(
         {"stripe_customer_id": customer_id}
     ).eq("id", user_id).execute()
     profile["stripe_customer_id"] = customer_id
@@ -107,6 +169,12 @@ def create_checkout_session_url(
     profile = _require_profile(email)
     _ensure_checkout_allowed(profile)
 
+    user_id = str(profile.get("id") or "").strip()
+    admin = _admin_client()
+    pending_url = _get_pending_checkout_url(user_id, admin_client=admin)
+    if pending_url:
+        return pending_url
+
     price_id = get_stripe_price_id(secrets_getter=secrets_getter)
     success_url = get_stripe_success_url(secrets_getter=secrets_getter)
     cancel_url = get_stripe_cancel_url(secrets_getter=secrets_getter)
@@ -114,8 +182,7 @@ def create_checkout_session_url(
         raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE)
 
     stripe = _stripe_client(secrets_getter=secrets_getter)
-    user_id = str(profile.get("id") or "").strip()
-    idempotency_key = f"certbound-checkout-{user_id}-{uuid.uuid4()}"
+    idempotency_key = checkout_idempotency_key(user_id)
 
     customer_id = _get_or_create_customer(
         stripe,
@@ -123,24 +190,64 @@ def create_checkout_session_url(
         secrets_getter=secrets_getter,
         idempotency_key=idempotency_key,
     )
+    if _stripe_customer_blocks_checkout(stripe, customer_id):
+        raise BillingActionError(ALREADY_SUBSCRIBED_MESSAGE)
 
-    session = stripe.checkout.Session.create(
-        mode="subscription",
-        customer=customer_id,
-        client_reference_id=user_id,
-        line_items=[{"price": price_id, "quantity": 1}],
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata={STRIPE_METADATA_USER_KEY: user_id},
-        subscription_data={
-            "metadata": {STRIPE_METADATA_USER_KEY: user_id},
-        },
-        idempotency_key=idempotency_key,
-    )
-    url = str(getattr(session, "url", "") or session.get("url") or "")
-    if not url:
-        raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE)
-    return url
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            customer=customer_id,
+            client_reference_id=user_id,
+            line_items=[{"price": price_id, "quantity": 1}],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={STRIPE_METADATA_USER_KEY: user_id},
+            subscription_data={
+                "metadata": {STRIPE_METADATA_USER_KEY: user_id},
+            },
+            idempotency_key=idempotency_key,
+        )
+        url = str(getattr(session, "url", "") or session.get("url") or "")
+        session_id = str(getattr(session, "id", "") or session.get("id") or "")
+        if not url:
+            raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE)
+
+        claim = claim_checkout_session(
+            app_user_id=user_id,
+            idempotency_key=idempotency_key,
+            checkout_url=url,
+            checkout_session_id=session_id,
+            ttl_seconds=CHECKOUT_CLAIM_TTL_SECONDS,
+            admin_client=admin,
+        )
+        claimed_url = str(claim.get("checkout_url") or url).strip()
+        if not claimed_url:
+            raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE)
+        return claimed_url
+    except BillingActionError:
+        release_checkout_claim(app_user_id=user_id, idempotency_key=idempotency_key, admin_client=admin)
+        raise
+    except Exception as exc:
+        logger.exception("checkout session creation failed for user %s", user_id)
+        release_checkout_claim(app_user_id=user_id, idempotency_key=idempotency_key, admin_client=admin)
+        raise BillingActionError(BILLING_UNAVAILABLE_MESSAGE) from exc
+
+
+def release_pending_checkout_claim(
+    email: str,
+    *,
+    secrets_getter: Optional[Callable[[str, str], str]] = None,
+) -> None:
+    """Release a pending checkout claim after the user cancels Checkout."""
+    if not email:
+        return
+    profile = get_user_profile(email)
+    if not profile:
+        return
+    user_id = str(profile.get("id") or "").strip()
+    if not user_id:
+        return
+    release_checkout_claim(app_user_id=user_id)
 
 
 def create_portal_session_url(

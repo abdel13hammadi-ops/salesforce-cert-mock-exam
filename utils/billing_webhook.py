@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import json
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 
 class WebhookVerificationError(Exception):
@@ -76,6 +76,124 @@ def unix_to_iso(value: Any) -> Optional[str]:
         return None
 
 
+def _nested_stripe_id(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, dict):
+        return str(value.get("id") or "").strip()
+    return str(value).strip()
+
+
+def extract_invoice_subscription_id(invoice: Dict[str, Any]) -> str:
+    """Resolve subscription ID from legacy and 2026-06-24.dahlia invoice payloads."""
+    subscription_id = _nested_stripe_id(invoice.get("subscription"))
+    if subscription_id:
+        return subscription_id
+
+    parent = invoice.get("parent") or {}
+    subscription_details = parent.get("subscription_details") or {}
+    subscription_id = _nested_stripe_id(subscription_details.get("subscription"))
+    if subscription_id:
+        return subscription_id
+
+    lines = invoice.get("lines") or {}
+    for line in lines.get("data") or []:
+        line_parent = (line or {}).get("parent") or {}
+        item_details = line_parent.get("subscription_item_details") or {}
+        subscription_id = _nested_stripe_id(item_details.get("subscription"))
+        if subscription_id:
+            return subscription_id
+    return ""
+
+
+def extract_invoice_certbound_user_id(invoice: Dict[str, Any]) -> str:
+    """Resolve CertBound user ID from Dahlia invoice metadata locations."""
+    user_id = certbound_user_id_from_metadata(invoice.get("metadata"))
+    if user_id:
+        return user_id
+
+    parent = invoice.get("parent") or {}
+    subscription_details = parent.get("subscription_details") or {}
+    user_id = certbound_user_id_from_metadata(subscription_details.get("metadata"))
+    if user_id:
+        return user_id
+
+    lines = invoice.get("lines") or {}
+    for line in lines.get("data") or []:
+        user_id = certbound_user_id_from_metadata((line or {}).get("metadata"))
+        if user_id:
+            return user_id
+    return ""
+
+
+def normalize_supabase_scalar_rpc_return(data: Any) -> str:
+    """Normalize Supabase scalar RPC return shapes to a plain string."""
+    if data in (None, ""):
+        return ""
+    if isinstance(data, str):
+        return data.strip()
+    if isinstance(data, list) and data:
+        return normalize_supabase_scalar_rpc_return(data[0])
+    if isinstance(data, dict):
+        for key in (
+            "resolve_app_user_id_by_stripe_customer_v1",
+            "value",
+            "result",
+        ):
+            if key in data:
+                return normalize_supabase_scalar_rpc_return(data.get(key))
+    return str(data).strip()
+
+
+CANONICAL_INVOICE_BLOCKING_STATUSES = frozenset({"active", "trialing", "past_due"})
+
+
+def should_ignore_noncanonical_invoice_event(
+    *,
+    invoice_subscription_id: str,
+    canonical_subscription_id: str,
+    canonical_subscription_status: str,
+) -> bool:
+    """Ignore invoice events for a different subscription when canonical is established."""
+    invoice_sub = str(invoice_subscription_id or "").strip()
+    canonical_sub = str(canonical_subscription_id or "").strip()
+    canonical_status = str(canonical_subscription_status or "").strip().lower()
+    if not invoice_sub or not canonical_sub:
+        return False
+    if invoice_sub == canonical_sub:
+        return False
+    return canonical_status in CANONICAL_INVOICE_BLOCKING_STATUSES
+
+
+def apply_noncanonical_invoice_guard(
+    payload: Dict[str, Any],
+    *,
+    canonical_subscription_id: str,
+    canonical_subscription_status: str,
+) -> Tuple[Dict[str, Any], bool]:
+    """Strip entitlement/subscription writes for duplicate noncanonical invoice events."""
+    payload = dict(payload)
+    event_type = str(payload.get("p_event_type") or "")
+    if event_type not in {"invoice.paid", "invoice.payment_failed"}:
+        return payload, False
+
+    if not should_ignore_noncanonical_invoice_event(
+        invoice_subscription_id=str(payload.get("p_stripe_subscription_id") or ""),
+        canonical_subscription_id=canonical_subscription_id,
+        canonical_subscription_status=canonical_subscription_status,
+    ):
+        return payload, False
+
+    payload["p_update_entitlement"] = False
+    payload["p_revoke_entitlement"] = False
+    payload["p_stripe_subscription_id"] = ""
+    payload["p_stripe_subscription_status"] = ""
+    payload["p_stripe_price_id"] = ""
+    payload["p_stripe_current_period_end"] = None
+    payload["p_stripe_cancel_at_period_end"] = False
+    return payload, True
+
+
 def normalize_subscription_fields(subscription: Dict[str, Any]) -> Dict[str, Any]:
     items = subscription.get("items") or {}
     data = items.get("data") or []
@@ -92,6 +210,24 @@ def normalize_subscription_fields(subscription: Dict[str, Any]) -> Dict[str, Any
         "stripe_current_period_end": unix_to_iso(subscription.get("current_period_end")),
         "stripe_cancel_at_period_end": bool(subscription.get("cancel_at_period_end")),
     }
+
+
+def resolve_certbound_user_id(
+    certbound_user_id: str,
+    stripe_customer_id: str,
+    *,
+    lookup_by_customer: Callable[[str], str] | None = None,
+) -> Tuple[str, bool]:
+    resolved = str(certbound_user_id or "").strip()
+    if resolved:
+        return resolved, False
+    customer_id = str(stripe_customer_id or "").strip()
+    if not customer_id or lookup_by_customer is None:
+        return "", False
+    looked_up = normalize_supabase_scalar_rpc_return(lookup_by_customer(customer_id))
+    if looked_up:
+        return looked_up, True
+    return "", False
 
 
 def build_rpc_payload_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -119,7 +255,7 @@ def build_rpc_payload_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
     if event_type == "checkout.session.completed":
         payload["p_certbound_user_id"] = str(obj.get("client_reference_id") or "") or certbound_user_id_from_metadata(metadata)
         payload["p_stripe_customer_id"] = str(obj.get("customer") or "")
-        payload["p_stripe_subscription_id"] = str(obj.get("subscription") or "")
+        payload["p_stripe_subscription_id"] = _nested_stripe_id(obj.get("subscription"))
         payload["p_update_entitlement"] = False
         return payload
 
@@ -136,18 +272,17 @@ def build_rpc_payload_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
         return payload
 
     if event_type == "invoice.paid":
-        subscription = obj.get("subscription")
         payload["p_stripe_customer_id"] = str(obj.get("customer") or "")
-        payload["p_stripe_subscription_id"] = str(subscription or "")
-        payload["p_certbound_user_id"] = certbound_user_id_from_metadata(metadata)
+        payload["p_stripe_subscription_id"] = extract_invoice_subscription_id(obj)
+        payload["p_certbound_user_id"] = extract_invoice_certbound_user_id(obj)
         payload["p_stripe_subscription_status"] = "active"
         payload["p_update_entitlement"] = True
         return payload
 
     if event_type == "invoice.payment_failed":
         payload["p_stripe_customer_id"] = str(obj.get("customer") or "")
-        payload["p_stripe_subscription_id"] = str(obj.get("subscription") or "")
-        payload["p_certbound_user_id"] = certbound_user_id_from_metadata(metadata)
+        payload["p_stripe_subscription_id"] = extract_invoice_subscription_id(obj)
+        payload["p_certbound_user_id"] = extract_invoice_certbound_user_id(obj)
         payload["p_stripe_subscription_status"] = "past_due"
         payload["p_update_entitlement"] = True
         return payload
@@ -173,6 +308,35 @@ def should_process_event_type(event_type: str) -> bool:
         "charge.dispute.created",
         "charge.refunded",
     }
+
+
+def prepare_rpc_payload(
+    payload: Dict[str, Any],
+    *,
+    lookup_by_customer: Callable[[str], str] | None = None,
+    canonical_subscription_id: str = "",
+    canonical_subscription_status: str = "",
+) -> Tuple[Dict[str, Any], bool, str]:
+    """Resolve missing user ownership and validate payload for RPC processing."""
+    user_id, _ = resolve_certbound_user_id(
+        str(payload.get("p_certbound_user_id") or ""),
+        str(payload.get("p_stripe_customer_id") or ""),
+        lookup_by_customer=lookup_by_customer,
+    )
+    payload = dict(payload)
+    if user_id:
+        payload["p_certbound_user_id"] = user_id
+
+    ok, message = validate_rpc_payload(payload)
+    if not ok:
+        return payload, ok, message
+
+    payload, _ignored = apply_noncanonical_invoice_guard(
+        payload,
+        canonical_subscription_id=canonical_subscription_id,
+        canonical_subscription_status=canonical_subscription_status,
+    )
+    return payload, True, ""
 
 
 def validate_rpc_payload(payload: Dict[str, Any]) -> Tuple[bool, str]:

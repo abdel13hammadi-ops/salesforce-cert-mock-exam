@@ -16,12 +16,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.billing_config import (
     CHECKOUT_PENDING_MESSAGE,
+    CHECKOUT_SUCCESS_SIGNIN_MESSAGE,
+    STRIPE_WEBHOOK_API_VERSION,
     expected_livemode,
     livemode_matches_config,
 )
+from utils.billing_checkout import (
+    CHECKOUT_WINDOW_SECONDS,
+    checkout_idempotency_key,
+    release_checkout_claim,
+)
 from utils.billing_mapping import (
     certbound_status_grants_premium,
+    customer_subscriptions_block_checkout,
     map_stripe_subscription_status_to_certbound,
+    stripe_status_blocks_new_checkout,
     stripe_status_grants_premium,
     user_has_blocking_stripe_subscription,
 )
@@ -30,18 +39,34 @@ from utils.billing_stripe import (
     STRIPE_METADATA_USER_KEY,
     create_checkout_session_url,
     create_portal_session_url,
+    release_pending_checkout_claim,
 )
 from utils.billing_webhook import (
     WebhookVerificationError,
+    apply_noncanonical_invoice_guard,
     build_rpc_payload_from_event,
+    extract_invoice_certbound_user_id,
+    extract_invoice_subscription_id,
+    normalize_supabase_scalar_rpc_return,
+    prepare_rpc_payload,
+    resolve_certbound_user_id,
+    should_ignore_noncanonical_invoice_event,
     should_process_event_type,
     validate_rpc_payload,
     verify_stripe_signature,
+)
+from tests.fixtures.dahlia_invoice_paid_production import (
+    DAHLIA_FIXTURE_CANONICAL_SUBSCRIPTION_ID,
+    DAHLIA_FIXTURE_CUSTOMER_ID,
+    DAHLIA_FIXTURE_DUPLICATE_SUBSCRIPTION_ID,
+    DAHLIA_FIXTURE_USER_ID,
+    DAHLIA_INVOICE_PAID_FIXTURE_EVENT,
 )
 from utils.access_control import PAID_STATUS_VALUES
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = REPO_ROOT / "supabase" / "migrations" / "20260625000000_v46_stripe_billing_foundation.sql"
+CLAIMS_MIGRATION_PATH = REPO_ROOT / "supabase" / "migrations" / "20260625120000_v46_stripe_checkout_claims.sql"
 EDGE_FUNCTION_PATH = REPO_ROOT / "supabase" / "functions" / "stripe-webhook" / "index.ts"
 ACCOUNT_PATH = REPO_ROOT / "pages" / "Account.py"
 ADMIN_USERS_PATH = REPO_ROOT / "pages" / "Admin_Users.py"
@@ -77,6 +102,50 @@ def _profile(**overrides):
     }
     base.update(overrides)
     return base
+
+
+def _mock_checkout_admin(*, pending_rows=None, claim_url="https://checkout.stripe.test/session_123"):
+    admin = MagicMock()
+
+    def rpc_side_effect(name, payload=None):
+        result = MagicMock()
+        if name == "expire_billing_checkout_claims_v1":
+            result.execute.return_value = MagicMock(data=0)
+        elif name == "claim_billing_checkout_v1":
+            result.execute.return_value = MagicMock(
+                data=[{
+                    "claim_id": "claim-1",
+                    "checkout_url": claim_url,
+                    "outcome": "created",
+                }]
+            )
+        elif name == "release_billing_checkout_claim_v1":
+            result.execute.return_value = MagicMock(data=1)
+        return result
+
+    admin.rpc.side_effect = rpc_side_effect
+
+    def table_side_effect(name):
+        table = MagicMock()
+        if name == "billing_checkout_claims":
+            table.select.return_value.eq.return_value.eq.return_value.gt.return_value.order.return_value.limit.return_value.execute.return_value = MagicMock(
+                data=pending_rows or []
+            )
+        elif name == "app_users":
+            table.update.return_value.eq.return_value.execute.return_value = MagicMock()
+        return table
+
+    admin.table.side_effect = table_side_effect
+    return admin
+
+
+def _checkout_secrets():
+    return _secrets(
+        STRIPE_SECRET_KEY="sk_test_x",
+        STRIPE_PRICE_ID=PRICE_ID,
+        STRIPE_SUCCESS_URL="https://app.example/Account?billing=success",
+        STRIPE_CANCEL_URL="https://app.example/Account?billing=cancel",
+    )
 
 
 class TestMigrationShape(unittest.TestCase):
@@ -134,30 +203,24 @@ class TestCheckout(unittest.TestCase):
                 STRIPE_CANCEL_URL="https://app.example/Account?billing=cancel",
             ))
 
+    @patch("utils.billing_stripe._admin_client")
     @patch("utils.billing_stripe._stripe_client")
     @patch("utils.billing_stripe.get_user_profile")
-    def test_checkout_uses_server_price_and_metadata(self, mock_profile, mock_stripe_client):
+    def test_checkout_uses_server_price_and_metadata(self, mock_profile, mock_stripe_client, mock_admin_client):
         mock_profile.return_value = _profile()
+        mock_admin_client.return_value = _mock_checkout_admin()
         stripe = MagicMock()
         mock_stripe_client.return_value = stripe
         customer = MagicMock()
         customer.id = CUSTOMER_ID
         stripe.Customer.create.return_value = customer
+        stripe.Subscription.list.return_value = MagicMock(data=[])
         session = MagicMock()
         session.url = "https://checkout.stripe.test/session_123"
+        session.id = "cs_test_123"
         stripe.checkout.Session.create.return_value = session
 
-        with patch("utils.access_control.get_supabase_admin_client") as mock_admin:
-            mock_admin.return_value.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
-            url = create_checkout_session_url(
-                "learner@example.com",
-                secrets_getter=_secrets(
-                    STRIPE_SECRET_KEY="sk_test_x",
-                    STRIPE_PRICE_ID=PRICE_ID,
-                    STRIPE_SUCCESS_URL="https://app.example/Account?billing=success",
-                    STRIPE_CANCEL_URL="https://app.example/Account?billing=cancel",
-                ),
-            )
+        url = create_checkout_session_url("learner@example.com", secrets_getter=_checkout_secrets())
 
         self.assertEqual(url, "https://checkout.stripe.test/session_123")
         kwargs = stripe.checkout.Session.create.call_args.kwargs
@@ -165,28 +228,79 @@ class TestCheckout(unittest.TestCase):
         self.assertEqual(kwargs["client_reference_id"], USER_ID)
         self.assertEqual(kwargs["metadata"][STRIPE_METADATA_USER_KEY], USER_ID)
         self.assertEqual(kwargs["subscription_data"]["metadata"][STRIPE_METADATA_USER_KEY], USER_ID)
-        self.assertTrue(kwargs["idempotency_key"].startswith(f"certbound-checkout-{USER_ID}-"))
+        self.assertEqual(kwargs["idempotency_key"], checkout_idempotency_key(USER_ID))
 
+    @patch("utils.billing_stripe._admin_client")
+    @patch("utils.billing_stripe._stripe_client")
     @patch("utils.billing_stripe.get_user_profile")
-    def test_existing_customer_is_reused(self, mock_profile):
+    def test_existing_customer_is_reused(self, mock_profile, mock_stripe_client, mock_admin_client):
         mock_profile.return_value = _profile(stripe_customer_id=CUSTOMER_ID)
-        with patch("utils.billing_stripe._stripe_client") as mock_stripe_client:
-            stripe = MagicMock()
-            mock_stripe_client.return_value = stripe
-            session = MagicMock()
-            session.url = "https://checkout.stripe.test/session_456"
-            stripe.checkout.Session.create.return_value = session
-            create_checkout_session_url(
-                "learner@example.com",
-                secrets_getter=_secrets(
-                    STRIPE_SECRET_KEY="sk_test_x",
-                    STRIPE_PRICE_ID=PRICE_ID,
-                    STRIPE_SUCCESS_URL="https://app.example/success",
-                    STRIPE_CANCEL_URL="https://app.example/cancel",
-                ),
-            )
-            stripe.Customer.create.assert_not_called()
-            self.assertEqual(stripe.checkout.Session.create.call_args.kwargs["customer"], CUSTOMER_ID)
+        mock_admin_client.return_value = _mock_checkout_admin()
+        stripe = MagicMock()
+        mock_stripe_client.return_value = stripe
+        stripe.Subscription.list.return_value = MagicMock(data=[])
+        session = MagicMock()
+        session.url = "https://checkout.stripe.test/session_456"
+        session.id = "cs_test_456"
+        stripe.checkout.Session.create.return_value = session
+        create_checkout_session_url("learner@example.com", secrets_getter=_checkout_secrets())
+        stripe.Customer.create.assert_not_called()
+        self.assertEqual(stripe.checkout.Session.create.call_args.kwargs["customer"], CUSTOMER_ID)
+
+    @patch("utils.billing_stripe._admin_client")
+    @patch("utils.billing_stripe._stripe_client")
+    @patch("utils.billing_stripe.get_user_profile")
+    def test_repeated_upgrade_clicks_reuse_pending_checkout(self, mock_profile, mock_stripe_client, mock_admin_client):
+        mock_profile.return_value = _profile(stripe_customer_id=CUSTOMER_ID)
+        pending_url = "https://checkout.stripe.test/pending_789"
+        mock_admin_client.return_value = _mock_checkout_admin(
+            pending_rows=[{"checkout_url": pending_url}],
+        )
+        stripe = MagicMock()
+        mock_stripe_client.return_value = stripe
+
+        url = create_checkout_session_url("learner@example.com", secrets_getter=_checkout_secrets())
+
+        self.assertEqual(url, pending_url)
+        stripe.checkout.Session.create.assert_not_called()
+
+    @patch("utils.billing_stripe._admin_client")
+    @patch("utils.billing_stripe._stripe_client")
+    @patch("utils.billing_stripe.get_user_profile")
+    def test_stripe_blocking_subscription_prevents_checkout(self, mock_profile, mock_stripe_client, mock_admin_client):
+        mock_profile.return_value = _profile(stripe_customer_id=CUSTOMER_ID)
+        mock_admin_client.return_value = _mock_checkout_admin()
+        stripe = MagicMock()
+        mock_stripe_client.return_value = stripe
+        stripe.Subscription.list.return_value = MagicMock(data=[{"status": "active"}])
+
+        with self.assertRaises(BillingActionError):
+            create_checkout_session_url("learner@example.com", secrets_getter=_checkout_secrets())
+
+        stripe.checkout.Session.create.assert_not_called()
+
+    @patch("utils.billing_stripe.release_checkout_claim")
+    @patch("utils.billing_stripe._admin_client")
+    @patch("utils.billing_stripe._stripe_client")
+    @patch("utils.billing_stripe.get_user_profile")
+    def test_failed_checkout_creation_releases_claim(
+        self,
+        mock_profile,
+        mock_stripe_client,
+        mock_admin_client,
+        mock_release,
+    ):
+        mock_profile.return_value = _profile(stripe_customer_id=CUSTOMER_ID)
+        mock_admin_client.return_value = _mock_checkout_admin()
+        stripe = MagicMock()
+        mock_stripe_client.return_value = stripe
+        stripe.Subscription.list.return_value = MagicMock(data=[])
+        stripe.checkout.Session.create.side_effect = RuntimeError("stripe down")
+
+        with self.assertRaises(BillingActionError):
+            create_checkout_session_url("learner@example.com", secrets_getter=_checkout_secrets())
+
+        mock_release.assert_called_once()
 
     @patch("utils.billing_stripe.get_user_profile")
     def test_active_subscriber_cannot_start_parallel_checkout(self, mock_profile):
@@ -275,9 +389,18 @@ class TestWebhookSecurity(unittest.TestCase):
 
     def test_edge_function_verifies_signature_and_mode(self):
         text = EDGE_FUNCTION_PATH.read_text(encoding="utf-8")
-        self.assertIn("constructEventAsync", text)
+        self.assertIn("verifyStripeSignature", text)
+        self.assertIn("crypto.subtle", text)
+        self.assertNotIn("constructEventAsync", text)
+        self.assertNotIn("Deno.core.runMicrotasks", text)
+        self.assertNotIn("from \"https://esm.sh/stripe@", text)
         self.assertIn("Stripe-Signature", text)
         self.assertIn("livemode mismatch", text)
+        self.assertIn("resolve_app_user_id_by_stripe_customer_v1", text)
+        self.assertIn("extractInvoiceCertboundUserId", text)
+        self.assertIn("normalizeSupabaseScalarRpcData", text)
+        self.assertIn("applyNoncanonicalInvoiceGuard", text)
+        self.assertIn("complete_billing_checkout_claim_v1", text)
         self.assertIn("verify_jwt = false", (REPO_ROOT / "supabase" / "config.toml").read_text(encoding="utf-8"))
 
 
@@ -400,6 +523,161 @@ class TestWebhookState(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("certbound user id", message)
 
+    def test_dahlia_invoice_paid_normalizes_without_top_level_subscription(self):
+        payload = build_rpc_payload_from_event({
+            "id": "evt_inv_paid_dahlia",
+            "type": "invoice.paid",
+            "livemode": False,
+            "created": 1_700_000_450,
+            "data": {
+                "object": {
+                    "id": "in_test_dahlia",
+                    "customer": CUSTOMER_ID,
+                    "metadata": {},
+                    "parent": {
+                        "subscription_details": {
+                            "subscription": SUBSCRIPTION_ID,
+                        }
+                    },
+                }
+            },
+        })
+        self.assertEqual(payload["p_stripe_subscription_id"], SUBSCRIPTION_ID)
+        self.assertEqual(payload["p_stripe_customer_id"], CUSTOMER_ID)
+        self.assertTrue(payload["p_update_entitlement"])
+
+    def test_invoice_user_id_from_parent_subscription_details_metadata(self):
+        payload = build_rpc_payload_from_event({
+            "id": "evt_inv_parent_meta",
+            "type": "invoice.paid",
+            "livemode": False,
+            "created": 1_700_000_451,
+            "data": {
+                "object": {
+                    "id": "in_parent_meta",
+                    "customer": CUSTOMER_ID,
+                    "metadata": {},
+                    "parent": {
+                        "subscription_details": {
+                            "metadata": {STRIPE_METADATA_USER_KEY: USER_ID},
+                            "subscription": SUBSCRIPTION_ID,
+                        }
+                    },
+                }
+            },
+        })
+        self.assertEqual(payload["p_certbound_user_id"], USER_ID)
+
+    def test_invoice_user_id_from_line_item_metadata(self):
+        payload = build_rpc_payload_from_event({
+            "id": "evt_inv_line_meta",
+            "type": "invoice.paid",
+            "livemode": False,
+            "created": 1_700_000_452,
+            "data": {
+                "object": {
+                    "id": "in_line_meta",
+                    "customer": CUSTOMER_ID,
+                    "metadata": {},
+                    "lines": {
+                        "data": [{
+                            "metadata": {STRIPE_METADATA_USER_KEY: USER_ID},
+                            "parent": {
+                                "subscription_item_details": {
+                                    "subscription": SUBSCRIPTION_ID,
+                                }
+                            },
+                        }]
+                    },
+                }
+            },
+        })
+        self.assertEqual(payload["p_certbound_user_id"], USER_ID)
+        self.assertEqual(payload["p_stripe_subscription_id"], SUBSCRIPTION_ID)
+
+    def test_scalar_rpc_return_shape_is_normalized(self):
+        self.assertEqual(
+            normalize_supabase_scalar_rpc_return(DAHLIA_FIXTURE_USER_ID),
+            DAHLIA_FIXTURE_USER_ID,
+        )
+        self.assertEqual(
+            normalize_supabase_scalar_rpc_return([DAHLIA_FIXTURE_USER_ID]),
+            DAHLIA_FIXTURE_USER_ID,
+        )
+
+    def test_invoice_paid_resolves_user_from_persisted_customer_mapping(self):
+        payload = build_rpc_payload_from_event({
+            "id": "evt_inv_paid_lookup",
+            "type": "invoice.paid",
+            "livemode": False,
+            "created": 1_700_000_460,
+            "data": {
+                "object": {
+                    "id": "in_test_lookup",
+                    "customer": CUSTOMER_ID,
+                    "metadata": {},
+                    "parent": {
+                        "subscription_details": {
+                            "subscription": SUBSCRIPTION_ID,
+                        }
+                    },
+                }
+            },
+        })
+        prepared, ok, _ = prepare_rpc_payload(
+            payload,
+            lookup_by_customer=lambda customer_id: USER_ID if customer_id == CUSTOMER_ID else "",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(prepared["p_certbound_user_id"], USER_ID)
+
+    def test_customer_lookup_fallback_uses_scalar_rpc_return(self):
+        payload = build_rpc_payload_from_event({
+            "id": "evt_inv_scalar_lookup",
+            "type": "invoice.paid",
+            "livemode": False,
+            "created": 1_700_000_461,
+            "data": {
+                "object": {
+                    "id": "in_scalar_lookup",
+                    "customer": DAHLIA_FIXTURE_CUSTOMER_ID,
+                    "metadata": {},
+                }
+            },
+        })
+        user_id, looked_up = resolve_certbound_user_id(
+            "",
+            DAHLIA_FIXTURE_CUSTOMER_ID,
+            lookup_by_customer=lambda _customer_id: DAHLIA_FIXTURE_USER_ID,
+        )
+        self.assertEqual(user_id, DAHLIA_FIXTURE_USER_ID)
+        self.assertTrue(looked_up)
+        prepared, ok, _ = prepare_rpc_payload(payload, lookup_by_customer=lambda _customer_id: DAHLIA_FIXTURE_USER_ID)
+        self.assertTrue(ok)
+        self.assertEqual(prepared["p_certbound_user_id"], DAHLIA_FIXTURE_USER_ID)
+
+    def test_missing_safe_ownership_mapping_fails_closed(self):
+        payload = build_rpc_payload_from_event({
+            "id": "evt_inv_paid_missing",
+            "type": "invoice.paid",
+            "livemode": False,
+            "created": 1_700_000_470,
+            "data": {
+                "object": {
+                    "id": "in_test_missing",
+                    "customer": CUSTOMER_ID,
+                    "metadata": {},
+                }
+            },
+        })
+        _, ok, message = prepare_rpc_payload(payload, lookup_by_customer=lambda _customer_id: "")
+        self.assertFalse(ok)
+        self.assertIn("certbound user id", message)
+
+    def test_stale_event_protection_remains_in_migration(self):
+        sql = MIGRATION_PATH.read_text(encoding="utf-8")
+        self.assertIn("stale stripe event", sql)
+
 
 class TestPortal(unittest.TestCase):
     @patch("utils.billing_stripe._stripe_client")
@@ -476,7 +754,16 @@ class TestCompatibility(unittest.TestCase):
         text = ACCOUNT_PATH.read_text(encoding="utf-8")
         self.assertIn("CHECKOUT_PENDING_MESSAGE", text)
         self.assertIn("st.info(CHECKOUT_PENDING_MESSAGE)", text)
+        self.assertIn("CHECKOUT_SUCCESS_SIGNIN_MESSAGE", text)
         self.assertNotIn("stripe_customer_id=", text)
+        self.assertNotIn("fr_session", text)
+        self.assertNotIn("billing=success&", text)
+
+    def test_unauthenticated_success_return_shows_sign_in_guidance(self):
+        text = ACCOUNT_PATH.read_text(encoding="utf-8")
+        self.assertIn('billing_return == "success"', text)
+        self.assertIn("CHECKOUT_SUCCESS_SIGNIN_MESSAGE", text)
+        self.assertIn("Your payment succeeded.", text)
 
     def test_no_real_credentials_in_repo_source(self):
         patterns = ("sk_live_", "whsec_", "rk_live_", "sk_test_51")
@@ -502,6 +789,144 @@ class TestCompatibility(unittest.TestCase):
             stripe_subscription_status="active",
         )))
         self.assertFalse(user_has_blocking_stripe_subscription(_profile()))
+
+    def test_problem_subscription_states_block_checkout(self):
+        for status in ("active", "trialing", "past_due", "unpaid", "incomplete", "paused"):
+            self.assertTrue(stripe_status_blocks_new_checkout(status))
+            self.assertTrue(customer_subscriptions_block_checkout([{"status": status}]))
+
+
+class TestCheckoutClaimsMigration(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.sql = CLAIMS_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    def test_claim_table_and_rpcs_exist(self):
+        self.assertIn("billing_checkout_claims", self.sql)
+        self.assertIn("claim_billing_checkout_v1", self.sql)
+        self.assertIn("release_billing_checkout_claim_v1", self.sql)
+        self.assertIn("complete_billing_checkout_claim_v1", self.sql)
+        self.assertIn("resolve_app_user_id_by_stripe_customer_v1", self.sql)
+
+    def test_checkout_idempotency_key_is_deterministic_per_window(self):
+        now = 1_700_000_000.0
+        first = checkout_idempotency_key(USER_ID, now=now)
+        second = checkout_idempotency_key(USER_ID, now=now + 60)
+        third = checkout_idempotency_key(USER_ID, now=now + CHECKOUT_WINDOW_SECONDS)
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, third)
+
+    def test_pending_claim_release_helper(self):
+        admin = MagicMock()
+        admin.rpc.return_value.execute.return_value = MagicMock(data=1)
+        release_checkout_claim(app_user_id=USER_ID, admin_client=admin)
+        admin.rpc.assert_called_with(
+            "release_billing_checkout_claim_v1",
+            {"p_app_user_id": USER_ID},
+        )
+
+    @patch("utils.billing_stripe.get_user_profile")
+    @patch("utils.billing_stripe.release_checkout_claim")
+    def test_cancel_return_releases_pending_claim(self, mock_release, mock_profile):
+        mock_profile.return_value = _profile()
+        release_pending_checkout_claim("learner@example.com")
+        mock_release.assert_called_once_with(app_user_id=USER_ID)
+
+
+class TestWebhookApiVersion(unittest.TestCase):
+    def test_webhook_api_version_constant_matches_stripe_destination(self):
+        self.assertEqual(STRIPE_WEBHOOK_API_VERSION, "2026-06-24.dahlia")
+
+    def test_extract_invoice_subscription_from_line_item_parent(self):
+        invoice = {
+            "lines": {
+                "data": [{
+                    "parent": {
+                        "subscription_item_details": {
+                            "subscription": SUBSCRIPTION_ID,
+                        }
+                    }
+                }]
+            }
+        }
+        self.assertEqual(extract_invoice_subscription_id(invoice), SUBSCRIPTION_ID)
+
+    def test_resolve_certbound_user_id_prefers_metadata(self):
+        user_id, looked_up = resolve_certbound_user_id(
+            USER_ID,
+            CUSTOMER_ID,
+            lookup_by_customer=lambda _customer_id: "other-user",
+        )
+        self.assertEqual(user_id, USER_ID)
+        self.assertFalse(looked_up)
+
+
+class TestDahliaInvoiceProductionFixture(unittest.TestCase):
+    def test_production_fixture_resolves_user_and_subscription(self):
+        payload = build_rpc_payload_from_event(DAHLIA_INVOICE_PAID_FIXTURE_EVENT)
+        self.assertEqual(payload["p_certbound_user_id"], DAHLIA_FIXTURE_USER_ID)
+        self.assertEqual(payload["p_stripe_customer_id"], DAHLIA_FIXTURE_CUSTOMER_ID)
+        self.assertEqual(payload["p_stripe_subscription_id"], DAHLIA_FIXTURE_DUPLICATE_SUBSCRIPTION_ID)
+        prepared, ok, message = prepare_rpc_payload(payload)
+        self.assertTrue(ok, msg=message)
+        self.assertEqual(prepared["p_certbound_user_id"], DAHLIA_FIXTURE_USER_ID)
+
+    def test_production_fixture_extract_helpers_match_event(self):
+        invoice = DAHLIA_INVOICE_PAID_FIXTURE_EVENT["data"]["object"]
+        self.assertEqual(extract_invoice_certbound_user_id(invoice), DAHLIA_FIXTURE_USER_ID)
+        self.assertEqual(extract_invoice_subscription_id(invoice), DAHLIA_FIXTURE_DUPLICATE_SUBSCRIPTION_ID)
+
+    def test_canonical_matching_invoice_processes_normally(self):
+        payload = build_rpc_payload_from_event(DAHLIA_INVOICE_PAID_FIXTURE_EVENT)
+        payload["p_stripe_subscription_id"] = DAHLIA_FIXTURE_CANONICAL_SUBSCRIPTION_ID
+        prepared, ok, _ = prepare_rpc_payload(
+            payload,
+            canonical_subscription_id=DAHLIA_FIXTURE_CANONICAL_SUBSCRIPTION_ID,
+            canonical_subscription_status="active",
+        )
+        self.assertTrue(ok)
+        self.assertTrue(prepared["p_update_entitlement"])
+        self.assertEqual(prepared["p_stripe_subscription_id"], DAHLIA_FIXTURE_CANONICAL_SUBSCRIPTION_ID)
+
+    def test_duplicate_subscription_invoice_is_ignored_without_entitlement_change(self):
+        payload = build_rpc_payload_from_event(DAHLIA_INVOICE_PAID_FIXTURE_EVENT)
+        prepared, ok, _ = prepare_rpc_payload(
+            payload,
+            canonical_subscription_id=DAHLIA_FIXTURE_CANONICAL_SUBSCRIPTION_ID,
+            canonical_subscription_status="active",
+        )
+        self.assertTrue(ok)
+        self.assertFalse(prepared["p_update_entitlement"])
+        self.assertEqual(prepared["p_stripe_subscription_id"], "")
+        self.assertEqual(prepared["p_stripe_subscription_status"], "")
+
+    def test_duplicate_invoice_does_not_replace_canonical_subscription_id(self):
+        payload = build_rpc_payload_from_event(DAHLIA_INVOICE_PAID_FIXTURE_EVENT)
+        guarded, ignored = apply_noncanonical_invoice_guard(
+            payload,
+            canonical_subscription_id=DAHLIA_FIXTURE_CANONICAL_SUBSCRIPTION_ID,
+            canonical_subscription_status="active",
+        )
+        self.assertTrue(ignored)
+        self.assertEqual(guarded["p_stripe_subscription_id"], "")
+        self.assertFalse(guarded["p_update_entitlement"])
+
+    def test_should_ignore_noncanonical_invoice_only_when_canonical_is_established(self):
+        self.assertTrue(should_ignore_noncanonical_invoice_event(
+            invoice_subscription_id=DAHLIA_FIXTURE_DUPLICATE_SUBSCRIPTION_ID,
+            canonical_subscription_id=DAHLIA_FIXTURE_CANONICAL_SUBSCRIPTION_ID,
+            canonical_subscription_status="active",
+        ))
+        self.assertFalse(should_ignore_noncanonical_invoice_event(
+            invoice_subscription_id=DAHLIA_FIXTURE_DUPLICATE_SUBSCRIPTION_ID,
+            canonical_subscription_id=DAHLIA_FIXTURE_CANONICAL_SUBSCRIPTION_ID,
+            canonical_subscription_status="canceled",
+        ))
+        self.assertFalse(should_ignore_noncanonical_invoice_event(
+            invoice_subscription_id=DAHLIA_FIXTURE_CANONICAL_SUBSCRIPTION_ID,
+            canonical_subscription_id=DAHLIA_FIXTURE_CANONICAL_SUBSCRIPTION_ID,
+            canonical_subscription_status="active",
+        ))
 
 
 if __name__ == "__main__":

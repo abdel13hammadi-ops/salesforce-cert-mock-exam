@@ -29,8 +29,13 @@ from utils.access_control import (
 )
 
 from utils.version import APP_VERSION
-from utils.billing_config import CHECKOUT_PENDING_MESSAGE
-from utils.billing_stripe import BillingActionError, create_checkout_session_url, create_portal_session_url
+from utils.billing_config import CHECKOUT_PENDING_MESSAGE, CHECKOUT_SUCCESS_SIGNIN_MESSAGE
+from utils.billing_stripe import (
+    BillingActionError,
+    create_checkout_session_url,
+    create_portal_session_url,
+    release_pending_checkout_claim,
+)
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -466,6 +471,7 @@ detected_timezone = detected_browser_timezone()
 detected_default_language = default_language_from_browser(language_codes, question_language_codes)
 
 current_email = get_current_user_email()
+billing_return = get_query_param("billing")
 
 if current_email:
     profile = get_existing_profile(current_email) or {}
@@ -485,14 +491,13 @@ if current_email:
     status = get_subscription_status(current_email)
     st.write(f"Subscription status: **{status}**")
 
-    billing_return = get_query_param("billing")
     if billing_return == "success":
-        refreshed_status = get_subscription_status(current_email)
         if has_premium_access(current_email):
             st.success("Premium access is active on your account.")
         else:
             st.info(CHECKOUT_PENDING_MESSAGE)
     elif billing_return == "cancel":
+        release_pending_checkout_claim(current_email, secrets_getter=get_secret_value)
         st.warning("Checkout was canceled. You can upgrade whenever you are ready.")
 
     st.subheader("Premium Billing")
@@ -583,6 +588,12 @@ if current_email:
                     st.error("Invalid admin password or email is not allowed.")
 
 else:
+    if billing_return == "success":
+        st.success("Your payment succeeded.")
+        st.info(CHECKOUT_SUCCESS_SIGNIN_MESSAGE)
+    elif billing_return == "cancel":
+        st.warning("Checkout was canceled. Sign in and upgrade again whenever you are ready.")
+
     st.info("Create an account or log in to access the platform.")
     sign_in_tab, sign_up_tab, reset_tab = st.tabs(["Log In", "Create Account", "Forgot Password"])
 

@@ -6,6 +6,7 @@ import os
 from typing import Optional
 
 STRIPE_API_VERSION = "2024-11-20.acacia"
+STRIPE_WEBHOOK_API_VERSION = "2026-06-24.dahlia"
 
 STRIPE_SECRET_ENV = "STRIPE_SECRET_KEY"
 STRIPE_WEBHOOK_SECRET_ENV = "STRIPE_WEBHOOK_SECRET"
@@ -17,6 +18,12 @@ CERTBOUND_STRIPE_MODE_ENV = "CERTBOUND_STRIPE_MODE"
 
 CHECKOUT_PENDING_MESSAGE = (
     "Payment received. Premium access will appear after billing confirmation."
+)
+CHECKOUT_SUCCESS_SIGNIN_MESSAGE = (
+    "Your payment succeeded. Sign in to confirm Premium access on your account."
+)
+CHECKOUT_OPEN_SESSION_MESSAGE = (
+    "A Stripe Checkout session is already open. Complete or cancel it before starting another upgrade."
 )
 BILLING_UNAVAILABLE_MESSAGE = (
     "Billing is temporarily unavailable. Please try again later or contact support."
