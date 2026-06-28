@@ -6,6 +6,15 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from utils.access_control import get_supabase_auth_client, render_sidebar_navigation
+from utils.password_reset_errors import (
+    CATEGORY_RECOVERY_INVALID,
+    CATEGORY_SAME_PASSWORD,
+    CATEGORY_UNEXPECTED,
+    CATEGORY_VALIDATION,
+    classify_password_update_error,
+    classify_recovery_session_error,
+    log_password_reset_failure,
+)
 
 try:
     from streamlit_js_eval import streamlit_js_eval
@@ -174,9 +183,9 @@ if st.button("Update Password", type="primary"):
     elif new_password != confirm_password:
         st.warning("Passwords do not match.")
     else:
-        try:
-            client = get_supabase_auth_client()
+        client = get_supabase_auth_client()
 
+        try:
             try:
                 client.auth.set_session(access_token, refresh_token)
             except TypeError:
@@ -184,40 +193,54 @@ if st.button("Update Password", type="primary"):
                     "access_token": access_token,
                     "refresh_token": refresh_token,
                 })
+        except Exception as session_exc:
+            category, message = classify_recovery_session_error(session_exc)
+            if category == CATEGORY_UNEXPECTED:
+                log_password_reset_failure("password reset session bootstrap failed", session_exc)
+            st.error(message)
+        else:
+            try:
+                client.auth.update_user({"password": new_password})
+            except Exception as update_exc:
+                category, message = classify_password_update_error(update_exc)
+                if category == CATEGORY_SAME_PASSWORD:
+                    st.warning(message)
+                elif category == CATEGORY_VALIDATION:
+                    st.warning(message)
+                elif category == CATEGORY_RECOVERY_INVALID:
+                    st.error(message)
+                else:
+                    log_password_reset_failure("password reset password update failed", update_exc)
+                    st.error(message)
+            else:
+                st.success("Password updated. You can now log in with your new password.")
+                st.page_link("pages/Account.py", label="Go to Login", icon="👤")
 
-            client.auth.update_user({"password": new_password})
+                components.html(
+                    """
+                    <script>
+                    (function () {
+                        function getRealLocation() {
+                            try {
+                                if (window.parent && window.parent.location) {
+                                    return window.parent.location;
+                                }
+                            } catch (e) {}
+                            return window.location;
+                        }
 
-            st.success("Password updated. You can now log in with your new password.")
-            st.page_link("pages/Account.py", label="Go to Login", icon="👤")
+                        const loc = getRealLocation();
+                        const origin = loc.origin || (loc.protocol + "//" + loc.host);
+                        const path = loc.pathname || "/Reset_Password";
 
-            components.html(
-                """
-                <script>
-                (function () {
-                    function getRealLocation() {
-                        try {
-                            if (window.parent && window.parent.location) {
-                                return window.parent.location;
-                            }
-                        } catch (e) {}
-                        return window.location;
-                    }
-
-                    const loc = getRealLocation();
-                    const origin = loc.origin || (loc.protocol + "//" + loc.host);
-                    const path = loc.pathname || "/Reset_Password";
-
-                    if (loc.search.includes("access_token=") || loc.hash.includes("access_token=")) {
-                        loc.replace(origin + path);
-                    }
-                })();
-                </script>
-                """,
-                height=0,
-            )
-        except Exception as exc:
-            st.error("Could not update password. The reset link may be expired or already used.")
-            st.caption(str(exc))
+                        if (loc.search.includes("access_token=") || loc.hash.includes("access_token=")) {
+                            loc.replace(origin + path);
+                        }
+                    })();
+                    </script>
+                    """,
+                    height=0,
+                )
 
 st.divider()
 st.caption("Independent exam-prep platform. Not affiliated with Salesforce.")
