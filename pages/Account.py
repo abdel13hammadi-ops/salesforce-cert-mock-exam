@@ -38,6 +38,7 @@ from utils.billing_stripe import (
     resolve_portal_session_url,
     release_pending_checkout_claim,
 )
+from utils.legal_policy_pages import render_legal_policy_links
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
@@ -571,6 +572,8 @@ if current_email:
         if checkout_url:
             st.link_button("Continue to Stripe Checkout", checkout_url, type="primary")
 
+    render_legal_policy_links()
+
     st.subheader("Profile")
     saved_language = profile.get("preferred_language_code") or st.session_state.get("preferred_language_code", detected_default_language)
     if saved_language not in language_codes:
@@ -681,6 +684,8 @@ else:
                     st.error("Login failed. Please check your credentials or reset your password.")
                     st.code(f"{type(exc).__name__}: {repr(exc)}")
 
+        render_legal_policy_links()
+
     with sign_up_tab:
         st.subheader("Create Account")
         name_col1, name_col2 = st.columns(2)
@@ -759,6 +764,7 @@ else:
                         st.caption(str(exc))
                     st.stop()
 
+        render_legal_policy_links()
 
     with reset_tab:
         st.subheader("Reset Password")
