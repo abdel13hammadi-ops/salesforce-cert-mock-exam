@@ -1,13 +1,17 @@
-import json
-from collections import Counter, defaultdict
-from datetime import datetime, timezone
-
 import pandas as pd
 import streamlit as st
+from collections import Counter
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.access_control import get_supabase_admin_client, render_app_chrome, require_admin
 
 from utils.version import APP_VERSION
+
+READ_ONLY_CONTAINMENT_NOTICE = (
+    "Live question editing is disabled on this page. "
+    "All future content changes must use immutable question versions "
+    "and the governed audit/publication workflow. "
+    "Use Admin Audit Review to inspect existing audit findings."
+)
 
 st.set_page_config(page_title="Admin Question Review", layout="wide")
 render_app_chrome()
@@ -130,14 +134,17 @@ def load_answer_option_counts():
     result = supabase.table("answer_options").select("question_id, is_correct").execute()
     rows = result.data or []
 
-    counts = defaultdict(lambda: {"options": 0, "correct": 0})
+    counts = {}
     for row in rows:
         qid = row.get("question_id")
-        if qid:
-            counts[qid]["options"] += 1
-            if row.get("is_correct"):
-                counts[qid]["correct"] += 1
-    return dict(counts)
+        if not qid:
+            continue
+        if qid not in counts:
+            counts[qid] = {"options": 0, "correct": 0}
+        counts[qid]["options"] += 1
+        if row.get("is_correct"):
+            counts[qid]["correct"] += 1
+    return counts
 
 
 @st.cache_data(ttl=30)
@@ -153,34 +160,13 @@ def load_answer_options(question_id):
     return result.data or []
 
 
-def clear_cache_and_rerun():
-    st.cache_data.clear()
-    st.rerun()
-
-
-def update_question(question_id, updates):
-    supabase = get_supabase_client()
-    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-    return supabase.table("questions").update(updates).eq("id", question_id).execute()
-
-
-def update_answer_option(option_id, updates):
-    supabase = get_supabase_client()
-    return supabase.table("answer_options").update(updates).eq("id", option_id).execute()
-
-
-def normalize_bool(value):
-    return bool(value) if value is not None else False
-
-
-def valid_email_or_none(value):
-    value = str(value or "").strip().lower()
-    return value if "@" in value and "." in value.split("@")[-1] else None
+def format_bool(value):
+    return "Yes" if value else "No"
 
 
 st.title("Admin Question Review")
-st.caption(f"App Version: {APP_VERSION}")
-st.info("Admin-only page for reviewing and editing questions, answers, explanations, categories, difficulty, and eligibility.")
+st.caption(f"App Version: {APP_VERSION} | Read-only bank browser")
+st.warning(READ_ONLY_CONTAINMENT_NOTICE)
 
 exam_names, display_by_exam = build_exam_options()
 if not exam_names:
@@ -259,13 +245,15 @@ with filter_col3:
 with filter_col4:
     selected_type = st.selectbox("Question Type", ["All"] + QUESTION_TYPES)
 
-filter_col5, filter_col6, filter_col7 = st.columns(3)
+filter_col5, filter_col6, filter_col7, filter_col8 = st.columns(4)
 with filter_col5:
     active_filter = st.selectbox("Active", ["All", "Active only", "Inactive only"])
 with filter_col6:
     eligible_filter = st.selectbox("Exam Eligible", ["All", "Eligible only", "Not eligible only"])
 with filter_col7:
     search_text = st.text_input("Search question text")
+with filter_col8:
+    id_search = st.text_input("Search question ID")
 
 filtered = []
 for q in questions:
@@ -286,6 +274,8 @@ for q in questions:
     if eligible_filter == "Not eligible only" and q.get("is_exam_eligible"):
         continue
     if search_text and search_text.lower() not in (q.get("question_text") or "").lower():
+        continue
+    if id_search and id_search.strip() not in str(q.get("id") or ""):
         continue
     filtered.append(q)
 
@@ -314,7 +304,7 @@ for q in filtered:
 st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
 
 st.divider()
-st.header("Review / Edit One Question")
+st.header("Browse One Question")
 
 if not filtered:
     st.warning("No question matches the current filters.")
@@ -362,190 +352,31 @@ with st.expander("Current Answer Options", expanded=True):
         ]
         st.dataframe(pd.DataFrame(option_rows), use_container_width=True, hide_index=True)
 
-with st.form(f"edit_question_text_metadata_{qid}"):
-    st.subheader("Edit Question, Explanation, and Metadata")
+with st.expander("Explanation and Metadata", expanded=True):
+    st.markdown("**Explanation**")
+    st.write(q.get("explanation") or "_No explanation provided._")
 
-    new_question_text = st.text_area("Question Text", value=q.get("question_text") or "", height=160)
-    new_explanation = st.text_area("Explanation", value=q.get("explanation") or "", height=220)
+    detail_col1, detail_col2 = st.columns(2)
+    with detail_col1:
+        st.markdown("**Category**")
+        st.write(q.get("category") or "—")
+        st.markdown("**Difficulty**")
+        st.write(q.get("difficulty") or "—")
+        st.markdown("**Quality Status**")
+        st.write(q.get("quality_status") or "—")
+        st.markdown("**Question Type**")
+        st.write(q.get("question_type") or "—")
+    with detail_col2:
+        st.markdown("**Select Count**")
+        st.write(q.get("select_count") if q.get("select_count") is not None else "—")
+        st.markdown("**Active**")
+        st.write(format_bool(q.get("is_active")))
+        st.markdown("**Exam Eligible**")
+        st.write(format_bool(q.get("is_exam_eligible")))
+        st.markdown("**Review Notes**")
+        st.write(q.get("review_notes") or "—")
 
-    edit_col1, edit_col2 = st.columns(2)
-    with edit_col1:
-        new_category = st.selectbox(
-            "Category",
-            CATEGORIES,
-            index=CATEGORIES.index(q.get("category")) if q.get("category") in CATEGORIES else 0,
-        )
-        new_difficulty = st.selectbox(
-            "Difficulty",
-            DIFFICULTIES,
-            index=DIFFICULTIES.index(q.get("difficulty")) if q.get("difficulty") in DIFFICULTIES else 1,
-        )
-        new_quality = st.selectbox(
-            "Quality Status",
-            QUALITY_STATUSES,
-            index=QUALITY_STATUSES.index(q.get("quality_status")) if q.get("quality_status") in QUALITY_STATUSES else 0,
-        )
-        new_question_type = st.selectbox(
-            "Question Type",
-            QUESTION_TYPES,
-            index=QUESTION_TYPES.index(q.get("question_type")) if q.get("question_type") in QUESTION_TYPES else 0,
-        )
-
-    with edit_col2:
-        new_select_count_raw = st.number_input(
-            "Select Count for multi-select questions. Use 0 for single-answer questions.",
-            min_value=0,
-            max_value=5,
-            value=int(q.get("select_count") or 0),
-            step=1,
-        )
-        new_active = st.checkbox("Active", value=normalize_bool(q.get("is_active")))
-        new_exam_eligible = st.checkbox("Exam Eligible", value=normalize_bool(q.get("is_exam_eligible")))
-        new_review_notes = st.text_area("Review Notes", value=q.get("review_notes") or "", height=120)
-
-    save_question_button = st.form_submit_button("Save Question Text / Explanation / Metadata", type="primary")
-
-    if save_question_button:
-        if not new_question_text.strip():
-            st.error("Question text cannot be blank.")
-        elif not new_explanation.strip():
-            st.error("Explanation cannot be blank.")
-        elif new_question_type == "single" and new_select_count_raw != 0:
-            st.error("Single-answer questions must use select_count = 0.")
-        elif new_question_type == "multiple" and new_select_count_raw < 2:
-            st.error("Multi-select questions should have select_count of at least 2.")
-        else:
-            updates = {
-                "question_text": new_question_text.strip(),
-                "explanation": new_explanation.strip(),
-                "category": new_category,
-                "difficulty": new_difficulty,
-                "quality_status": new_quality,
-                "question_type": new_question_type,
-                "select_count": None if new_question_type == "single" else int(new_select_count_raw),
-                "is_active": new_active,
-                "is_exam_eligible": new_exam_eligible,
-                "review_notes": new_review_notes,
-            }
-            try:
-                update_question(qid, updates)
-                st.success("Question text, explanation, and metadata saved ✅")
-                clear_cache_and_rerun()
-            except Exception as exc:
-                st.error(f"Could not save question updates: {exc}")
-
-st.divider()
-
-with st.form(f"edit_answer_options_{qid}"):
-    st.subheader("Edit Answer Options")
-    st.caption("Change answer text and mark the correct answer(s). For single-answer questions, exactly one option must be correct.")
-
-    option_updates = []
-    if not answer_options:
-        st.warning("No answer options available to edit.")
-    else:
-        for idx, option in enumerate(answer_options):
-            st.markdown(f"**Option {idx + 1}**")
-            oc1, oc2, oc3 = st.columns([1, 6, 1])
-            with oc1:
-                option_label = st.text_input(
-                    "Label",
-                    value=option.get("option_label") or chr(65 + idx),
-                    key=f"label_{qid}_{option.get('id')}",
-                )
-            with oc2:
-                option_text = st.text_area(
-                    "Answer Text",
-                    value=option.get("option_text") or "",
-                    height=90,
-                    key=f"text_{qid}_{option.get('id')}",
-                )
-            with oc3:
-                is_correct = st.checkbox(
-                    "Correct",
-                    value=normalize_bool(option.get("is_correct")),
-                    key=f"correct_{qid}_{option.get('id')}",
-                )
-            display_order = idx + 1
-            option_updates.append(
-                {
-                    "id": option.get("id"),
-                    "option_label": option_label.strip(),
-                    "option_text": option_text.strip(),
-                    "is_correct": bool(is_correct),
-                    "display_order": display_order,
-                }
-            )
-
-    save_options_button = st.form_submit_button("Save Answer Options", type="primary")
-
-    if save_options_button:
-        if not option_updates:
-            st.error("No answer options to save.")
-        elif any(not item["option_text"] for item in option_updates):
-            st.error("Answer option text cannot be blank.")
-        else:
-            correct_count = sum(1 for item in option_updates if item["is_correct"])
-            current_type = q.get("question_type", "single")
-            current_select_count = q.get("select_count")
-
-            if current_type == "single" and correct_count != 1:
-                st.error("Single-answer questions must have exactly one correct answer.")
-            elif current_type == "multiple" and correct_count < 2:
-                st.error("Multi-select questions must have at least two correct answers.")
-            elif current_type == "multiple" and current_select_count and int(current_select_count) != correct_count:
-                st.error(f"This question has select_count={current_select_count}, but {correct_count} options are marked correct. Update select_count or correct answers first.")
-            else:
-                try:
-                    for item in option_updates:
-                        option_id = item.pop("id")
-                        update_answer_option(option_id, item)
-                    st.success("Answer options saved ✅")
-                    clear_cache_and_rerun()
-                except Exception as exc:
-                    st.error(f"Could not save answer options: {exc}")
-
-st.divider()
-st.header("Fast Quality Actions")
-fast_col1, fast_col2, fast_col3 = st.columns(3)
-
-with fast_col1:
-    if st.button("Approve + Make Exam Eligible"):
-        update_question(
-            qid,
-            {
-                "quality_status": "approved",
-                "is_active": True,
-                "is_exam_eligible": True,
-                "review_notes": q.get("review_notes") or "Approved from admin review page.",
-            },
-        )
-        st.success("Question approved and made exam eligible ✅")
-        clear_cache_and_rerun()
-
-with fast_col2:
-    if st.button("Needs Edit + Remove From Exam"):
-        update_question(
-            qid,
-            {
-                "quality_status": "needs_edit",
-                "is_exam_eligible": False,
-                "review_notes": q.get("review_notes") or "Needs edit from admin review page.",
-            },
-        )
-        st.warning("Question marked needs_edit and removed from exam eligibility.")
-        clear_cache_and_rerun()
-
-with fast_col3:
-    if st.button("Reject + Deactivate"):
-        update_question(
-            qid,
-            {
-                "quality_status": "reject",
-                "is_active": False,
-                "is_exam_eligible": False,
-                "review_notes": q.get("review_notes") or "Rejected from admin review page.",
-            },
-        )
-        st.error("Question rejected and deactivated.")
-        clear_cache_and_rerun()
+st.info(
+    "This page is read-only. To review audit findings or progress versioned remediation, "
+    "open Admin Audit Review from the sidebar."
+)
