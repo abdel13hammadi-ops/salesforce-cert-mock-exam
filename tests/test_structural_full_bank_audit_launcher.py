@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -13,15 +15,26 @@ from workers.structural_audit_launcher import (
     ADM_EXAM_NAME,
     BA_EXAM_NAME,
     DEFAULT_RULESET_VERSION,
+    DEFAULT_SNAPSHOT_PAGE_SIZE,
     MalformedSelectionError,
+    StructuralAuditEnqueueError,
     UnknownCertificationError,
+    EnqueueState,
+    VersionTarget,
     _rows_to_targets,
     apply_max_questions,
+    atomic_write_enqueue_state,
     batch_items,
     build_deterministic_audit_payload,
     build_structural_audit_plan,
+    enqueue_deterministic_audit_job,
     execute_structural_audit_plan,
     extract_active_job_keys,
+    extract_retryable_job_keys,
+    load_completed_deterministic_audit_keys,
+    load_completed_duplicate_audit_keys,
+    load_question_version_snapshots_bulk,
+    load_resume_state,
     load_version_targets_for_certifications,
     resolve_certification_scope,
 )
@@ -91,6 +104,7 @@ class _FakeQuery:
         self._select_fields = "*"
         self._in_filters = []
         self._order = None
+        self._json_filters = []
 
     def select(self, fields):
         self._select_fields = fields
@@ -104,11 +118,18 @@ class _FakeQuery:
         self._in_filters.append((field, list(values)))
         return self
 
+    def filter(self, field, op, value):
+        self._json_filters.append((field, op, value))
+        return self
+
     def order(self, field):
         self._order = field
         return self
 
     def execute(self):
+        self._client.table_execute_counts[self._table_name] = (
+            self._client.table_execute_counts.get(self._table_name, 0) + 1
+        )
         rows = self._client._table_rows.get(self._table_name, [])
         if self._table_name == "questions" and self._client._active_question_ids:
             scoped_rows = []
@@ -122,16 +143,27 @@ class _FakeQuery:
                 filtered = [row for row in filtered if row.get(field) == value]
         for field, values in self._in_filters:
             filtered = [row for row in filtered if row.get(field) in values]
+        for field, op, value in self._json_filters:
+            if op != "eq" or "->>" not in field:
+                continue
+            json_key = field.split("->>", 1)[1].strip().strip("'").strip('"')
+            filtered = [
+                row
+                for row in filtered
+                if str((row.get("metadata") or {}).get(json_key)) == str(value)
+            ]
         return _FakeResult(filtered)
 
 
 class FakeSupabase:
     def __init__(self):
         self.rpc_calls = []
+        self.table_execute_counts = {}
         self._rpc_responses = {}
         self._active_question_ids = {}
         self._table_rows = {
             "background_jobs": [],
+            "audit_runs": [],
             "question_versions": [
                 {
                     "id": _ADM_QV_1,
@@ -295,7 +327,7 @@ class TestIdempotency(unittest.TestCase):
         plan = build_structural_audit_plan(
             self.client,
             certification_scope="adm",
-            active_jobs=active_jobs,
+            background_jobs=active_jobs,
         )
         self.assertEqual(plan.skipped_pending_deterministic, [_ADM_QV_1])
         self.assertEqual(len(plan.deterministic_jobs_to_enqueue), 1)
@@ -318,7 +350,7 @@ class TestIdempotency(unittest.TestCase):
         plan = build_structural_audit_plan(
             self.client,
             certification_scope="adm",
-            active_jobs=active_jobs,
+            background_jobs=active_jobs,
         )
         self.assertEqual(plan.skipped_pending_deterministic, [])
         self.assertEqual(len(plan.deterministic_jobs_to_enqueue), 2)
@@ -338,7 +370,7 @@ class TestIdempotency(unittest.TestCase):
             self.client,
             certification_scope="adm",
             ruleset_version=DEFAULT_RULESET_VERSION,
-            active_jobs=active_jobs,
+            background_jobs=active_jobs,
         )
         self.assertEqual(len(plan.deterministic_jobs_to_enqueue), 2)
 
@@ -356,7 +388,7 @@ class TestIdempotency(unittest.TestCase):
         plan = build_structural_audit_plan(
             self.client,
             certification_scope="both",
-            active_jobs=active_jobs,
+            background_jobs=active_jobs,
         )
         self.assertEqual(plan.skipped_pending_duplicate, [ADM_EXAM_NAME])
         self.assertEqual(plan.duplicate_certifications_to_enqueue, [BA_EXAM_NAME])
@@ -392,7 +424,6 @@ class TestExecution(unittest.TestCase):
             self.client,
             plan,
             dry_run=False,
-            load_snapshot=lambda _qvid: _SNAPSHOT,
         )
         self.assertEqual(summary.enqueued_deterministic_jobs, 1)
         self.assertEqual(summary.enqueued_duplicate_scans, 1)
@@ -417,7 +448,6 @@ class TestExecution(unittest.TestCase):
                 self.client,
                 plan,
                 dry_run=False,
-                load_snapshot=lambda _qvid: _SNAPSHOT,
             )
             factory.assert_not_called()
 
@@ -447,6 +477,722 @@ class TestExecution(unittest.TestCase):
             if call["name"] == "enqueue_background_job_v1"
         ]
         self.assertEqual(enqueue_calls, [])
+
+
+class TestBulkSnapshotLoading(unittest.TestCase):
+    _QV_2 = "aaaaaaaa-0000-0000-0000-000000000002"
+    _QV_3 = "aaaaaaaa-0000-0000-0000-000000000003"
+
+    def setUp(self):
+        self.client = FakeSupabase()
+        self.client._table_rows["question_versions"] = [
+            {
+                "id": _ADM_QV_1,
+                "question_text": "Stem one",
+                "explanation": "Because one.",
+                "question_type": "single",
+                "select_count": 1,
+            },
+            {
+                "id": self._QV_2,
+                "question_text": "Stem two",
+                "explanation": "Because two.",
+                "question_type": "single",
+                "select_count": 1,
+            },
+            {
+                "id": self._QV_3,
+                "question_text": "Stem three",
+                "explanation": "Because three.",
+                "question_type": "single",
+                "select_count": 1,
+            },
+        ]
+        self.client._table_rows["question_option_versions"] = [
+            {
+                "question_version_id": _ADM_QV_1,
+                "option_label": "A",
+                "option_text": "Answer A",
+                "is_correct": True,
+                "display_order": 1,
+            },
+            {
+                "question_version_id": self._QV_2,
+                "option_label": "B",
+                "option_text": "Answer B",
+                "is_correct": False,
+                "display_order": 2,
+            },
+            {
+                "question_version_id": self._QV_2,
+                "option_label": "A",
+                "option_text": "Answer A2",
+                "is_correct": True,
+                "display_order": 1,
+            },
+            {
+                "question_version_id": self._QV_3,
+                "option_label": "C",
+                "option_text": "Answer C",
+                "is_correct": True,
+                "display_order": 3,
+            },
+            {
+                "question_version_id": self._QV_3,
+                "option_label": "A",
+                "option_text": "Answer A3",
+                "is_correct": False,
+                "display_order": 1,
+            },
+        ]
+
+    def test_bulk_load_uses_paginated_queries_not_n_plus_one(self):
+        ids = [_ADM_QV_1, self._QV_2, self._QV_3]
+        snapshots = load_question_version_snapshots_bulk(
+            self.client,
+            ids,
+            page_size=DEFAULT_SNAPSHOT_PAGE_SIZE,
+        )
+        self.assertEqual(set(snapshots.keys()), set(ids))
+        self.assertEqual(
+            self.client.table_execute_counts.get("question_versions", 0),
+            1,
+        )
+        self.assertEqual(
+            self.client.table_execute_counts.get("question_option_versions", 0),
+            1,
+        )
+
+    def test_option_ordering_is_stable(self):
+        snapshots = load_question_version_snapshots_bulk(
+            self.client,
+            [self._QV_2, self._QV_3],
+        )
+        qv2_labels = [opt["option_label"] for opt in snapshots[self._QV_2]["options"]]
+        qv3_labels = [opt["option_label"] for opt in snapshots[self._QV_3]["options"]]
+        self.assertEqual(qv2_labels, ["A", "B"])
+        self.assertEqual(qv3_labels, ["A", "C"])
+
+    def test_pagination_splits_large_id_sets(self):
+        ids = [f"aaaaaaaa-0000-0000-0000-{index:012d}" for index in range(150)]
+        for qvid in ids:
+            self.client._table_rows["question_versions"].append(
+                {
+                    "id": qvid,
+                    "question_text": "Stem",
+                    "explanation": "Because.",
+                    "question_type": "single",
+                    "select_count": 1,
+                }
+            )
+            self.client._table_rows["question_option_versions"].append(
+                {
+                    "question_version_id": qvid,
+                    "option_label": "A",
+                    "option_text": "Answer",
+                    "is_correct": True,
+                    "display_order": 1,
+                }
+            )
+        load_question_version_snapshots_bulk(
+            self.client,
+            ids,
+            page_size=100,
+        )
+        self.assertEqual(
+            self.client.table_execute_counts.get("question_versions", 0),
+            2,
+        )
+        self.assertEqual(
+            self.client.table_execute_counts.get("question_option_versions", 0),
+            2,
+        )
+
+
+class TestEnqueueStatePersistence(unittest.TestCase):
+    def setUp(self):
+        self.client = FakeSupabase()
+        self.client.set_loader_rows(ADM_EXAM_NAME, _ADM_ROWS)
+        self.client.set_active_question_ids(ADM_EXAM_NAME, [1, 2])
+        self.client._table_rows["question_versions"].append(
+            {
+                "id": _ADM_QV_2,
+                "question_text": "Stem two",
+                "explanation": "Because two.",
+                "question_type": "single",
+                "select_count": 1,
+            }
+        )
+        self.client._table_rows["question_option_versions"].append(
+            {
+                "question_version_id": _ADM_QV_2,
+                "option_label": "A",
+                "option_text": "Answer two",
+                "is_correct": True,
+                "display_order": 1,
+            }
+        )
+
+    def _plan_for_two_jobs(self):
+        return build_structural_audit_plan(
+            self.client,
+            certification_scope="adm",
+        )
+
+    def test_state_file_exists_before_first_enqueue(self):
+        events = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "state.json")
+
+            def tracking_enqueue(_client, _params):
+                self.assertTrue(os.path.exists(state_path))
+                events.append("enqueue")
+                return {"job_id": "job-1", "job_status": "pending"}
+
+            plan = self._plan_for_two_jobs()
+            execute_structural_audit_plan(
+                self.client,
+                plan,
+                dry_run=False,
+                state_file=state_path,
+                progress_writer=None,
+                enqueue_deterministic_fn=tracking_enqueue,
+                enqueue_duplicate_fn=lambda *_args, **_kwargs: {
+                    "job_id": "dup-1",
+                    "job_status": "pending",
+                },
+            )
+            self.assertIn("enqueue", events)
+
+    def test_state_updates_after_every_successful_enqueue(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "state.json")
+            plan = self._plan_for_two_jobs()
+            execute_structural_audit_plan(
+                self.client,
+                plan,
+                dry_run=False,
+                state_file=state_path,
+                progress_writer=None,
+                enqueue_duplicate_fn=lambda *_args, **_kwargs: {
+                    "job_id": "dup-1",
+                    "job_status": "pending",
+                },
+            )
+            with open(state_path, encoding="utf-8") as handle:
+                state = json.load(handle)
+            self.assertEqual(
+                set(state["enqueued_version_ids"]),
+                {_ADM_QV_1, _ADM_QV_2},
+            )
+            self.assertEqual(
+                state["enqueued_duplicate_scans"],
+                [
+                    {
+                        "certification_exam_name": ADM_EXAM_NAME,
+                        "ruleset_version": DEFAULT_RULESET_VERSION,
+                    }
+                ],
+            )
+
+    def test_atomic_write_uses_temp_file_and_replace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "state.json")
+            plan = self._plan_for_two_jobs()
+            real_mkstemp = tempfile.mkstemp
+            temp_paths = []
+
+            def tracking_mkstemp(*args, **kwargs):
+                fd, path = real_mkstemp(*args, **kwargs)
+                temp_paths.append(path)
+                return fd, path
+
+            with patch(
+                "workers.structural_audit_launcher.tempfile.mkstemp",
+                side_effect=tracking_mkstemp,
+            ):
+                with patch("workers.structural_audit_launcher.os.replace") as replace:
+                    execute_structural_audit_plan(
+                        self.client,
+                        plan,
+                        dry_run=False,
+                        state_file=state_path,
+                        progress_writer=None,
+                        enqueue_duplicate_fn=lambda *_args, **_kwargs: {
+                            "job_id": "dup-1",
+                            "job_status": "pending",
+                        },
+                    )
+                    self.assertTrue(temp_paths)
+                    self.assertTrue(replace.called)
+                    for call in replace.call_args_list:
+                        self.assertIn(".structural_audit_state.", call.args[0])
+                        self.assertEqual(call.args[1], state_path)
+
+    def test_state_file_never_contains_credentials_or_question_content(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "state.json")
+            plan = self._plan_for_two_jobs()
+            execute_structural_audit_plan(
+                self.client,
+                plan,
+                dry_run=False,
+                state_file=state_path,
+                progress_writer=None,
+                enqueue_duplicate_fn=lambda *_args, **_kwargs: {
+                    "job_id": "dup-1",
+                    "job_status": "pending",
+                },
+            )
+            with open(state_path, encoding="utf-8") as handle:
+                raw = handle.read()
+            self.assertNotIn("SUPABASE", raw)
+            self.assertNotIn("service-role", raw.lower())
+            self.assertNotIn("Stem", raw)
+            self.assertNotIn("question_text", raw)
+            self.assertNotIn("option_text", raw)
+
+    def test_dry_run_creates_no_state_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "state.json")
+            plan = self._plan_for_two_jobs()
+            execute_structural_audit_plan(
+                self.client,
+                plan,
+                dry_run=True,
+                state_file=state_path,
+            )
+            self.assertFalse(os.path.exists(state_path))
+
+
+class TestResumeAndPartialFailure(unittest.TestCase):
+    def setUp(self):
+        self.client = FakeSupabase()
+        self.client.set_loader_rows(ADM_EXAM_NAME, _ADM_ROWS)
+        self.client.set_loader_rows(BA_EXAM_NAME, _BA_ROWS)
+        self.client.set_active_question_ids(ADM_EXAM_NAME, [1, 2])
+        self.client.set_active_question_ids(BA_EXAM_NAME, [101])
+        self.client._table_rows["question_versions"].append(
+            {
+                "id": _ADM_QV_2,
+                "question_text": "Stem two",
+                "explanation": "Because two.",
+                "question_type": "single",
+                "select_count": 1,
+            }
+        )
+        self.client._table_rows["question_option_versions"].append(
+            {
+                "question_version_id": _ADM_QV_2,
+                "option_label": "A",
+                "option_text": "Answer two",
+                "is_correct": True,
+                "display_order": 1,
+            }
+        )
+
+    def test_missing_state_file_with_resume_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_path = os.path.join(tmpdir, "missing-state.json")
+            state = load_resume_state(missing_path, resume=True)
+            self.assertEqual(state, {})
+            import io
+            from contextlib import redirect_stderr
+
+            buffer = io.StringIO()
+            with redirect_stderr(buffer):
+                summary = run_launcher(
+                    self.client,
+                    certification="adm",
+                    created_by="admin@test.com",
+                    ruleset_version=DEFAULT_RULESET_VERSION,
+                    batch_size=25,
+                    max_questions=None,
+                    state_file=missing_path,
+                    resume=True,
+                    enqueue=False,
+                    confirm=False,
+                )
+            self.assertIn("WARNING", buffer.getvalue())
+            self.assertEqual(summary["new_deterministic_jobs"], 2)
+
+    def test_resume_skips_state_recorded_and_active_jobs(self):
+        active_jobs = [
+            {
+                "job_type": "deterministic_audit",
+                "job_status": "running",
+                "payload": {
+                    "target_question_version_id": _ADM_QV_1,
+                    "ruleset_version": DEFAULT_RULESET_VERSION,
+                },
+            }
+        ]
+        resume_state = {
+            "enqueued_version_ids": [_ADM_QV_2],
+            "enqueued_duplicate_scans": [
+                {
+                    "certification_exam_name": ADM_EXAM_NAME,
+                    "ruleset_version": DEFAULT_RULESET_VERSION,
+                }
+            ],
+        }
+        plan = build_structural_audit_plan(
+            self.client,
+            certification_scope="both",
+            background_jobs=active_jobs,
+            resume_state=resume_state,
+        )
+        self.assertEqual(
+            {target.question_version_id for target in plan.deterministic_jobs_to_enqueue},
+            {_BA_QV_1},
+        )
+        self.assertEqual(plan.duplicate_certifications_to_enqueue, [BA_EXAM_NAME])
+
+    def test_partial_failure_preserves_completed_state(self):
+        call_count = {"n": 0}
+
+        def flaky_enqueue(_client, _params):
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise RuntimeError("rpc failed")
+            return {"job_id": f"job-{call_count['n']}", "job_status": "pending"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "state.json")
+            plan = build_structural_audit_plan(
+                self.client,
+                certification_scope="adm",
+            )
+            with self.assertRaises(StructuralAuditEnqueueError) as ctx:
+                execute_structural_audit_plan(
+                    self.client,
+                    plan,
+                    dry_run=False,
+                    state_file=state_path,
+                    progress_writer=None,
+                    enqueue_deterministic_fn=flaky_enqueue,
+                )
+            self.assertEqual(ctx.exception.failed_target, _ADM_QV_2)
+            with open(state_path, encoding="utf-8") as handle:
+                state = json.load(handle)
+            self.assertEqual(state["enqueued_version_ids"], [_ADM_QV_1])
+
+    def test_resume_after_partial_failure_skips_completed_ids(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "state.json")
+            atomic_write_enqueue_state(
+                state_path,
+                EnqueueState(
+                    certification_exam_names=[ADM_EXAM_NAME],
+                    ruleset_version=DEFAULT_RULESET_VERSION,
+                    created_by="admin@test.com",
+                    enqueued_version_ids=[_ADM_QV_1],
+                ),
+            )
+            resume_state = load_resume_state(state_path, resume=True)
+            plan = build_structural_audit_plan(
+                self.client,
+                certification_scope="adm",
+                resume_state=resume_state,
+            )
+            self.assertEqual(len(plan.deterministic_jobs_to_enqueue), 1)
+            self.assertEqual(
+                plan.deterministic_jobs_to_enqueue[0].question_version_id,
+                _ADM_QV_2,
+            )
+
+
+class TestAuditCompletionIdempotency(unittest.TestCase):
+    def setUp(self):
+        self.client = FakeSupabase()
+        self.client.set_loader_rows(ADM_EXAM_NAME, _ADM_ROWS)
+        self.client.set_loader_rows(BA_EXAM_NAME, _BA_ROWS)
+        self.client.set_active_question_ids(ADM_EXAM_NAME, [1, 2])
+        self.client.set_active_question_ids(BA_EXAM_NAME, [101])
+
+    def _completed_det_row(self, qvid, *, ruleset=DEFAULT_RULESET_VERSION, metadata=None):
+        return {
+            "audit_type": "deterministic",
+            "run_status": "completed",
+            "target_question_version_id": qvid,
+            "ruleset_version": ruleset,
+            "metadata": metadata or {},
+        }
+
+    def _completed_dup_row(self, cert, *, ruleset=DEFAULT_RULESET_VERSION):
+        return {
+            "audit_type": "deterministic",
+            "run_status": "completed",
+            "ruleset_version": ruleset,
+            "metadata": {
+                "scan_type": "duplicate_question_stem",
+                "certification_exam_name": cert,
+            },
+        }
+
+    def test_completed_deterministic_audit_same_ruleset_skipped(self):
+        self.client._table_rows["audit_runs"] = [
+            self._completed_det_row(_ADM_QV_1),
+        ]
+        plan = build_structural_audit_plan(
+            self.client,
+            certification_scope="adm",
+        )
+        self.assertIn(_ADM_QV_1, plan.skipped_completed_deterministic)
+        self.assertEqual(
+            plan.deterministic_jobs_to_enqueue[0].question_version_id,
+            _ADM_QV_2,
+        )
+
+    def test_different_ruleset_completed_audit_does_not_block(self):
+        self.client._table_rows["audit_runs"] = [
+            self._completed_det_row(_ADM_QV_1, ruleset="2.0.0"),
+        ]
+        plan = build_structural_audit_plan(
+            self.client,
+            certification_scope="adm",
+        )
+        self.assertEqual(plan.skipped_completed_deterministic, [])
+        self.assertEqual(len(plan.deterministic_jobs_to_enqueue), 2)
+
+    def test_stale_version_completed_audit_does_not_block(self):
+        stale_qvid = "cccccccc-0000-0000-0000-000000009999"
+        self.client._table_rows["audit_runs"] = [
+            self._completed_det_row(stale_qvid),
+        ]
+        plan = build_structural_audit_plan(
+            self.client,
+            certification_scope="adm",
+        )
+        self.assertEqual(plan.skipped_completed_deterministic, [])
+        self.assertEqual(len(plan.deterministic_jobs_to_enqueue), 2)
+
+    def test_failed_job_remains_retryable(self):
+        failed_jobs = [
+            {
+                "job_type": "deterministic_audit",
+                "job_status": "dead_letter",
+                "payload": {
+                    "target_question_version_id": _ADM_QV_1,
+                    "ruleset_version": DEFAULT_RULESET_VERSION,
+                },
+            }
+        ]
+        plan = build_structural_audit_plan(
+            self.client,
+            certification_scope="adm",
+            background_jobs=failed_jobs,
+        )
+        self.assertEqual(
+            plan.deterministic_jobs_to_enqueue[0].question_version_id,
+            _ADM_QV_1,
+        )
+        self.assertEqual(plan.retryable_failed_deterministic, [_ADM_QV_1])
+
+    def test_completed_background_job_without_completed_audit_does_not_block(self):
+        completed_jobs = [
+            {
+                "job_type": "deterministic_audit",
+                "job_status": "completed",
+                "payload": {
+                    "target_question_version_id": _ADM_QV_1,
+                    "ruleset_version": DEFAULT_RULESET_VERSION,
+                },
+            }
+        ]
+        plan = build_structural_audit_plan(
+            self.client,
+            certification_scope="adm",
+            background_jobs=completed_jobs,
+        )
+        self.assertEqual(plan.skipped_pending_deterministic, [])
+        self.assertEqual(plan.skipped_completed_deterministic, [])
+        self.assertEqual(len(plan.deterministic_jobs_to_enqueue), 2)
+
+    def test_completed_duplicate_audit_skipped(self):
+        self.client._table_rows["audit_runs"] = [
+            self._completed_dup_row(ADM_EXAM_NAME),
+        ]
+        plan = build_structural_audit_plan(
+            self.client,
+            certification_scope="both",
+        )
+        self.assertIn(ADM_EXAM_NAME, plan.skipped_completed_duplicate)
+        self.assertEqual(plan.duplicate_certifications_to_enqueue, [BA_EXAM_NAME])
+
+    def test_different_ruleset_duplicate_audit_can_run(self):
+        self.client._table_rows["audit_runs"] = [
+            self._completed_dup_row(ADM_EXAM_NAME, ruleset="2.0.0"),
+        ]
+        plan = build_structural_audit_plan(
+            self.client,
+            certification_scope="both",
+        )
+        self.assertEqual(plan.skipped_completed_duplicate, [])
+        self.assertEqual(
+            plan.duplicate_certifications_to_enqueue,
+            [ADM_EXAM_NAME, BA_EXAM_NAME],
+        )
+
+    def test_production_completed_audits_not_re_enqueued(self):
+        adm_count = 400
+        ba_count = 344
+        adm_rows = []
+        ba_rows = []
+        audit_runs = []
+
+        for index in range(adm_count):
+            qvid = f"adm-{index:04d}-0000-0000-0000-000000000000"
+            adm_rows.append(
+                {
+                    "question_version_id": qvid,
+                    "question_id": index + 1,
+                    "certification_exam_name": ADM_EXAM_NAME,
+                    "question_text": f"ADM {index}",
+                    "category": "Setup",
+                    "version_number": 1,
+                }
+            )
+            if index < 112:
+                audit_runs.append(self._completed_det_row(qvid))
+
+        for index in range(ba_count):
+            qvid = f"ba-{index:04d}-0000-0000-0000-000000000000"
+            ba_rows.append(
+                {
+                    "question_version_id": qvid,
+                    "question_id": 1000 + index + 1,
+                    "certification_exam_name": BA_EXAM_NAME,
+                    "question_text": f"BA {index}",
+                    "category": "Strategy",
+                    "version_number": 1,
+                }
+            )
+            if index < 112:
+                audit_runs.append(self._completed_det_row(qvid))
+
+        client = FakeSupabase()
+        client.set_loader_rows(ADM_EXAM_NAME, adm_rows)
+        client.set_loader_rows(BA_EXAM_NAME, ba_rows)
+        client.set_active_question_ids(
+            ADM_EXAM_NAME,
+            [row["question_id"] for row in adm_rows],
+        )
+        client.set_active_question_ids(
+            BA_EXAM_NAME,
+            [row["question_id"] for row in ba_rows],
+        )
+        client._table_rows["audit_runs"] = audit_runs
+
+        plan = build_structural_audit_plan(
+            client,
+            certification_scope="both",
+            background_jobs=[],
+        )
+        self.assertEqual(len(plan.skipped_completed_deterministic), 224)
+        self.assertEqual(len(plan.deterministic_jobs_to_enqueue), 520)
+        self.assertEqual(plan.duplicate_certifications_to_enqueue, [ADM_EXAM_NAME, BA_EXAM_NAME])
+
+    def test_dry_run_performs_no_writes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "state.json")
+            plan = build_structural_audit_plan(
+                self.client,
+                certification_scope="adm",
+            )
+            summary = execute_structural_audit_plan(
+                self.client,
+                plan,
+                dry_run=True,
+                state_file=state_path,
+            )
+            self.assertTrue(summary.dry_run)
+            self.assertFalse(os.path.exists(state_path))
+            enqueue_calls = [
+                call for call in self.client.rpc_calls
+                if call["name"] == "enqueue_background_job_v1"
+            ]
+            self.assertEqual(enqueue_calls, [])
+
+
+class TestProductionScaleDryRun(unittest.TestCase):
+    def test_744_versions_with_224_active_plans_remaining_work(self):
+        adm_count = 400
+        ba_count = 344
+        adm_rows = []
+        ba_rows = []
+        active_jobs = []
+
+        for index in range(adm_count):
+            qvid = f"adm-{index:04d}-0000-0000-0000-000000000000"
+            adm_rows.append(
+                {
+                    "question_version_id": qvid,
+                    "question_id": index + 1,
+                    "certification_exam_name": ADM_EXAM_NAME,
+                    "question_text": f"ADM {index}",
+                    "category": "Setup",
+                    "version_number": 1,
+                }
+            )
+            if index < 112:
+                active_jobs.append(
+                    {
+                        "job_type": "deterministic_audit",
+                        "job_status": "pending",
+                        "payload": {
+                            "target_question_version_id": qvid,
+                            "ruleset_version": DEFAULT_RULESET_VERSION,
+                        },
+                    }
+                )
+
+        for index in range(ba_count):
+            qvid = f"ba-{index:04d}-0000-0000-0000-000000000000"
+            ba_rows.append(
+                {
+                    "question_version_id": qvid,
+                    "question_id": 1000 + index + 1,
+                    "certification_exam_name": BA_EXAM_NAME,
+                    "question_text": f"BA {index}",
+                    "category": "Strategy",
+                    "version_number": 1,
+                }
+            )
+            if index < 112:
+                active_jobs.append(
+                    {
+                        "job_type": "deterministic_audit",
+                        "job_status": "running",
+                        "payload": {
+                            "target_question_version_id": qvid,
+                            "ruleset_version": DEFAULT_RULESET_VERSION,
+                        },
+                    }
+                )
+
+        client = FakeSupabase()
+        client.set_loader_rows(ADM_EXAM_NAME, adm_rows)
+        client.set_loader_rows(BA_EXAM_NAME, ba_rows)
+        client.set_active_question_ids(
+            ADM_EXAM_NAME,
+            [row["question_id"] for row in adm_rows],
+        )
+        client.set_active_question_ids(
+            BA_EXAM_NAME,
+            [row["question_id"] for row in ba_rows],
+        )
+
+        plan = build_structural_audit_plan(
+            client,
+            certification_scope="both",
+            background_jobs=active_jobs,
+        )
+        self.assertEqual(plan.selected_live_questions, 744)
+        self.assertEqual(len(plan.skipped_pending_deterministic), 224)
+        self.assertEqual(len(plan.deterministic_jobs_to_enqueue), 520)
+        self.assertEqual(plan.duplicate_certifications_to_enqueue, [ADM_EXAM_NAME, BA_EXAM_NAME])
 
 
 class TestPayloadShape(unittest.TestCase):

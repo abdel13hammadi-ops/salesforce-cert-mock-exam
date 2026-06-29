@@ -35,14 +35,14 @@ from workers.structural_audit_launcher import (
     DEFAULT_CREATED_BY,
     DEFAULT_RULESET_VERSION,
     MalformedSelectionError,
+    StructuralAuditEnqueueError,
     StructuralAuditLauncherError,
     UnknownCertificationError,
     build_structural_audit_plan,
     execute_structural_audit_plan,
     format_human_report,
-    load_state_file,
+    load_resume_state,
     summarize_plan,
-    write_state_file,
 )
 
 _LIVE_FLAG = "CERTBOUND_ALLOW_JOB_ENQUEUE"
@@ -61,11 +61,10 @@ def assert_enqueue_allowed() -> None:
         )
 
 
-def load_active_background_jobs(client) -> list:
+def load_background_jobs_for_planning(client) -> list:
     result = (
         client.table("background_jobs")
         .select("job_type, job_status, payload")
-        .in_("job_status", ["pending", "leased", "running"])
         .in_("job_type", ["deterministic_audit", "certification_duplicate_audit"])
         .execute()
     )
@@ -139,13 +138,15 @@ def run_launcher(
     enqueue: bool,
     confirm: bool = True,
 ) -> dict:
-    resume_state = None
-    if resume:
-        if not state_file:
-            raise StructuralAuditLauncherError("--resume requires --state-file")
-        resume_state = load_state_file(state_file)
+    resume_state = load_resume_state(state_file, resume=resume)
+    if resume and state_file and not os.path.exists(state_file):
+        print(
+            f"WARNING: resume state file not found at {state_file!r}; "
+            "treating as empty resume state.",
+            file=sys.stderr,
+        )
 
-    active_jobs = load_active_background_jobs(client)
+    active_jobs = load_background_jobs_for_planning(client)
     plan = build_structural_audit_plan(
         client,
         certification_scope=certification,
@@ -153,7 +154,7 @@ def run_launcher(
         created_by=created_by,
         batch_size=batch_size,
         max_questions=max_questions,
-        active_jobs=active_jobs,
+        background_jobs=active_jobs,
         resume_state=resume_state,
     )
     report = format_human_report(
@@ -166,13 +167,15 @@ def run_launcher(
             confirm_enqueue(report)
         else:
             print(report)
-        summary = execute_structural_audit_plan(client, plan, dry_run=False)
+        summary = execute_structural_audit_plan(
+            client,
+            plan,
+            dry_run=False,
+            state_file=state_file,
+        )
     else:
         print(report)
         summary = execute_structural_audit_plan(client, plan, dry_run=True)
-
-    if state_file and enqueue:
-        write_state_file(state_file, plan=plan, summary=summary)
 
     return summary.to_dict()
 
@@ -211,6 +214,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     except StructuralAuditLauncherError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 4
+    except StructuralAuditEnqueueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"Failed target: {exc.failed_target}", file=sys.stderr)
+        partial = exc.summary.to_dict()
+        print(
+            "Partial enqueue summary:\n"
+            f"  enqueued deterministic jobs this run: "
+            f"{partial['enqueued_deterministic_jobs']}\n"
+            f"  enqueued duplicate scans this run: "
+            f"{partial['enqueued_duplicate_scans']}\n"
+            f"  already queued/running skipped: "
+            f"{partial['already_queued_running_skipped']}\n"
+            f"  resume skipped: {partial['resume_skipped']}\n"
+            f"  completed audit skipped: {partial['completed_audit_skipped']}",
+            file=sys.stderr,
+        )
+        if args.json_summary:
+            print(json.dumps(partial, indent=2, sort_keys=True))
+        return 5
 
     if args.json_summary:
         print(json.dumps(summary, indent=2, sort_keys=True))
