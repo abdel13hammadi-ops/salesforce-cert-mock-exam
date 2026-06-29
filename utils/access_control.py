@@ -757,6 +757,7 @@ def render_sidebar_navigation() -> None:
                 _sidebar_nav_link("pages/Admin_Users.py", label="Admin Users", icon="👥")
                 _sidebar_nav_link("pages/Admin_Import.py", label="Admin Import", icon="⬆️")
                 _sidebar_nav_link("pages/Admin_Question_Review.py", label="Admin Question Review", icon="✅")
+                _sidebar_nav_link("pages/Admin_Free_Mock_Curation.py", label="Free Mock Curation", icon="📋")
                 _sidebar_nav_link("pages/Admin_Audit_Review.py", label="Admin Audit Review", icon="🔍")
                 _sidebar_nav_link("pages/Admin_Support_Tickets.py", label="Admin Support Tickets", icon="🎫")
 
