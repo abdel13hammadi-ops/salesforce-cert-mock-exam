@@ -46,6 +46,27 @@ def _secret(name: str, default: str = "") -> str:
         return default
 
 
+SUPABASE_ADMIN_CONFIG_HELP = (
+    "Configure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY using environment variables "
+    "or .streamlit/secrets.toml (the same secure sources used by the CertBound admin app)."
+)
+
+
+class SupabaseAdminConfigError(RuntimeError):
+    """Raised when Supabase admin credentials are not configured."""
+
+
+def create_supabase_admin_client():
+    """Create a service-role Supabase client from shared CertBound configuration."""
+    url = _secret("SUPABASE_URL")
+    key = _secret("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        raise SupabaseAdminConfigError(
+            f"Missing Supabase admin configuration. {SUPABASE_ADMIN_CONFIG_HELP}"
+        )
+    return create_client(url, key)
+
+
 def _signing_secret() -> str:
     # COOKIE_PASSWORD is the intended signing secret. SUPABASE_SERVICE_ROLE_KEY is
     # accepted as a legacy fallback so existing deploys do not break, but there is
@@ -484,12 +505,11 @@ def get_supabase_auth_client():
 
 @st.cache_resource(show_spinner=False)
 def get_supabase_admin_client():
-    url = _secret("SUPABASE_URL")
-    key = _secret("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
+    try:
+        return create_supabase_admin_client()
+    except SupabaseAdminConfigError:
         st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets.")
         st.stop()
-    return create_client(url, key)
 
 
 # Compatibility name used across older pages. This is server-side Streamlit; service role is kept centralized.
