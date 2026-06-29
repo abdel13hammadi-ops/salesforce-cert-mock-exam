@@ -10,7 +10,8 @@ Environment loading order:
     2. Streamlit secrets key SENTRY_ENVIRONMENT
     3. Fallback: "development"
 
-Release: APP_VERSION from utils.version (import-safe; falls back to None).
+Release: certbound@<RENDER_GIT_COMMIT> on Render when available; otherwise
+    APP_VERSION from utils.version (import-safe; falls back to None).
 
 Privacy guarantees:
     - send_default_pii=False, include_local_variables=False
@@ -30,6 +31,10 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 _SENTRY_INITIALIZED: bool = False
+
+# Render sets this automatically on each deploy (full commit SHA).
+_RENDER_GIT_COMMIT_ENV = "RENDER_GIT_COMMIT"
+_CERTBOUND_RELEASE_PREFIX = "certbound@"
 
 _EXTRA_DENYLIST = [
     "authorization",
@@ -83,7 +88,17 @@ def _get_environment() -> str:
 
 
 def _get_release() -> Optional[str]:
-    """Return APP_VERSION string or None. Never raises."""
+    """Return Sentry release string or None. Never raises.
+
+    Prefers Render's RENDER_GIT_COMMIT (format: certbound@<full_sha>).
+    Falls back to APP_VERSION when no commit SHA is available.
+    """
+    try:
+        commit = os.environ.get(_RENDER_GIT_COMMIT_ENV, "")
+        if commit and commit.strip():
+            return f"{_CERTBOUND_RELEASE_PREFIX}{commit.strip()}"
+    except Exception:
+        pass
     try:
         from utils.version import APP_VERSION  # noqa: PLC0415
         return str(APP_VERSION) if APP_VERSION else None

@@ -7,6 +7,7 @@ Covers:
   3. Sensitive fields are removed / redacted by before_send
   4. Exception metadata (type, stack trace, filename, lineno) is preserved
   5. Initialization failure does not crash the app
+  6. Release uses RENDER_GIT_COMMIT when present, else APP_VERSION
 
 Run:
     pytest -q tests/test_sentry_config.py
@@ -39,6 +40,111 @@ def _reset_module() -> None:
 def _clear_dsn_env() -> None:
     os.environ.pop("SENTRY_DSN", None)
     os.environ.pop("SENTRY_ENVIRONMENT", None)
+    os.environ.pop("RENDER_GIT_COMMIT", None)
+
+
+# ---------------------------------------------------------------------------
+# Release identification
+# ---------------------------------------------------------------------------
+
+class TestGetRelease(unittest.TestCase):
+
+    def setUp(self) -> None:
+        _clear_dsn_env()
+        _reset_module()
+
+    def tearDown(self) -> None:
+        _clear_dsn_env()
+        _reset_module()
+
+    def test_render_git_commit_preferred(self) -> None:
+        from utils.sentry_config import _get_release
+        from utils.version import APP_VERSION
+
+        os.environ["RENDER_GIT_COMMIT"] = "abc123def4567890abcdef1234567890abcdef12"
+        self.assertEqual(
+            _get_release(),
+            "certbound@abc123def4567890abcdef1234567890abcdef12",
+        )
+        self.assertNotEqual(_get_release(), APP_VERSION)
+
+    def test_render_git_commit_strips_whitespace(self) -> None:
+        from utils.sentry_config import _get_release
+
+        os.environ["RENDER_GIT_COMMIT"] = "  deadbeefdeadbeefdeadbeefdeadbeefdeadbeef  "
+        self.assertEqual(
+            _get_release(),
+            "certbound@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        )
+
+    def test_app_version_fallback_when_render_commit_absent(self) -> None:
+        from utils.sentry_config import _get_release
+        from utils.version import APP_VERSION
+
+        self.assertEqual(_get_release(), APP_VERSION)
+
+    def test_app_version_fallback_when_render_commit_empty(self) -> None:
+        from utils.sentry_config import _get_release
+        from utils.version import APP_VERSION
+
+        os.environ["RENDER_GIT_COMMIT"] = "   "
+        self.assertEqual(_get_release(), APP_VERSION)
+
+
+@unittest.skipUnless(HAS_SENTRY_SDK, "sentry-sdk not installed")
+class TestInitRelease(unittest.TestCase):
+
+    def setUp(self) -> None:
+        _clear_dsn_env()
+        _reset_module()
+        os.environ["SENTRY_DSN"] = "https://fake@sentry.io/0"
+
+    def tearDown(self) -> None:
+        _clear_dsn_env()
+        _reset_module()
+
+    def test_init_passes_render_commit_release(self) -> None:
+        import utils.sentry_config as sc
+
+        os.environ["RENDER_GIT_COMMIT"] = "abc123def4567890abcdef1234567890abcdef12"
+        captured: dict = {}
+
+        original_init = _sentry_sdk_module.init
+
+        def capture_init(*args, **kwargs):
+            captured.update(kwargs)
+            sc._SENTRY_INITIALIZED = True
+
+        _sentry_sdk_module.init = capture_init
+        try:
+            sc.init_sentry()
+        finally:
+            _sentry_sdk_module.init = original_init
+
+        self.assertEqual(
+            captured.get("release"),
+            "certbound@abc123def4567890abcdef1234567890abcdef12",
+        )
+
+    def test_init_passes_app_version_release_without_render_commit(self) -> None:
+        import utils.sentry_config as sc
+        from utils.version import APP_VERSION
+
+        captured: dict = {}
+
+        original_init = _sentry_sdk_module.init
+
+        def capture_init(*args, **kwargs):
+            captured.update(kwargs)
+            sc._SENTRY_INITIALIZED = True
+
+        _sentry_sdk_module.init = capture_init
+        try:
+            sc.init_sentry()
+        finally:
+            _sentry_sdk_module.init = original_init
+
+        self.assertEqual(captured.get("release"), APP_VERSION)
 
 
 # ---------------------------------------------------------------------------
