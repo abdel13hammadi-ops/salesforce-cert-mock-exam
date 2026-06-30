@@ -138,5 +138,44 @@ Jobs are created via `enqueue_background_job_v1` (service role). Example job typ
 - `deterministic_audit` — payload requires `target_question_version_id`, `created_by`, `question` snapshot
 - `hybrid_audit` — use `workers/run_hybrid_audit_pilot.py` enqueue helper pattern
 - `certification_duplicate_audit` — use `workers/run_certification_duplicate_audit.py` enqueue helper pattern
+- `resource_ingestion` — use `workers/run_resource_ingestion.py` (dry-run by default)
 
 Enqueue only; run the worker separately with `--once` or continuous mode.
+
+### Official resource ingestion (`resource_ingestion`)
+
+Requires an existing `official_resources` catalog row and a local UTF-8 text/Markdown file (already extracted). The CLI chunks text, computes SHA-256 hashes, validates the payload, and enqueues a job. It does not fetch URLs, parse PDFs, or run the worker.
+
+Dry-run (read-only report; no enqueue):
+
+```powershell
+python -m workers.run_resource_ingestion `
+    --resource-id "<official-resources-uuid>" `
+    --input-file "path\to\exam-guide.txt" `
+    --created-by "you@example.com"
+```
+
+Enqueue after review:
+
+```powershell
+$env:CERTBOUND_ALLOW_JOB_ENQUEUE = "1"
+python -m workers.run_resource_ingestion `
+    --resource-id "<official-resources-uuid>" `
+    --input-file "path\to\exam-guide.txt" `
+    --created-by "you@example.com" `
+    --source-url "https://help.salesforce.com/..." `
+    --source-external-version "Winter '26" `
+    --enqueue
+```
+
+Process one queued job:
+
+```powershell
+python -m workers.background_worker `
+    --worker-id "manual-ingest-1" `
+    --job-types resource_ingestion `
+    --once `
+    --log-level INFO
+```
+
+Verify: confirm `background_jobs.job_status = completed` and inspect `result.resource_version_id`, then query `resource_versions` and `resource_chunks` for that version.
