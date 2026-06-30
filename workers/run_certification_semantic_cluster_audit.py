@@ -8,6 +8,7 @@ Requires ``CERTBOUND_ALLOW_JOB_ENQUEUE=1``.
 
 Usage::
 
+    # Dry-run (default; uses env vars or .streamlit/secrets.toml)
     python -m workers.run_certification_semantic_cluster_audit \\
         --certification-exam-name "Platform Administrator"
 
@@ -25,7 +26,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set, Tuple
 
-from workers.background_worker import build_supabase_client
+from utils.access_control import SupabaseAdminConfigError, create_supabase_admin_client
 from workers.certification_question_loader import (
     load_certification_current_question_versions,
 )
@@ -54,15 +55,6 @@ def assert_enqueue_allowed() -> None:
     if os.environ.get(_LIVE_FLAG) != "1":
         raise RuntimeError(
             f"Refusing live job enqueue. Set {_LIVE_FLAG}=1 to enqueue a job."
-        )
-
-
-def assert_supabase_configured() -> None:
-    url = os.environ.get("SUPABASE_URL", "").strip()
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-    if not url or not key:
-        raise RuntimeError(
-            "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required to enqueue a job."
         )
 
 
@@ -406,9 +398,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         cohesion_signal=thresholds.cohesion_signal,
     )
 
+    try:
+        client = create_supabase_admin_client()
+    except SupabaseAdminConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
     if not args.enqueue:
-        assert_supabase_configured()
-        client = build_supabase_client()
         print(
             run_dry_run(
                 client,
@@ -421,8 +417,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     assert_enqueue_allowed()
-    assert_supabase_configured()
-    client = build_supabase_client()
     report = run_enqueue(
         client,
         payload,

@@ -591,7 +591,7 @@ class TestOrchestration(unittest.TestCase):
 
 
 class TestDryRunCli(unittest.TestCase):
-    @patch("workers.run_certification_semantic_cluster_audit.build_supabase_client")
+    @patch("workers.run_certification_semantic_cluster_audit.create_supabase_admin_client")
     @patch(
         "workers.run_certification_semantic_cluster_audit.load_certification_current_question_versions",
         return_value=_LOADER_ROWS,
@@ -602,18 +602,59 @@ class TestDryRunCli(unittest.TestCase):
         fake.set_table_response("background_jobs", [])
         client_mock.return_value = fake
 
-        with patch.dict(os.environ, {"SUPABASE_URL": "http://x", "SUPABASE_SERVICE_ROLE_KEY": "k"}):
-            with patch(
-                "workers.semantic_cluster_detector.create_sentence_transformer_embed_fn",
-            ) as embed_factory:
-                rc = main([
-                    "--certification-exam-name",
-                    _CERT,
-                ])
+        with patch(
+            "workers.semantic_cluster_detector.create_sentence_transformer_embed_fn",
+        ) as embed_factory:
+            rc = main([
+                "--certification-exam-name",
+                _CERT,
+            ])
         self.assertEqual(rc, 0)
         embed_factory.assert_not_called()
         rpc_names = [call["name"] for call in fake.calls]
         self.assertNotIn("enqueue_background_job_v1", rpc_names)
+
+    @patch("workers.run_certification_semantic_cluster_audit.create_supabase_admin_client")
+    @patch(
+        "workers.run_certification_semantic_cluster_audit.load_certification_current_question_versions",
+        return_value=_LOADER_ROWS,
+    )
+    def test_dry_run_does_not_require_direct_env_vars(self, _loader_mock, client_mock):
+        fake = FakeSupabase()
+        fake.set_table_response("audit_runs", [])
+        fake.set_table_response("background_jobs", [])
+        client_mock.return_value = fake
+
+        with patch.dict(os.environ, {}, clear=True):
+            rc = main(["--certification-exam-name", _CERT])
+
+        self.assertEqual(rc, 0)
+        client_mock.assert_called_once()
+
+    @patch(
+        "workers.run_certification_semantic_cluster_audit.create_supabase_admin_client",
+        side_effect=__import__(
+            "utils.access_control",
+            fromlist=["SupabaseAdminConfigError"],
+        ).SupabaseAdminConfigError(
+            "Missing Supabase admin configuration."
+        ),
+    )
+    def test_enqueue_fails_clearly_when_supabase_unavailable(self, _client_mock):
+        import io
+        from contextlib import redirect_stderr
+
+        buffer = io.StringIO()
+        with patch.dict(os.environ, {"CERTBOUND_ALLOW_JOB_ENQUEUE": "1"}, clear=True):
+            with redirect_stderr(buffer):
+                rc = main([
+                    "--certification-exam-name",
+                    _CERT,
+                    "--enqueue",
+                ])
+
+        self.assertEqual(rc, 1)
+        self.assertIn("Missing Supabase admin configuration", buffer.getvalue())
 
     def test_run_dry_run_report_skips_model_download(self):
         fake = FakeSupabase()
