@@ -45,6 +45,7 @@ CANONICAL_FINDING_CODES = frozenset({
     "OPTION_DISPLAY_ORDER_ISSUES",
     "DUPLICATE_QUESTION_STEM_EXACT",
     "DUPLICATE_QUESTION_STEM_NEAR_EXACT",
+    "SEMANTIC_CONCEPT_CLUSTER_OVERSIZE",
 })
 
 DETERMINISTIC_TO_CANONICAL: Dict[str, str] = {
@@ -79,6 +80,7 @@ WARNING_CODES = frozenset({
     "LOW_COGNITIVE_LEVEL",
     "DIFFICULTY_MISMATCH",
     "DUPLICATE_QUESTION_STEM_NEAR_EXACT",
+    "SEMANTIC_CONCEPT_CLUSTER_OVERSIZE",
 })
 
 INFORMATIONAL_CODES = frozenset()
@@ -215,7 +217,10 @@ def assign_materiality(finding: dict) -> str:
     if finding_type == "duplication":
         if code == "DUPLICATE_QUESTION_STEM_EXACT":
             return "blocking"
-        if code == "DUPLICATE_QUESTION_STEM_NEAR_EXACT":
+        if code in {
+            "DUPLICATE_QUESTION_STEM_NEAR_EXACT",
+            "SEMANTIC_CONCEPT_CLUSTER_OVERSIZE",
+        }:
             return "warning"
 
     if finding_type == "other":

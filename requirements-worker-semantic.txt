@@ -1,0 +1,7 @@
+# Isolated semantic-worker dependencies (Render semantic worker only).
+# Do not install into the Streamlit web service requirements.txt.
+sentence-transformers==3.4.1
+torch==2.5.1
+numpy==2.2.1
+transformers==4.48.0
+huggingface-hub==0.27.1

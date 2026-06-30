@@ -33,6 +33,9 @@ Implemented handlers
                                merges findings, orchestrates audit lifecycle
   certification_duplicate_audit → loads latest question versions for one
                                   certification and orchestrates duplicate scan
+  certification_semantic_cluster_audit → loads immutable snapshots for one
+                                         certification and orchestrates semantic
+                                         concept-cluster detection
 
 All other handlers are stubs that raise NotImplementedHandler.
 Use build_handler_registry(client, llm_provider=<provider>) to build the
@@ -684,6 +687,108 @@ def make_certification_duplicate_audit_handler(client) -> Callable[..., dict]:
     return handle
 
 
+def make_certification_semantic_cluster_audit_handler(client) -> Callable[..., dict]:
+    """Return the certification_semantic_cluster_audit handler bound to *client*.
+
+    Loads current immutable question-version snapshots for one certification,
+    runs semantic concept-cluster detection, and persists oversize cluster
+    findings only.
+
+    Expected payload fields
+    -----------------------
+    Required:
+      certification_exam_name  str  — certification / exam_name to scan
+
+    Optional:
+      created_by               str
+      ruleset_version          str
+      model_name               str
+      stem_edge_threshold      float
+      full_edge_threshold      float
+      correct_edge_threshold   float
+      cohesion_min_similarity  float
+      cohesion_signal          str
+      metadata                 dict
+
+    Returns
+    -------
+      audit_run_id, run_status, finding_count, evidence_count,
+      question_count, certification_exam_name, model_name
+    """
+    from workers.certification_question_loader import (  # noqa: PLC0415
+        load_certification_current_question_versions,
+    )
+    from workers.semantic_cluster_detector import (  # noqa: PLC0415
+        DEFAULT_MODEL_NAME,
+        DEFAULT_RULESET_VERSION,
+        build_semantic_cluster_thresholds,
+        merge_certification_entries_with_snapshots,
+        orchestrate_certification_semantic_cluster_audit,
+    )
+    from workers.structural_audit_launcher import (  # noqa: PLC0415
+        load_question_version_snapshots_bulk,
+    )
+
+    def handle(
+        job_id: str,
+        payload: dict,
+        checkpoint: dict,
+        attempt: int,
+        heartbeat_fn: Callable[[], None],
+    ) -> dict:
+        certification_exam_name = _require(payload, "certification_exam_name")
+        created_by = str(payload.get("created_by") or "certbound-worker").strip()
+        ruleset_version = str(
+            payload.get("ruleset_version") or DEFAULT_RULESET_VERSION
+        ).strip()
+        model_name = str(payload.get("model_name") or DEFAULT_MODEL_NAME).strip()
+        metadata = payload.get("metadata")
+        thresholds = build_semantic_cluster_thresholds(
+            stem_edge_threshold=payload.get("stem_edge_threshold"),
+            full_edge_threshold=payload.get("full_edge_threshold"),
+            correct_edge_threshold=payload.get("correct_edge_threshold"),
+            cohesion_min_similarity=payload.get("cohesion_min_similarity"),
+            cohesion_signal=payload.get("cohesion_signal"),
+        )
+
+        rows = load_certification_current_question_versions(
+            client,
+            certification_exam_name,
+        )
+        heartbeat_fn()
+
+        if not rows:
+            raise HandlerPayloadError(
+                "no current question versions found for certification "
+                f"{certification_exam_name!r}"
+            )
+
+        version_ids = [str(row["question_version_id"]) for row in rows]
+        snapshots = load_question_version_snapshots_bulk(client, version_ids)
+        heartbeat_fn()
+        entries = merge_certification_entries_with_snapshots(rows, snapshots)
+
+        result = orchestrate_certification_semantic_cluster_audit(
+            client,
+            entries=entries,
+            created_by=created_by,
+            ruleset_version=ruleset_version,
+            thresholds=thresholds,
+            model_name=model_name,
+            metadata=metadata,
+        )
+        return {
+            **result,
+            "question_count": len(entries),
+            "certification_exam_name": certification_exam_name,
+            "model_name": model_name,
+        }
+
+    handle.__name__ = "handle_certification_semantic_cluster_audit"
+    handle.__qualname__ = "handle_certification_semantic_cluster_audit"
+    return handle
+
+
 # ===========================================================================
 # Stub-only registry (backwards-compatible default)
 # ===========================================================================
@@ -694,6 +799,7 @@ HANDLER_REGISTRY: Dict[str, Callable[..., Any]] = {
     "llm_audit":                       _stub("llm_audit"),
     "hybrid_audit":                    _stub("hybrid_audit"),
     "certification_duplicate_audit":   _stub("certification_duplicate_audit"),
+    "certification_semantic_cluster_audit": _stub("certification_semantic_cluster_audit"),
     "question_generation":             _stub("question_generation"),
     "candidate_promotion":             _stub("candidate_promotion"),
     "embedding_generation":            _stub("embedding_generation"),
@@ -730,6 +836,7 @@ def build_handler_registry(
         "llm_audit":                       make_llm_audit_handler(client, llm_provider=llm_provider),
         "hybrid_audit":                    make_hybrid_audit_handler(client, llm_provider=llm_provider),
         "certification_duplicate_audit":   make_certification_duplicate_audit_handler(client),
+        "certification_semantic_cluster_audit": make_certification_semantic_cluster_audit_handler(client),
     }
 
 
@@ -743,5 +850,6 @@ __all__ = [
     "make_llm_audit_handler",
     "make_hybrid_audit_handler",
     "make_certification_duplicate_audit_handler",
+    "make_certification_semantic_cluster_audit_handler",
     "build_handler_registry",
 ]

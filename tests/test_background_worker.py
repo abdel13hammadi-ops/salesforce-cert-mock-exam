@@ -756,6 +756,7 @@ class TestHandlerRegistry(unittest.TestCase):
         "llm_audit",
         "hybrid_audit",
         "certification_duplicate_audit",
+        "certification_semantic_cluster_audit",
         "question_generation",
         "candidate_promotion",
         "embedding_generation",
