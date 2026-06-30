@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 import unittest
 from typing import Any, Dict, List, Optional
@@ -1341,6 +1342,176 @@ class TestWorkerHandlerIntegration(unittest.TestCase):
                 # is acceptable; only NotImplementedHandler signals "not yet
                 # implemented".
                 pass
+
+
+# ===========================================================================
+# T8  Automatic heartbeat during long-running handlers
+# ===========================================================================
+
+_HEARTBEAT_RESPONSE = [
+    {
+        "job_id": _SAMPLE_JOB["job_id"],
+        "job_status": "running",
+        "lease_expires_at": "2099-01-01T00:00:00+00:00",
+        "heartbeat_at": "2099-01-01T00:00:00+00:00",
+    }
+]
+
+
+def _fake_for_heartbeat_tests(handler: Callable) -> "FakeSupabase":
+    """Build a FakeSupabase wired for a single job dispatch."""
+    fake = FakeSupabase()
+    fake.set_response("recover_expired_background_jobs_v1",
+                      [{"recovered_count": 0, "dead_letter_count": 0}])
+    fake.set_response("claim_background_job_v1", [_SAMPLE_JOB])
+    fake.set_response("heartbeat_background_job_v1", _HEARTBEAT_RESPONSE)
+    fake.set_response("complete_background_job_v1",
+                      [{"job_id": _SAMPLE_JOB["job_id"],
+                        "job_status": "completed",
+                        "completed_at": "2099-01-01T00:00:00+00:00"}])
+    fake.set_response("fail_background_job_v1",
+                      [{"job_id": _SAMPLE_JOB["job_id"],
+                        "job_status": "pending",
+                        "available_at": "2099-01-01T00:05:00+00:00",
+                        "completed_at": None}])
+    return fake
+
+
+class TestAutoHeartbeat(unittest.TestCase):
+    """T8: Automatic periodic heartbeat while a handler is executing."""
+
+    # Use a very short lease so the auto-heartbeat fires quickly in tests.
+    _LEASE = 3  # seconds
+    _JOB_ID = _SAMPLE_JOB["job_id"]
+
+    def _make_worker(self, fake: "FakeSupabase", handler: Callable) -> BackgroundWorker:
+        return BackgroundWorker(
+            worker_id="heartbeat-test-worker",
+            client=fake,
+            handlers={_SAMPLE_JOB["job_type"]: handler},
+            lease_seconds=self._LEASE,
+            sleep_interval=0.0,
+        )
+
+    def _heartbeat_count(self, fake: "FakeSupabase") -> int:
+        return sum(
+            1 for c in fake.rpc_calls
+            if c["name"] == "heartbeat_background_job_v1"
+        )
+
+    # ------------------------------------------------------------------
+
+    def test_heartbeats_continue_during_long_running_handler(self):
+        """Auto-heartbeat fires at least once while the handler sleeps."""
+        fake = _fake_for_heartbeat_tests(lambda **_kw: {"ok": True})
+
+        def slow_handler(job_id, payload, checkpoint, attempt, heartbeat_fn):
+            # Sleep for ~2 intervals so at least one auto-heartbeat fires.
+            time.sleep(self._LEASE / 3.0 * 2.2)
+            return {"ok": True}
+
+        worker = self._make_worker(fake, slow_handler)
+        worker.run_once()
+
+        heartbeat_calls = self._heartbeat_count(fake)
+        # Initial pre-handler heartbeat (1) + at least one auto-heartbeat (1).
+        self.assertGreaterEqual(
+            heartbeat_calls, 2,
+            f"expected ≥2 heartbeat RPCs for a long handler, got {heartbeat_calls}",
+        )
+
+    def test_heartbeat_stops_after_success(self):
+        """No extra heartbeat is sent after the job completes."""
+        fake = _fake_for_heartbeat_tests(lambda **_kw: {"ok": True})
+
+        def fast_handler(job_id, payload, checkpoint, attempt, heartbeat_fn):
+            return {"ok": True}
+
+        worker = self._make_worker(fake, fast_handler)
+        worker.run_once()
+
+        # Record heartbeat count immediately after completion.
+        count_after = self._heartbeat_count(fake)
+
+        # Sleep longer than two auto-heartbeat intervals to give the thread
+        # time to fire spuriously if it hasn't stopped.
+        time.sleep(self._LEASE / 3.0 * 2.5)
+
+        count_later = self._heartbeat_count(fake)
+        self.assertEqual(
+            count_after,
+            count_later,
+            "heartbeat thread must stop after handler success; "
+            f"count grew from {count_after} to {count_later}",
+        )
+
+    def test_heartbeat_stops_after_handler_failure(self):
+        """Heartbeat thread stops even when the handler raises."""
+        fake = _fake_for_heartbeat_tests(lambda **_kw: {})
+
+        def failing_handler(job_id, payload, checkpoint, attempt, heartbeat_fn):
+            raise ValueError("deliberate test failure")
+
+        worker = self._make_worker(fake, failing_handler)
+        worker.run_once()
+
+        count_after = self._heartbeat_count(fake)
+        time.sleep(self._LEASE / 3.0 * 2.5)
+        count_later = self._heartbeat_count(fake)
+
+        self.assertEqual(
+            count_after,
+            count_later,
+            "heartbeat thread must stop after handler failure; "
+            f"count grew from {count_after} to {count_later}",
+        )
+
+    def test_handler_exception_still_reaches_fail_path(self):
+        """A handler exception must result in fail_background_job_v1 being called."""
+        fake = _fake_for_heartbeat_tests(lambda **_kw: {})
+
+        def failing_handler(job_id, payload, checkpoint, attempt, heartbeat_fn):
+            raise RuntimeError("something went wrong")
+
+        worker = self._make_worker(fake, failing_handler)
+        worker.run_once()
+
+        self.assertIn(
+            "fail_background_job_v1",
+            fake.called_rpc_names,
+            "fail_background_job_v1 must be called when the handler raises",
+        )
+        self.assertNotIn(
+            "complete_background_job_v1",
+            fake.called_rpc_names,
+            "complete_background_job_v1 must NOT be called when the handler raises",
+        )
+        fail_call = next(
+            c for c in fake.rpc_calls if c["name"] == "fail_background_job_v1"
+        )
+        self.assertIn("something went wrong", fail_call["params"]["p_error_message"])
+
+    def test_no_extra_heartbeat_after_completion(self):
+        """complete_background_job_v1 is called exactly once, not again after."""
+        fake = _fake_for_heartbeat_tests(lambda **_kw: {})
+
+        def fast_handler(job_id, payload, checkpoint, attempt, heartbeat_fn):
+            return {"result": "done"}
+
+        worker = self._make_worker(fake, fast_handler)
+        worker.run_once()
+
+        # Give any rogue background thread time to fire.
+        time.sleep(self._LEASE / 3.0 * 2.5)
+
+        complete_calls = sum(
+            1 for c in fake.rpc_calls
+            if c["name"] == "complete_background_job_v1"
+        )
+        self.assertEqual(
+            complete_calls, 1,
+            f"complete_background_job_v1 must be called exactly once, called {complete_calls} times",
+        )
 
 
 if __name__ == "__main__":

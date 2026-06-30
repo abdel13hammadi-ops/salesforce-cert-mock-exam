@@ -40,6 +40,7 @@ import argparse
 import logging
 import os
 import signal
+import threading
 import time
 from typing import Callable, Dict, List, Optional
 
@@ -338,6 +339,73 @@ class BackgroundWorker:
     # Dispatch
     # ------------------------------------------------------------------
 
+    def _heartbeat_interval(self) -> float:
+        """Return the interval between automatic heartbeats, safely below the lease."""
+        return max(1.0, self.lease_seconds / 3.0)
+
+    def _run_handler_with_heartbeats(
+        self,
+        job_id: str,
+        handler: Callable,
+        job: dict,
+    ) -> dict:
+        """Run *handler* in the current thread; renew the job's heartbeat
+        periodically in a daemon background thread until the handler returns
+        or raises.
+
+        Design guarantees
+        -----------------
+        * The heartbeat thread only calls ``heartbeat_background_job_v1``.
+        * It never calls complete or fail RPCs.
+        * It is a daemon thread so it cannot prevent process exit.
+        * It is stopped (via ``threading.Event``) immediately when the handler
+          exits, whether successfully or by exception.
+        * A failed heartbeat RPC is logged at WARNING level but does not affect
+          the handler.
+        * The handler exception, if any, propagates normally to the caller.
+        """
+        stop_event = threading.Event()
+
+        def _heartbeat_loop() -> None:
+            interval = self._heartbeat_interval()
+            while not stop_event.wait(timeout=interval):
+                try:
+                    self._heartbeat(job_id)
+                    logger.debug(
+                        "auto-heartbeat sent job_id=%s worker=%s",
+                        job_id,
+                        self.worker_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "auto-heartbeat failed job_id=%s worker=%s error=%s",
+                        job_id,
+                        self.worker_id,
+                        exc,
+                    )
+
+        thread = threading.Thread(
+            target=_heartbeat_loop,
+            name=f"heartbeat-{job_id}",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            return handler(
+                job_id=job_id,
+                payload=job.get("payload") or {},
+                checkpoint=job.get("checkpoint") or {},
+                attempt=job.get("attempt_count", "?"),
+                heartbeat_fn=lambda cp=None: self._heartbeat(job_id, cp),
+            )
+        finally:
+            stop_event.set()
+            thread.join(timeout=self._heartbeat_interval() + 5)
+
+    # ------------------------------------------------------------------
+    # Dispatch
+    # ------------------------------------------------------------------
+
     def _process_one(self, job: dict) -> None:
         """Dispatch a single claimed job to its registered handler.
 
@@ -367,13 +435,7 @@ class BackgroundWorker:
 
         try:
             self._heartbeat(job_id)
-            result = handler(
-                job_id=job_id,
-                payload=job.get("payload") or {},
-                checkpoint=job.get("checkpoint") or {},
-                attempt=attempt,
-                heartbeat_fn=lambda cp=None: self._heartbeat(job_id, cp),
-            )
+            result = self._run_handler_with_heartbeats(job_id, handler, job)
             self._complete_job(job_id, result or {})
             logger.info(
                 "job_id=%s type=%s attempt=%s status=completed worker=%s",
