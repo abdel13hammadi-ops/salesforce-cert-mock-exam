@@ -33,6 +33,7 @@ Scheduled → recover_expired_background_jobs_v1
 | `finding_merge.py` | Phase 8I — `merge_findings()`: dedup by canonical code + field_path + description, severity/materiality escalation |
 | `anthropic_provider.py` | Phase V45 — production Anthropic Messages API provider with structured JSON output |
 | `llm_provider_factory.py` | Phase V45 — `build_llm_provider_from_env()` for worker startup wiring |
+| `ai_quality_provider_factory.py` | Phase V48 — `build_ai_quality_providers_from_env()` for `ai_quality_audit_smoke` |
 | `audit_calibration.py` | Phase V45 — dry-run five-case calibration pilot logic |
 | `run_audit_calibration.py` | Phase V45 — manual calibration CLI (never run under pytest) |
 | `fixtures/audit_calibration_cases.json` | Phase V45 — five labeled calibration cases with evidence chunks |
@@ -79,6 +80,7 @@ Use `build_handler_registry(client)` to get the production registry.  It wires i
 | `deterministic_audit` | 8D/8E | **Implemented** — runs structural checks via `orchestrate_audit()` |
 | `llm_audit` | 8G | **Implemented** — calls injected `LlmProvider`, validates response via `validate_llm_response()` |
 | `hybrid_audit` | 8H/8I | **Implemented** — det checks + LLM call + `merge_findings()`, orchestrates audit lifecycle |
+| `ai_quality_audit_smoke` | V48 | **Implemented** — Pass A/B/C orchestration via injected `AiQualityAuditProviders` |
 | `question_generation` | — | Stub — `NotImplementedHandler` |
 | `embedding_generation` | — | Stub — `NotImplementedHandler` |
 | `other` | — | Stub — `NotImplementedHandler` |
@@ -210,6 +212,34 @@ Startup behavior:
 - Secrets are never logged
 
 Non-AI handlers (`resource_ingestion`, `candidate_promotion`, `deterministic_audit`) behave unchanged.
+
+## AI Quality Audit Worker Wiring (V48)
+
+The worker CLI also calls `build_ai_quality_providers_from_env()` and injects the result into `build_handler_registry(..., ai_quality_providers=...)`.
+
+| Variable | Required | Description |
+|---|---|---|
+| `CERTBOUND_AI_QUALITY_PRIMARY_LLM_PROVIDER` | when `ai_quality_audit_smoke` is claimable | Optional override; falls back to `CERTBOUND_LLM_PROVIDER` |
+| `CERTBOUND_AI_QUALITY_DISPUTE_LLM_PROVIDER` | no | Optional separate Pass C provider; omit to reuse primary |
+| `CERTBOUND_AI_QUALITY_TIMEOUT_SECONDS` | no | Worker-level timeout (1–3600 s); falls back to `CERTBOUND_ANTHROPIC_TIMEOUT_SECONDS`, then 120 |
+| `CERTBOUND_LLM_PROVIDER` | yes (fallback) | Set to `anthropic` when primary override is unset |
+| `CERTBOUND_ANTHROPIC_*` | when provider=anthropic | Same Anthropic variables as LLM/hybrid audits |
+
+Production command (worker process is separate from Streamlit):
+
+```bash
+python -m workers.background_worker \
+    --worker-id certbound-ai-quality-1 \
+    --job-types ai_quality_audit_smoke \
+    --log-level INFO
+```
+
+Startup behavior:
+
+- `--job-types` includes `ai_quality_audit_smoke`, or `--job-types` is omitted → valid AI quality provider configuration is required; worker exits before polling if missing/invalid
+- `--job-types` excludes `ai_quality_audit_smoke` → AI quality provider configuration is not required
+- Dispute provider unset → primary provider callable is reused for Pass C
+- Secrets are never logged
 
 ## Calibration Pilot (V45 Phase 2)
 

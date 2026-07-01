@@ -12,6 +12,7 @@ Operational guide for processing `background_jobs` outside Streamlit.
 | `certification_duplicate_audit` | No | Certification-wide duplicate stem scan |
 | `llm_audit` | Yes | Anthropic provider when configured |
 | `hybrid_audit` | Yes | Deterministic + LLM merge |
+| `ai_quality_audit_smoke` | Yes | V48 Pass A/B/C orchestration via injected providers |
 | `question_generation` | — | Stub (not implemented) |
 | `embedding_generation` | — | Stub (not implemented) |
 | `other` | — | Stub (not implemented) |
@@ -27,6 +28,9 @@ Workers communicate only through Supabase RPCs. They never write tables directly
 | `CERTBOUND_LLM_PROVIDER` | `llm_audit`, `hybrid_audit` only |
 | `CERTBOUND_ANTHROPIC_API_KEY` | Anthropic LLM/hybrid jobs |
 | `CERTBOUND_ALLOW_LIVE_AI_TEST` | Manual LLM/hybrid enqueue scripts only |
+| `CERTBOUND_AI_QUALITY_PRIMARY_LLM_PROVIDER` | `ai_quality_audit_smoke` when included in `--job-types` (falls back to `CERTBOUND_LLM_PROVIDER`) |
+| `CERTBOUND_AI_QUALITY_DISPUTE_LLM_PROVIDER` | Optional separate Pass C provider (defaults to primary) |
+| `CERTBOUND_AI_QUALITY_TIMEOUT_SECONDS` | Worker-level Pass A/B/C timeout (1–3600 seconds) |
 
 Optional tuning:
 
@@ -54,6 +58,44 @@ $env:SUPABASE_SERVICE_ROLE_KEY = Read-Host "Paste service role key (hidden)" -As
 ```
 
 Deterministic audits (`deterministic_audit`, `certification_duplicate_audit`) do **not** need LLM variables.
+
+## Production worker (separate from Streamlit)
+
+The background worker runs as its own long-lived process. It does **not** start from Streamlit and does not read Streamlit secrets unless you export the same variables into the worker shell/service environment.
+
+Continuous production command for AI quality audits:
+
+```powershell
+python -m workers.background_worker `
+    --worker-id "certbound-ai-quality-1" `
+    --job-types ai_quality_audit_smoke `
+    --log-level INFO
+```
+
+Required when `--job-types` includes `ai_quality_audit_smoke`, or when `--job-types` is omitted (worker accepts all registered job types):
+
+| Variable | Required | Notes |
+|---|---|---|
+| `SUPABASE_URL` | yes | Same project as the app |
+| `SUPABASE_SERVICE_ROLE_KEY` | yes | Service role only; never log |
+| `CERTBOUND_AI_QUALITY_PRIMARY_LLM_PROVIDER` or `CERTBOUND_LLM_PROVIDER` | yes | Set to `anthropic` |
+| `CERTBOUND_ANTHROPIC_API_KEY` | yes when provider is anthropic | Never log |
+| `CERTBOUND_AI_QUALITY_DISPUTE_LLM_PROVIDER` | no | Omit to reuse the primary provider for Pass C |
+| `CERTBOUND_AI_QUALITY_TIMEOUT_SECONDS` | no | 1–3600; defaults via `CERTBOUND_ANTHROPIC_TIMEOUT_SECONDS`, then 120 |
+
+Fail-fast startup rules:
+
+- When `ai_quality_audit_smoke` is included (explicitly or via default all-types mode), the worker exits before claiming jobs if provider configuration is missing or invalid.
+- When `--job-types` excludes `ai_quality_audit_smoke`, AI quality provider variables are not required and non-AI workers start normally.
+
+Deterministic-only worker example (no AI configuration required):
+
+```powershell
+python -m workers.background_worker `
+    --worker-id "certbound-deterministic-1" `
+    --job-types deterministic_audit,certification_duplicate_audit `
+    --log-level INFO
+```
 
 ## Process one job (`--once`)
 

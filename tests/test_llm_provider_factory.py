@@ -62,6 +62,7 @@ class TestBackgroundWorkerProviderWiring(unittest.TestCase):
     def test_main_passes_provider_into_handler_registry(self):
         fake_client = MagicMock()
         fake_provider = MagicMock()
+        fake_ai_quality = MagicMock()
         fake_registry = {"llm_audit": MagicMock()}
 
         with patch("workers.background_worker.build_supabase_client", return_value=fake_client):
@@ -70,16 +71,25 @@ class TestBackgroundWorkerProviderWiring(unittest.TestCase):
                 return_value=fake_provider,
             ) as provider_mock:
                 with patch(
-                    "workers.job_handlers.build_handler_registry",
-                    return_value=fake_registry,
-                ) as registry_mock:
-                    with patch("workers.background_worker.BackgroundWorker") as worker_cls:
-                        from workers.background_worker import main
+                    "workers.ai_quality_provider_factory.build_ai_quality_providers_from_env",
+                    return_value=fake_ai_quality,
+                ) as ai_mock:
+                    with patch(
+                        "workers.job_handlers.build_handler_registry",
+                        return_value=fake_registry,
+                    ) as registry_mock:
+                        with patch("workers.background_worker.BackgroundWorker") as worker_cls:
+                            from workers.background_worker import main
 
-                        main(["--worker-id", "test-worker", "--once"])
+                            main(["--worker-id", "test-worker", "--once"])
 
         provider_mock.assert_called_once()
-        registry_mock.assert_called_once_with(fake_client, llm_provider=fake_provider)
+        ai_mock.assert_called_once_with(required=True)
+        registry_mock.assert_called_once_with(
+            fake_client,
+            llm_provider=fake_provider,
+            ai_quality_providers=fake_ai_quality,
+        )
         worker_cls.assert_called_once()
         self.assertIs(
             worker_cls.call_args.kwargs["handlers"],

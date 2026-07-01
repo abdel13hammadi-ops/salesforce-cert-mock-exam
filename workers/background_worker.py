@@ -552,8 +552,17 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.job_types:
         job_types = [t.strip() for t in args.job_types.split(",") if t.strip()]
 
+    from workers.ai_quality_provider_factory import (  # noqa: PLC0415
+        ai_quality_providers_required,
+        build_ai_quality_providers_from_env,
+    )
     from workers.job_handlers import build_handler_registry  # local import avoids circular
     from workers.llm_provider_factory import build_llm_provider_from_env
+
+    requires_ai_quality = ai_quality_providers_required(job_types)
+    ai_quality_providers = build_ai_quality_providers_from_env(
+        required=requires_ai_quality,
+    )
 
     client = build_supabase_client()
     llm_provider = build_llm_provider_from_env()
@@ -563,7 +572,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     worker = BackgroundWorker(
         worker_id=args.worker_id,
         client=client,
-        handlers=build_handler_registry(client, llm_provider=llm_provider),
+        handlers=build_handler_registry(
+            client,
+            llm_provider=llm_provider,
+            ai_quality_providers=ai_quality_providers,
+        ),
         job_types=job_types,
         lease_seconds=args.lease_seconds,
         sleep_interval=args.sleep,
