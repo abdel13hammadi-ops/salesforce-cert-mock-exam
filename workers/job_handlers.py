@@ -789,6 +789,97 @@ def make_certification_semantic_cluster_audit_handler(client) -> Callable[..., d
     return handle
 
 
+def make_ai_quality_audit_smoke_handler(
+    client,
+    ai_quality_providers=None,
+) -> Callable[..., dict]:
+    """Return the ai_quality_audit_smoke handler bound to *client* and providers.
+
+    Expected payload fields
+    -----------------------
+    Required:
+      audit_run_id           str  — UUID of an existing ai_quality audit run
+      question_version_id    str  — UUID targeted by the run
+
+    Optional:
+      worker_id              str  — claim/lease owner (default certbound-worker)
+      lease_seconds          int  — pass lease duration (default 300)
+      schema_version         str  — recorded on each pass result
+      metadata               dict — forwarded to complete_ai_quality_audit_run_v1
+
+    Returns
+    -------
+      audit_run_id, run_status, finding_count, evidence_count,
+      passes_executed, completion_shape
+
+    RPCs called:
+      claim_ai_quality_audit_pass_v1, record_audit_pass_result_v1,
+      persist_audit_run_dispute_trigger_v1, complete_ai_quality_audit_run_v1
+    """
+    from workers.ai_quality_audit_worker import (  # noqa: PLC0415
+        AiQualityAuditProviders,
+        AiQualityAuditWorkerError,
+        process_ai_quality_audit_job,
+        validate_job_payload,
+    )
+    from workers.llm_providers import MissingProviderError  # noqa: PLC0415
+
+    def handle(
+        job_id: str,
+        payload: dict,
+        checkpoint: dict,
+        attempt: int,
+        heartbeat_fn: Callable[[], None],
+    ) -> dict:
+        if ai_quality_providers is None:
+            raise MissingProviderError(
+                "ai_quality_audit_smoke requires injected AiQualityAuditProviders "
+                "(primary and dispute callables)."
+            )
+        if not isinstance(ai_quality_providers, AiQualityAuditProviders):
+            raise HandlerPayloadError(
+                "ai_quality_providers must be an AiQualityAuditProviders instance"
+            )
+
+        try:
+            validated = validate_job_payload(payload)
+        except AiQualityAuditWorkerError as exc:
+            raise HandlerPayloadError(str(exc)) from exc
+
+        worker_id = str(payload.get("worker_id") or "certbound-worker").strip()
+        lease_seconds = payload.get("lease_seconds")
+        if lease_seconds is None:
+            lease_seconds = 300
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int):
+            raise HandlerPayloadError("lease_seconds must be an integer when provided")
+        if lease_seconds < 30 or lease_seconds > 3600:
+            raise HandlerPayloadError("lease_seconds must be between 30 and 3600")
+
+        schema_version = str(payload.get("schema_version") or "v48.1").strip()
+        metadata = validated.get("metadata")
+
+        job_payload = {
+            "audit_run_id": validated["audit_run_id"],
+            "question_version_id": validated["question_version_id"],
+        }
+        if metadata is not None:
+            job_payload["metadata"] = metadata
+
+        return process_ai_quality_audit_job(
+            client,
+            job_payload,
+            ai_quality_providers,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            schema_version=schema_version,
+            heartbeat_fn=heartbeat_fn,
+        )
+
+    handle.__name__ = "handle_ai_quality_audit_smoke"
+    handle.__qualname__ = "handle_ai_quality_audit_smoke"
+    return handle
+
+
 # ===========================================================================
 # Stub-only registry (backwards-compatible default)
 # ===========================================================================
@@ -800,6 +891,7 @@ HANDLER_REGISTRY: Dict[str, Callable[..., Any]] = {
     "hybrid_audit":                    _stub("hybrid_audit"),
     "certification_duplicate_audit":   _stub("certification_duplicate_audit"),
     "certification_semantic_cluster_audit": _stub("certification_semantic_cluster_audit"),
+    "ai_quality_audit_smoke":          _stub("ai_quality_audit_smoke"),
     "question_generation":             _stub("question_generation"),
     "candidate_promotion":             _stub("candidate_promotion"),
     "embedding_generation":            _stub("embedding_generation"),
@@ -810,12 +902,14 @@ HANDLER_REGISTRY: Dict[str, Callable[..., Any]] = {
 def build_handler_registry(
     client,
     llm_provider=None,
+    ai_quality_providers=None,
 ) -> Dict[str, Callable[..., Any]]:
     """Build a complete handler registry with real handlers injected.
 
     Returns a new dict overriding resource_ingestion, candidate_promotion,
-    deterministic_audit, llm_audit, hybrid_audit, and
-    certification_duplicate_audit with real implementations.
+    deterministic_audit, llm_audit, hybrid_audit,
+    certification_duplicate_audit, certification_semantic_cluster_audit, and
+    ai_quality_audit_smoke with real implementations.
     question_generation, embedding_generation, and other remain stubs.
 
     Parameters
@@ -827,6 +921,10 @@ def build_handler_registry(
         Optional LLM provider callable (see ``workers.llm_providers.LlmProvider``).
         When ``None``, both ``llm_audit`` and ``hybrid_audit`` raise
         ``MissingProviderError`` before any RPC call when invoked.
+    ai_quality_providers:
+        Optional ``AiQualityAuditProviders`` with primary and dispute
+        callables. When ``None``, ``ai_quality_audit_smoke`` raises
+        ``MissingProviderError`` before any RPC call when invoked.
     """
     return {
         **HANDLER_REGISTRY,
@@ -837,6 +935,10 @@ def build_handler_registry(
         "hybrid_audit":                    make_hybrid_audit_handler(client, llm_provider=llm_provider),
         "certification_duplicate_audit":   make_certification_duplicate_audit_handler(client),
         "certification_semantic_cluster_audit": make_certification_semantic_cluster_audit_handler(client),
+        "ai_quality_audit_smoke": make_ai_quality_audit_smoke_handler(
+            client,
+            ai_quality_providers=ai_quality_providers,
+        ),
     }
 
 
@@ -851,5 +953,6 @@ __all__ = [
     "make_hybrid_audit_handler",
     "make_certification_duplicate_audit_handler",
     "make_certification_semantic_cluster_audit_handler",
+    "make_ai_quality_audit_smoke_handler",
     "build_handler_registry",
 ]

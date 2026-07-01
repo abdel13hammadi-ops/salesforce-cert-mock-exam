@@ -349,13 +349,14 @@ def _build_create_kwargs(
     user_content: str,
     response_schema: dict,
     config: AnthropicProviderConfig,
+    timeout_override: Optional[float] = None,
 ) -> dict:
     kwargs: dict = {
         "model": model,
         "max_tokens": config.max_output_tokens,
         "system": system_prompt,
         "messages": [{"role": "user", "content": user_content}],
-        "timeout": config.timeout,
+        "timeout": timeout_override if timeout_override is not None else config.timeout,
     }
 
     # Prefer GA structured output when the installed SDK supports it.
@@ -430,12 +431,16 @@ class AnthropicAuditProvider:
     ) -> LlmResponse:
         model = (model_name or "").strip() or self._config.model
         user_content = _build_user_content(user_prompt, metadata)
+        timeout_override: Optional[float] = None
+        if metadata and metadata.get("timeout_seconds") is not None:
+            timeout_override = float(metadata["timeout_seconds"])
         kwargs = _build_create_kwargs(
             model=model,
             system_prompt=system_prompt,
             user_content=user_content,
             response_schema=response_schema,
             config=self._config,
+            timeout_override=timeout_override,
         )
 
         client = self._get_client()

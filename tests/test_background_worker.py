@@ -758,6 +758,7 @@ class TestHandlerRegistry(unittest.TestCase):
         "hybrid_audit",
         "certification_duplicate_audit",
         "certification_semantic_cluster_audit",
+        "ai_quality_audit_smoke",
         "question_generation",
         "candidate_promotion",
         "embedding_generation",
