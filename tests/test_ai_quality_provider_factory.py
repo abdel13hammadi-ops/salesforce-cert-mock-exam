@@ -193,6 +193,73 @@ class TestBuildAiQualityProvidersFromEnv(unittest.TestCase):
                     build_ai_quality_providers_from_env(required=True)
 
 
+class TestAiQualityModelProvenance(unittest.TestCase):
+
+    def test_resolves_configured_anthropic_model(self):
+        configured_model = "claude-provenance-test"
+        with patch.dict(
+            os.environ,
+            {
+                ENV_LLM_PROVIDER: "anthropic",
+                "CERTBOUND_ANTHROPIC_MODEL": configured_model,
+            },
+            clear=False,
+        ):
+            from workers.ai_quality_provider_factory import (
+                resolve_ai_quality_model_provenance_from_env,
+            )
+
+            provenance = resolve_ai_quality_model_provenance_from_env()
+
+        self.assertEqual(provenance.primary_model_name, configured_model)
+        self.assertEqual(provenance.dispute_model_name, configured_model)
+        self.assertTrue(provenance.dispute_reuses_primary)
+
+    def test_uses_anthropic_default_when_model_env_absent(self):
+        with patch.dict(os.environ, {ENV_LLM_PROVIDER: "anthropic"}, clear=False):
+            os.environ.pop("CERTBOUND_ANTHROPIC_MODEL", None)
+            from workers.ai_quality_provider_factory import (
+                resolve_ai_quality_model_provenance_from_env,
+            )
+            from workers.anthropic_provider import DEFAULT_MODEL
+
+            provenance = resolve_ai_quality_model_provenance_from_env()
+
+        self.assertEqual(provenance.primary_model_name, DEFAULT_MODEL)
+        self.assertEqual(provenance.dispute_model_name, DEFAULT_MODEL)
+
+    def test_dispute_fallback_records_primary_model(self):
+        with patch.dict(
+            os.environ,
+            {
+                ENV_PRIMARY_PROVIDER: "anthropic",
+                "CERTBOUND_ANTHROPIC_MODEL": "claude-shared-model",
+            },
+            clear=False,
+        ):
+            os.environ.pop(ENV_DISPUTE_PROVIDER, None)
+            from workers.ai_quality_provider_factory import (
+                resolve_ai_quality_model_provenance_from_env,
+            )
+
+            provenance = resolve_ai_quality_model_provenance_from_env()
+
+        self.assertEqual(provenance.primary_model_name, "claude-shared-model")
+        self.assertEqual(provenance.dispute_model_name, "claude-shared-model")
+        self.assertTrue(provenance.dispute_reuses_primary)
+
+    def test_missing_provider_configuration_rejected(self):
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop(ENV_PRIMARY_PROVIDER, None)
+            os.environ.pop(ENV_LLM_PROVIDER, None)
+            from workers.ai_quality_provider_factory import (
+                resolve_ai_quality_model_provenance_from_env,
+            )
+
+            with self.assertRaises(AiQualityProviderConfigError):
+                resolve_ai_quality_model_provenance_from_env()
+
+
 class TestBackgroundWorkerAiQualityWiring(unittest.TestCase):
 
     def test_main_injects_ai_quality_providers_when_all_job_types(self):

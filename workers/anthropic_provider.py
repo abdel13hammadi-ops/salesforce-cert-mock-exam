@@ -123,6 +123,12 @@ class AnthropicProviderConfig:
     output_cost_per_mtok: Optional[float] = None
 
 
+def resolve_anthropic_model_from_env() -> str:
+    """Return the configured Anthropic model ID without requiring an API key."""
+    model = os.environ.get(ENV_MODEL, DEFAULT_MODEL).strip()
+    return model or DEFAULT_MODEL
+
+
 def load_anthropic_config_from_env() -> AnthropicProviderConfig:
     """Load provider configuration from environment variables."""
     api_key = os.environ.get(ENV_API_KEY, "").strip()
@@ -131,7 +137,7 @@ def load_anthropic_config_from_env() -> AnthropicProviderConfig:
             f"{ENV_API_KEY} is not set; cannot create Anthropic provider"
         )
 
-    model = os.environ.get(ENV_MODEL, DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    model = resolve_anthropic_model_from_env()
     timeout = _read_float(ENV_TIMEOUT, DEFAULT_TIMEOUT_SECONDS)
     max_output_tokens = _read_int(ENV_MAX_OUTPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS)
     max_retries = _read_int(ENV_MAX_RETRIES, DEFAULT_MAX_RETRIES)

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import List, Optional
 
 from workers.ai_quality_audit_worker import AiQualityAuditProviders
@@ -49,6 +50,17 @@ DEFAULT_TIMEOUT_SECONDS = 120.0
 
 class AiQualityProviderConfigError(ValueError):
     """Raised when AI quality provider configuration is missing or invalid."""
+
+
+@dataclass(frozen=True)
+class AiQualityModelProvenance:
+    """Resolved audit-run model identifiers aligned with provider configuration."""
+
+    primary_model_name: str
+    dispute_model_name: str
+    primary_provider: str
+    dispute_provider: str
+    dispute_reuses_primary: bool
 
 
 def ai_quality_providers_required(job_types: Optional[List[str]]) -> bool:
@@ -109,6 +121,50 @@ def _build_provider_callable(provider_name: str):
     )
 
 
+def _resolve_model_for_provider(provider_name: str) -> str:
+    if provider_name == "anthropic":
+        from workers.anthropic_provider import resolve_anthropic_model_from_env  # noqa: PLC0415
+
+        return resolve_anthropic_model_from_env()
+
+    raise AiQualityProviderConfigError(
+        f"Unsupported AI quality LLM provider {provider_name!r}; "
+        f"supported values: {sorted(SUPPORTED_LLM_PROVIDERS)}"
+    )
+
+
+def resolve_ai_quality_model_provenance_from_env() -> AiQualityModelProvenance:
+    """Resolve audit-run model names from the same configuration as providers."""
+    primary_provider = _resolve_provider_name(ENV_PRIMARY_PROVIDER, ENV_LLM_PROVIDER)
+    if not primary_provider:
+        raise AiQualityProviderConfigError(
+            f"{AI_QUALITY_JOB_TYPE} requires "
+            f"{ENV_PRIMARY_PROVIDER} or {ENV_LLM_PROVIDER} "
+            f"to be set to a supported provider (e.g. anthropic)"
+        )
+
+    primary_model_name = _resolve_model_for_provider(primary_provider)
+
+    dispute_provider = _resolve_provider_name(ENV_DISPUTE_PROVIDER)
+    if not dispute_provider:
+        return AiQualityModelProvenance(
+            primary_model_name=primary_model_name,
+            dispute_model_name=primary_model_name,
+            primary_provider=primary_provider,
+            dispute_provider=primary_provider,
+            dispute_reuses_primary=True,
+        )
+
+    dispute_model_name = _resolve_model_for_provider(dispute_provider)
+    return AiQualityModelProvenance(
+        primary_model_name=primary_model_name,
+        dispute_model_name=dispute_model_name,
+        primary_provider=primary_provider,
+        dispute_provider=dispute_provider,
+        dispute_reuses_primary=False,
+    )
+
+
 def build_ai_quality_providers_from_env(*, required: bool) -> Optional[AiQualityAuditProviders]:
     """Return configured providers, or ``None`` when not required.
 
@@ -157,7 +213,9 @@ __all__ = [
     "ENV_DISPUTE_PROVIDER",
     "ENV_PRIMARY_PROVIDER",
     "ENV_TIMEOUT_SECONDS",
+    "AiQualityModelProvenance",
     "AiQualityProviderConfigError",
     "ai_quality_providers_required",
     "build_ai_quality_providers_from_env",
+    "resolve_ai_quality_model_provenance_from_env",
 ]

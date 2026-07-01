@@ -19,6 +19,10 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from workers.ai_quality_provider_factory import (  # noqa: E402
+    AiQualityProviderConfigError,
+    resolve_ai_quality_model_provenance_from_env,
+)
 from workers.quality_audit_pilot import (  # noqa: E402
     DEFAULT_SMOKE_SEED,
     select_quality_audit_smoke_questions,
@@ -226,8 +230,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--prompt-version", default="v48-smoke-prompt-v1")
     parser.add_argument("--ruleset-version", default="v48-smoke-ruleset-v1")
-    parser.add_argument("--primary-model-name", default="smoke-primary-model")
-    parser.add_argument("--dispute-model-name", default="smoke-dispute-model")
     parser.add_argument("--pilot-batch-id", default="v48-ai-quality-smoke")
     parser.add_argument("--created-by", default="ai-quality-smoke-cli")
     parser.add_argument(
@@ -241,6 +243,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Required with --execute to acknowledge non-dry execution",
     )
     args = parser.parse_args(argv)
+
+    try:
+        model_provenance = resolve_ai_quality_model_provenance_from_env()
+    except AiQualityProviderConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
     seed = args.seed
     if not args.question_version_ids and seed is None:
@@ -272,8 +280,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 question_version_ids=ids,
                 prompt_version=args.prompt_version,
                 ruleset_version=args.ruleset_version,
-                primary_model_name=args.primary_model_name,
-                dispute_model_name=args.dispute_model_name,
+                primary_model_name=model_provenance.primary_model_name,
+                dispute_model_name=model_provenance.dispute_model_name,
                 pilot_batch_id=args.pilot_batch_id,
                 created_by=args.created_by,
             )
@@ -303,8 +311,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             question_version_ids=ids,
             prompt_version=args.prompt_version,
             ruleset_version=args.ruleset_version,
-            primary_model_name=args.primary_model_name,
-            dispute_model_name=args.dispute_model_name,
+            primary_model_name=model_provenance.primary_model_name,
+            dispute_model_name=model_provenance.dispute_model_name,
             pilot_batch_id=args.pilot_batch_id,
             created_by=args.created_by,
         )
