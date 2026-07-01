@@ -19,6 +19,7 @@ from workers.ai_quality_audit_worker import (
     validate_job_payload,
 )
 from workers.llm_providers import LlmProviderError, LlmResponse
+from workers.llm_audit import LlmAuditValidationError
 
 _QVID = "cccccccc-0000-0000-0000-000000000001"
 _RUN_ID = "aaaaaaaa-0000-0000-0000-000000000001"
@@ -701,7 +702,7 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         client.enqueue_claims(
             _claim("EXECUTE_PASS_A", "A"),
             _claim("EXECUTE_PASS_A", "A"),
-            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
         )
 
         primary = _SequenceProvider(
@@ -711,12 +712,12 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
             ]
         )
 
-        with self.assertRaises(AiQualityAuditWorkerError):
-            _run_job(
-                client,
-                AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
-            )
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
 
+        self.assertEqual(result["run_status"], "inconclusive")
         self.assertEqual(len(primary.calls), 2)
         self.assertEqual(client.record_calls[0]["p_status"], "schema_invalid")
         self.assertEqual(client.record_calls[1]["p_status"], "completed")
@@ -760,7 +761,7 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
             _claim("EXECUTE_PASS_A", "A"),
             _claim("EXECUTE_PASS_B", "B"),
             _claim("EXECUTE_PASS_B", "B"),
-            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
         )
 
         primary = _SequenceProvider(
@@ -771,12 +772,12 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
             ]
         )
 
-        with self.assertRaises(AiQualityAuditWorkerError):
-            _run_job(
-                client,
-                AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
-            )
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
 
+        self.assertEqual(result["run_status"], "inconclusive")
         pass_b_records = [
             call for call in client.record_calls if call["p_pass_code"] == "B"
         ]
@@ -820,17 +821,17 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         client = OrchestrationFakeSupabase()
         client.enqueue_claims(
             _claim("EXECUTE_PASS_A", "A"),
-            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
         )
 
         primary = _SequenceProvider([LlmProviderError("provider timeout")])
 
-        with self.assertRaises(AiQualityAuditWorkerError):
-            _run_job(
-                client,
-                AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
-            )
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
 
+        self.assertEqual(result["run_status"], "inconclusive")
         self.assertEqual(client.record_calls[0]["p_status"], "failed")
         self.assertEqual(
             client.record_calls[0]["p_last_error"]["error_code"],
@@ -857,7 +858,7 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         client = OrchestrationFakeSupabase()
         client.enqueue_claims(
             _claim("EXECUTE_PASS_A", "A"),
-            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
         )
 
         primary = _SequenceProvider([_llm_response(_pass_a_result())])
@@ -868,13 +869,13 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         ) as load_blind, patch(
             "workers.ai_quality_audit_worker.load_comparison_audit_context",
         ) as load_comparison:
-            with self.assertRaises(AiQualityAuditWorkerError):
-                process_ai_quality_audit_job(
-                    client,
-                    _job_payload(),
-                    AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
-                    worker_id="test-worker",
-                )
+            result = process_ai_quality_audit_job(
+                client,
+                _job_payload(),
+                AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+                worker_id="test-worker",
+            )
+            self.assertEqual(result["run_status"], "inconclusive")
             load_blind.assert_called_once()
             load_comparison.assert_not_called()
 
@@ -941,7 +942,7 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         client.enqueue_claims(
             _claim("EXECUTE_PASS_A", "A"),
             _claim("EXECUTE_PASS_B", "B"),
-            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
         )
 
         primary = _SequenceProvider(
@@ -953,12 +954,12 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
             ]
         )
 
-        with self.assertRaises(AiQualityAuditWorkerError):
-            _run_job(
-                client,
-                AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
-            )
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
 
+        self.assertEqual(result["run_status"], "inconclusive")
         pass_b_record = next(
             call for call in client.record_calls if call["p_pass_code"] == "B"
         )
@@ -1001,49 +1002,290 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         self.assertEqual(len(failed_records), 2)
 
 
+class TestAiQualityAuditSchemaRouting(unittest.TestCase):
+
+    def test_pass_a_selected_option_labels_succeeds(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        primary = _SequenceProvider([_llm_response({"selected_option_labels": ["A"]})])
+
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
+
+        self.assertEqual(result["run_status"], "inconclusive")
+        self.assertEqual(client.record_calls[0]["p_status"], "completed")
+        self.assertEqual(
+            client.record_calls[0]["p_result_json"],
+            {"selected_option_labels": ["A"]},
+        )
+
+    def test_pass_a_never_invokes_legacy_llm_audit_validator(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        primary = _SequenceProvider([_llm_response(_pass_a_result())])
+
+        with patch("workers.llm_audit.validate_llm_response") as legacy_validate:
+            _run_job(
+                client,
+                AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+            )
+
+        legacy_validate.assert_not_called()
+        self.assertTrue(
+            all(
+                call["metadata"].get("skip_legacy_llm_audit_validation")
+                for call in primary.calls
+            )
+        )
+
+    def test_invalid_pass_a_json_records_schema_invalid_before_return(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+
+        class _NonObjectProvider:
+            calls: list = []
+
+            def __call__(self, **kwargs):
+                self.calls.append(kwargs)
+                return _llm_response(["not-an-object"])
+
+        provider = _NonObjectProvider()
+
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=provider, dispute=lambda **_: None),
+        )
+
+        self.assertEqual(result["run_status"], "inconclusive")
+        self.assertEqual(len(client.record_calls), 1)
+        self.assertEqual(client.record_calls[0]["p_status"], "schema_invalid")
+        self.assertIsNotNone(client.record_calls[0].get("p_schema_validation_errors"))
+
+    def test_invalid_pass_a_shape_records_schema_invalid_before_return(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        primary = _SequenceProvider([_llm_response({"unexpected": True})])
+
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
+
+        self.assertEqual(result["run_status"], "inconclusive")
+        self.assertEqual(client.record_calls[0]["p_status"], "schema_invalid")
+
+    def test_pass_b_uses_dedicated_validator(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        primary = _SequenceProvider([_llm_response(_pass_b_result())])
+
+        with patch(
+            "workers.ai_quality_audit_worker.validate_pass_b_result",
+            wraps=__import__(
+                "workers.ai_quality_audit_schemas", fromlist=["validate_pass_b_result"]
+            ).validate_pass_b_result,
+        ) as validate_b:
+            _run_job(
+                client,
+                AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+            )
+
+        validate_b.assert_called_once()
+        self.assertEqual(client.record_calls[0]["p_status"], "completed")
+
+    def test_pass_c_uses_dedicated_validator(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_C", "C", model_name="test-dispute-model"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        _wire_pass_c_prerequisite_tables(client)
+        dispute = _SequenceProvider([_llm_response(_pass_c_normal_resolved())])
+
+        with patch(
+            "workers.ai_quality_audit_worker.validate_pass_c_result",
+            wraps=__import__(
+                "workers.ai_quality_audit_schemas", fromlist=["validate_pass_c_result"]
+            ).validate_pass_c_result,
+        ) as validate_c:
+            _run_job(
+                client,
+                AiQualityAuditProviders(primary=_SequenceProvider([]), dispute=dispute),
+            )
+
+        validate_c.assert_called_once()
+        self.assertEqual(client.record_calls[0]["p_status"], "completed")
+
+    def test_legacy_validation_error_records_schema_invalid_not_running(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+
+        class _LegacyRejectingProvider:
+            def __call__(self, **kwargs):
+                exc = LlmAuditValidationError("legacy rejection")
+                exc.parsed_response = {"selected_option_labels": ["A"]}
+                raise exc
+
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(
+                primary=_LegacyRejectingProvider(),
+                dispute=lambda **_: None,
+            ),
+        )
+
+        self.assertEqual(result["run_status"], "inconclusive")
+        self.assertEqual(len(client.record_calls), 1)
+        self.assertEqual(client.record_calls[0]["p_status"], "schema_invalid")
+
+
+class TestAiQualityAuditWaitCoordination(unittest.TestCase):
+
+    def test_wait_causes_no_provider_call(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        primary = _SequenceProvider([_llm_response(_pass_a_result())])
+
+        with patch("workers.ai_quality_audit_worker.time.sleep") as sleep_mock:
+            result = _run_job(
+                client,
+                AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+                wait_poll_seconds=0.01,
+            )
+
+        self.assertEqual(result["run_status"], "inconclusive")
+        self.assertEqual(len(primary.calls), 0)
+        sleep_mock.assert_called_once()
+
+    def test_wait_followed_by_executable_action_continues_safely(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("WAIT"),
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        primary = _SequenceProvider([_llm_response(_pass_a_result())])
+
+        with patch("workers.ai_quality_audit_worker.time.sleep"):
+            result = _run_job(
+                client,
+                AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+                wait_poll_seconds=0.01,
+            )
+
+        self.assertEqual(result["run_status"], "inconclusive")
+        self.assertEqual(len(primary.calls), 1)
+        self.assertEqual(client.record_calls[0]["p_status"], "completed")
+
+    def test_repeated_wait_is_bounded(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(*[_claim("WAIT")] * 3)
+
+        with patch("workers.ai_quality_audit_worker.time.sleep"):
+            with self.assertRaisesRegex(
+                AiQualityAuditWorkerError,
+                "exceeded bounded WAIT polling",
+            ):
+                _run_job(
+                    client,
+                    AiQualityAuditProviders(
+                        primary=_SequenceProvider([]),
+                        dispute=lambda **_: None,
+                    ),
+                    wait_poll_seconds=0.01,
+                    max_wait_polls=2,
+                )
+
+    def test_wait_invokes_heartbeat_fn(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        heartbeats: list[str] = []
+
+        with patch("workers.ai_quality_audit_worker.time.sleep"):
+            process_ai_quality_audit_job(
+                client,
+                _job_payload(),
+                AiQualityAuditProviders(
+                    primary=_SequenceProvider([]),
+                    dispute=lambda **_: None,
+                ),
+                worker_id="test-worker",
+                heartbeat_fn=lambda: heartbeats.append("beat"),
+                wait_poll_seconds=0.01,
+            )
+
+        self.assertGreaterEqual(len(heartbeats), 2)
+
+
 class TestAiQualityAuditProviderTimeout(unittest.TestCase):
 
     def test_pass_a_primary_timeout_recorded_as_failed(self):
         client = OrchestrationFakeSupabase()
         client.enqueue_claims(
             _claim("EXECUTE_PASS_A", "A"),
-            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
         )
         primary = _HangingProvider()
 
-        with self.assertRaises(AiQualityAuditWorkerError):
-            _run_job(client, _providers_with_timeout(primary))
+        result = _run_job(client, _providers_with_timeout(primary))
 
+        self.assertEqual(result["run_status"], "inconclusive")
         _assert_timeout_failure(self, client, primary, pass_code="A")
 
     def test_pass_b_primary_timeout_recorded_as_failed(self):
         client = OrchestrationFakeSupabase()
         client.enqueue_claims(
             _claim("EXECUTE_PASS_B", "B"),
-            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
         )
         primary = _HangingProvider(response_factory=_pass_b_result)
 
-        with self.assertRaises(AiQualityAuditWorkerError):
-            _run_job(client, _providers_with_timeout(primary))
+        result = _run_job(client, _providers_with_timeout(primary))
 
+        self.assertEqual(result["run_status"], "inconclusive")
         _assert_timeout_failure(self, client, primary, pass_code="B")
 
     def test_pass_c_dispute_timeout_recorded_as_failed(self):
         client = OrchestrationFakeSupabase()
         client.enqueue_claims(
             _claim("EXECUTE_PASS_C", "C", model_name="test-dispute-model"),
-            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
         )
         _wire_pass_c_prerequisite_tables(client)
         dispute = _HangingProvider(response_factory=_pass_c_normal_resolved)
 
-        with self.assertRaises(AiQualityAuditWorkerError):
-            _run_job(
-                client,
-                _providers_with_timeout(_SequenceProvider([]), dispute=dispute),
-            )
+        result = _run_job(
+            client,
+            _providers_with_timeout(_SequenceProvider([]), dispute=dispute),
+        )
 
+        self.assertEqual(result["run_status"], "inconclusive")
         _assert_timeout_failure(self, client, dispute, pass_code="C")
 
 

@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
@@ -34,7 +35,12 @@ from workers.ai_quality_audit_schemas import (
     validate_pass_b_result,
     validate_pass_c_result,
 )
-from workers.llm_providers import LlmProviderError, LlmResponse
+from workers.llm_providers import (
+    LlmProviderError,
+    LlmResponse,
+    SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY,
+)
+from workers.llm_audit import LlmAuditValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,9 @@ _UUID_RE = re.compile(
 )
 
 _RAW_RESPONSE_MAX_LEN = 20000
+
+DEFAULT_WAIT_POLL_SECONDS = 2.0
+DEFAULT_MAX_WAIT_POLLS = 60
 
 _SUBSTITUTION_REASON_CODES = frozenset({
     "PASS_A_SCHEMA_INVALID",
@@ -105,6 +114,8 @@ def process_ai_quality_audit_job(
     lease_seconds: int = 300,
     schema_version: str = "v48.1",
     heartbeat_fn: Optional[Callable[[], None]] = None,
+    wait_poll_seconds: float = DEFAULT_WAIT_POLL_SECONDS,
+    max_wait_polls: int = DEFAULT_MAX_WAIT_POLLS,
 ) -> Dict[str, Any]:
     """Execute one ai_quality audit run to completion via V48 RPCs."""
     validated = validate_job_payload(job_payload)
@@ -118,6 +129,7 @@ def process_ai_quality_audit_job(
 
     passes_executed: List[str] = []
     completion_shape: Optional[str] = None
+    wait_polls = 0
 
     while True:
         if heartbeat_fn is not None:
@@ -162,9 +174,22 @@ def process_ai_quality_audit_job(
             )
 
         if action == "WAIT":
-            raise AiQualityAuditWorkerError(
-                f"audit run {audit_run_id!r} is waiting on an active pass lease"
+            wait_polls += 1
+            if wait_polls > max_wait_polls:
+                raise AiQualityAuditWorkerError(
+                    f"audit run {audit_run_id!r} exceeded bounded WAIT polling "
+                    f"({max_wait_polls} polls)"
+                )
+            logger.info(
+                "ai_quality waiting on active pass lease: audit_run_id=%s poll=%s/%s",
+                audit_run_id,
+                wait_polls,
+                max_wait_polls,
             )
+            time.sleep(wait_poll_seconds)
+            continue
+
+        wait_polls = 0
 
         if action == "NEEDS_DISPUTE_TRIGGER_A":
             _persist_dispute_trigger(
@@ -501,6 +526,21 @@ def _invoke_and_record_pass(
             },
         )
         return None
+    except LlmAuditValidationError as exc:
+        _record_pass_result(
+            client,
+            audit_run_id=audit_run_id,
+            pass_code=pass_code,
+            lease_token=lease_token,
+            status="schema_invalid",
+            schema_version=schema_version,
+            input_hash=input_hash,
+            raw_response_text=_safe_truncate_raw_response(
+                getattr(exc, "parsed_response", None)
+            ),
+            schema_validation_errors={"errors": [str(exc)]},
+        )
+        return None
 
     raw_text = _safe_truncate_raw_response(response.parsed_response)
 
@@ -554,6 +594,7 @@ def _call_provider_with_timeout(
 ) -> LlmResponse:
     """Invoke a provider, enforcing ``timeout_seconds`` when configured."""
     call_metadata = dict(metadata or {})
+    call_metadata[SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY] = True
     if timeout_seconds is not None:
         call_metadata["timeout_seconds"] = timeout_seconds
 

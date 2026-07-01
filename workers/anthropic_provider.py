@@ -49,7 +49,12 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
 from workers.llm_audit import LlmAuditValidationError, validate_llm_response
-from workers.llm_providers import LlmProviderError, LlmResponse, MissingProviderError
+from workers.llm_providers import (
+    LlmProviderError,
+    LlmResponse,
+    MissingProviderError,
+    SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -457,8 +462,13 @@ class AnthropicAuditProvider:
                 response = _create_message(client, kwargs)
                 text = _extract_text_content(response)
                 parsed = _parse_json_response(text)
-                # Enforce CertBound audit contract before returning.
-                validate_llm_response(parsed)
+                skip_legacy = bool(
+                    metadata
+                    and metadata.get(SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY)
+                )
+                if not skip_legacy:
+                    # Legacy llm_audit / hybrid_audit contract only.
+                    validate_llm_response(parsed)
                 input_tokens, output_tokens = _usage_tokens(response)
                 request_id = getattr(response, "id", None)
 

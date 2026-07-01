@@ -1515,5 +1515,122 @@ class TestAutoHeartbeat(unittest.TestCase):
         )
 
 
+class TestAiQualityAuditBackgroundWorkerWait(unittest.TestCase):
+    """WAIT coordination inside the ai_quality handler must not fail the background job."""
+
+    _AUDIT_RUN_ID = "aaaaaaaa-0000-0000-0000-000000000002"
+    _QUESTION_VERSION_ID = "cccccccc-0000-0000-0000-000000000001"
+
+    class _CombinedFake(FakeSupabase):
+        def __init__(self, audit_client):
+            super().__init__()
+            self._audit = audit_client
+
+        def table(self, name: str):
+            return self._audit.table(name)
+
+        def rpc(self, name: str, params: Optional[dict] = None) -> FakeRpcBuilder:
+            if name in (
+                "claim_ai_quality_audit_pass_v1",
+                "record_audit_pass_result_v1",
+                "persist_audit_run_dispute_trigger_v1",
+                "complete_ai_quality_audit_run_v1",
+            ):
+                return self._audit.rpc(name, params or {})
+            return super().rpc(name, params)
+
+    def _make_ai_quality_job(self) -> dict:
+        return {
+            **_SAMPLE_JOB,
+            "job_id": "bbbbbbbb-0000-0000-0000-000000000002",
+            "job_type": "ai_quality_audit_smoke",
+            "payload": {
+                "audit_run_id": self._AUDIT_RUN_ID,
+                "question_version_id": self._QUESTION_VERSION_ID,
+            },
+            "attempt_count": 1,
+            "max_attempts": 3,
+        }
+
+    def test_wait_coordination_completes_job_without_fail_rpc(self):
+        from tests.test_ai_quality_audit_worker import (
+            MIN_BLIND_CONTEXT,
+            OrchestrationFakeSupabase,
+            _claim,
+        )
+        from workers.ai_quality_audit_worker import AiQualityAuditProviders
+        from workers.llm_providers import LlmResponse
+
+        audit_client = OrchestrationFakeSupabase()
+        audit_client.enqueue_claims(
+            _claim("WAIT"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+
+        fake = self._CombinedFake(audit_client)
+        job = self._make_ai_quality_job()
+        fake.set_response("claim_background_job_v1", [job])
+        fake.set_response(
+            "heartbeat_background_job_v1",
+            [
+                {
+                    "job_id": job["job_id"],
+                    "job_status": "running",
+                    "lease_expires_at": "2099-01-01T00:00:00+00:00",
+                    "heartbeat_at": "2099-01-01T00:00:00+00:00",
+                }
+            ],
+        )
+        fake.set_response(
+            "complete_background_job_v1",
+            [
+                {
+                    "job_id": job["job_id"],
+                    "job_status": "completed",
+                    "completed_at": "2099-01-01T00:00:00+00:00",
+                }
+            ],
+        )
+
+        def _llm_response(parsed):
+            return LlmResponse(
+                parsed_response=parsed,
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        providers = AiQualityAuditProviders(
+            primary=lambda **_: _llm_response({"selected_option_labels": ["A"]}),
+            dispute=lambda **_: _llm_response({}),
+        )
+
+        handlers = build_handler_registry(fake, ai_quality_providers=providers)
+        worker = BackgroundWorker(
+            worker_id="test-worker-1",
+            client=fake,
+            handlers=handlers,
+            lease_seconds=60,
+            sleep_interval=0.0,
+        )
+
+        with patch(
+            "workers.ai_quality_audit_worker.load_blind_audit_context",
+            return_value=dict(MIN_BLIND_CONTEXT),
+        ), patch(
+            "workers.ai_quality_audit_worker.load_comparison_audit_context",
+            return_value={},
+        ), patch("workers.ai_quality_audit_worker.time.sleep"):
+            worker.run_once()
+
+        self.assertIn("complete_background_job_v1", fake.called_rpc_names)
+        self.assertNotIn("fail_background_job_v1", fake.called_rpc_names)
+        complete_calls = fake.calls_for("complete_background_job_v1")
+        self.assertEqual(len(complete_calls), 1)
+        self.assertEqual(
+            complete_calls[0]["params"]["p_result"]["run_status"],
+            "inconclusive",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

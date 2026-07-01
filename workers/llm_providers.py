@@ -47,6 +47,11 @@ class LlmProviderError(RuntimeError):
     """
 
 
+# When True in provider call metadata, AnthropicAuditProvider skips the legacy
+# llm_audit response validator so dedicated pass validators can run upstream.
+SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY = "skip_legacy_llm_audit_validation"
+
+
 # ===========================================================================
 # Response dataclass
 # ===========================================================================

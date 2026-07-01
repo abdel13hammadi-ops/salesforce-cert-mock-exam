@@ -18,6 +18,7 @@ import sys
 import unittest
 import uuid
 from typing import Any, Dict, List, Optional
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -491,6 +492,146 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
         self.assertEqual(summary["run_status"], "completed")
         self.assertGreaterEqual(summary["finding_count"], 1)
         self.assertIn("C", summary["passes_executed"])
+
+    def test_malformed_pass_a_persisted_as_schema_invalid_not_running(self):
+        audit_run_id = self._create_run()
+        pass_a_calls = {"count": 0}
+        recorded_statuses: list[str] = []
+        original_record = __import__(
+            "workers.ai_quality_audit_worker", fromlist=["_record_pass_result"]
+        )._record_pass_result
+
+        def tracking_record(client, **kwargs):
+            recorded_statuses.append(str(kwargs.get("status")))
+            return original_record(client, **kwargs)
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                pass_a_calls["count"] += 1
+                if pass_a_calls["count"] == 1:
+                    return LlmResponse(
+                        parsed_response={"selected_option_labels": ["Z"]},
+                        input_tokens=1,
+                        output_tokens=1,
+                    )
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={
+                    "selected_option_labels": ["A"],
+                    "proposed_findings": [],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        with patch(
+            "workers.ai_quality_audit_worker._record_pass_result",
+            side_effect=tracking_record,
+        ):
+            summary = process_ai_quality_audit_job(
+                self.client,
+                {
+                    "audit_run_id": audit_run_id,
+                    "question_version_id": self.fixture["question_version_id"],
+                },
+                AiQualityAuditProviders(primary=primary, dispute=primary),
+                worker_id="v48-integration-worker",
+            )
+
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertIn("schema_invalid", recorded_statuses)
+        self.assertIn("completed", recorded_statuses)
+        self.assertLess(
+            recorded_statuses.index("schema_invalid"),
+            recorded_statuses.index("completed"),
+        )
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT status, result_json, attempt_count
+                FROM public.audit_run_pass_results
+                WHERE audit_run_id = %s AND pass_code = 'A'
+                """,
+                (audit_run_id,),
+            )
+            row = cur.fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "completed")
+        self.assertEqual(row["attempt_count"], 2)
+        self.assertIsNotNone(row["result_json"])
+
+    def test_wait_coordination_does_not_raise_under_rollback(self):
+        audit_run_id = self._create_run()
+        claim = self.client.rpc(
+            "claim_ai_quality_audit_pass_v1",
+            {
+                "p_audit_run_id": audit_run_id,
+                "p_worker_id": "v48-integration-blocker",
+                "p_lease_seconds": 120,
+            },
+        ).execute()
+        self.assertFalse(claim.error, claim.error)
+        self.assertEqual(claim.data[0]["action"], "EXECUTE_PASS_A")
+        blocker_token = claim.data[0]["lease_token"]
+
+        wait_polls = {"count": 0}
+
+        def expire_blocker_lease_on_first_wait(_seconds):
+            wait_polls["count"] += 1
+            if wait_polls["count"] == 1:
+                with self.conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE public.audit_run_pass_results
+                        SET lease_expires_at = now() - interval '1 second'
+                        WHERE audit_run_id = %s
+                          AND pass_code = 'A'
+                          AND lease_token = %s
+                        """,
+                        (audit_run_id, blocker_token),
+                    )
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={
+                    "selected_option_labels": ["A"],
+                    "proposed_findings": [],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        providers = AiQualityAuditProviders(primary=primary, dispute=primary)
+        with patch("workers.ai_quality_audit_worker.time.sleep", expire_blocker_lease_on_first_wait):
+            summary = process_ai_quality_audit_job(
+                self.client,
+                {
+                    "audit_run_id": audit_run_id,
+                    "question_version_id": self.fixture["question_version_id"],
+                },
+                providers,
+                worker_id="v48-integration-worker",
+                wait_poll_seconds=0,
+                max_wait_polls=5,
+            )
+
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertGreaterEqual(wait_polls["count"], 1)
+        self.assertIn("A", summary["passes_executed"])
 
 
 if __name__ == "__main__":

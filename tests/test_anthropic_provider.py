@@ -445,6 +445,40 @@ class TestAnthropicAuditProvider(unittest.TestCase):
         with self.assertRaises(LlmAuditValidationError):
             self._call(provider)
 
+    def test_skip_legacy_validation_accepts_v48_pass_a_shape(self):
+        payload = json.dumps({"selected_option_labels": ["A"]})
+        client = _make_client([_make_message(text=payload)])
+        provider = AnthropicAuditProvider(_make_config(max_retries=0), client=client)
+
+        with patch("workers.anthropic_provider.validate_llm_response") as legacy_validate:
+            response = provider(
+                model_name="claude-sonnet-4-6",
+                system_prompt="Pass A instructions.",
+                user_prompt="Choose the correct option.",
+                response_schema={"type": "object"},
+                metadata={"skip_legacy_llm_audit_validation": True},
+            )
+
+        legacy_validate.assert_not_called()
+        self.assertEqual(
+            response.parsed_response,
+            {"selected_option_labels": ["A"]},
+        )
+
+    def test_legacy_validation_still_runs_without_skip_flag(self):
+        payload = json.dumps({"selected_option_labels": ["A"]})
+        client = _make_client([_make_message(text=payload)])
+        provider = AnthropicAuditProvider(_make_config(max_retries=0), client=client)
+
+        with self.assertRaises(LlmAuditValidationError):
+            provider(
+                model_name="claude-sonnet-4-6",
+                system_prompt="Pass A instructions.",
+                user_prompt="Choose the correct option.",
+                response_schema={"type": "object"},
+                metadata={},
+            )
+
         self.assertEqual(client.messages.create.call_count, 1)
 
     def test_empty_response_raises_provider_error(self):
