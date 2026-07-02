@@ -4,6 +4,7 @@ CLI tests for scripts/run_ai_quality_audit_smoke.py (no live DB/providers).
 
 from __future__ import annotations
 
+import json
 import io
 import os
 import sys
@@ -22,7 +23,11 @@ from scripts.run_ai_quality_audit_smoke import (
     prepare_all_smoke_evidence_dry_run,
     resolve_question_version_ids,
 )
-from workers.ai_quality_audit_evidence import AiQualityAuditEvidenceError
+from workers.ai_quality_audit_evidence import (
+    AiQualityAuditEvidenceError,
+    RETRIEVAL_REPLAY_EXPORT_BEGIN,
+    RETRIEVAL_REPLAY_EXPORT_END,
+)
 from workers.anthropic_provider import DEFAULT_MODEL, ENV_MODEL
 
 _REQUIRED = 10
@@ -39,7 +44,7 @@ def _default_evidence_summaries(ids=None):
             "chunk_count": 2,
             "evidence_count": 2,
             "evidence_set_hash": "c" * 64,
-            "retrieval_method": "lexical_question_match_v2",
+            "retrieval_method": "bm25_question_match_v1",
             "total_evidence_characters": 1200,
             "estimated_tokens": 300,
             "candidate_count": 20,
@@ -216,7 +221,7 @@ class TestSmokeCliMain(unittest.TestCase):
         self.assertIn("questions_with_qualified_evidence: 10", output)
         self.assertIn("questions_with_evidence_gaps: 0", output)
         self.assertIn("selected=2", output)
-        self.assertIn("method=lexical_question_match_v2", output)
+        self.assertIn("method=bm25_question_match_v1", output)
         self.assertIn("estimated_tokens=", output)
         self.assertIn("reasons=", output)
         self.assertIn("No jobs enqueued (dry-run).", output)
@@ -477,6 +482,69 @@ class TestSmokeCliMain(unittest.TestCase):
         for qvid in ids:
             self.assertIn(qvid.lower(), buffer.getvalue())
         self.assertIn(f"primary_model_name: {DEFAULT_MODEL}", buffer.getvalue())
+
+
+class TestRetrievalReplayExportCli(unittest.TestCase):
+
+    def test_export_retrieval_replay_rejected_with_execute(self):
+        stderr_buffer = io.StringIO()
+        with patch.dict(os.environ, _PROVIDER_ENV, clear=False):
+            with redirect_stderr(stderr_buffer):
+                rc = main(
+                    _cli_args_with_ids(
+                        extra=["--export-retrieval-replay", "-", "--execute", "--confirm"]
+                    )
+                )
+
+        self.assertEqual(rc, 1)
+        self.assertIn(
+            "--export-retrieval-replay is allowed only in dry-run mode",
+            stderr_buffer.getvalue(),
+        )
+
+    def test_dry_run_export_writes_compact_json_to_stdout(self):
+        replay_export = {
+            "export_version": 1,
+            "questions": [{"question_version_id": _ten_unique_ids()[0], "candidates": []}],
+            "retrieval_method": "bm25_question_match_v1",
+        }
+        buffer = io.StringIO()
+        with patch.dict(os.environ, _PROVIDER_ENV, clear=False):
+            with _patch_evidence_preview():
+                with patch(
+                    "scripts.run_ai_quality_audit_smoke.prepare_smoke_retrieval_replay_export",
+                    return_value=replay_export,
+                ) as export_mock:
+                    with redirect_stdout(buffer):
+                        rc = main(
+                            _cli_args_with_ids(extra=["--export-retrieval-replay", "-"])
+                        )
+
+        self.assertEqual(rc, 0)
+        export_mock.assert_called_once()
+        output = buffer.getvalue()
+        self.assertIn("AI quality audit smoke dry-run", output)
+        self.assertIn(RETRIEVAL_REPLAY_EXPORT_BEGIN, output)
+        self.assertIn(RETRIEVAL_REPLAY_EXPORT_END, output)
+        exported_json = output.split(RETRIEVAL_REPLAY_EXPORT_BEGIN, 1)[1].split(
+            RETRIEVAL_REPLAY_EXPORT_END,
+            1,
+        )[0].strip()
+        self.assertEqual(json.loads(exported_json), replay_export)
+
+    def test_dry_run_without_export_leaves_behavior_unchanged(self):
+        buffer = io.StringIO()
+        with patch.dict(os.environ, _PROVIDER_ENV, clear=False):
+            with _patch_evidence_preview():
+                with patch(
+                    "scripts.run_ai_quality_audit_smoke.prepare_smoke_retrieval_replay_export"
+                ) as export_mock:
+                    with redirect_stdout(buffer):
+                        rc = main(_cli_args_with_ids())
+
+        self.assertEqual(rc, 0)
+        export_mock.assert_not_called()
+        self.assertNotIn(RETRIEVAL_REPLAY_EXPORT_BEGIN, buffer.getvalue())
 
 
 if __name__ == "__main__":

@@ -22,6 +22,8 @@ from workers.ai_quality_audit_evidence import (  # noqa: E402
     AiQualityAuditEvidenceError,
     empty_evidence_set_hash,
     prepare_smoke_evidence_set,
+    prepare_smoke_retrieval_replay_export,
+    write_retrieval_replay_export,
 )
 from workers.ai_quality_provider_factory import (  # noqa: E402
     AiQualityProviderConfigError,
@@ -425,7 +427,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Required with --execute to acknowledge non-dry execution",
     )
+    parser.add_argument(
+        "--export-retrieval-replay",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Dry-run only: write compact BM25 replay JSON to PATH "
+            "(use '-' for stdout between export markers)"
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.export_retrieval_replay and args.execute:
+        print(
+            "ERROR: --export-retrieval-replay is allowed only in dry-run mode.",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         model_provenance = resolve_ai_quality_model_provenance_from_env()
@@ -461,6 +479,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             preview_client = _load_client_for_evidence_preview()
             evidence_summaries = prepare_all_smoke_evidence_dry_run(preview_client, ids)
+            if args.export_retrieval_replay:
+                replay_export = prepare_smoke_retrieval_replay_export(
+                    preview_client,
+                    ids,
+                )
+                write_retrieval_replay_export(
+                    replay_export,
+                    args.export_retrieval_replay,
+                )
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1

@@ -4,6 +4,7 @@ Tests for V48 smoke evidence retrieval, precision ranking, and hash canonicaliza
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import unittest
@@ -23,11 +24,16 @@ from workers.ai_quality_audit_evidence import (
     _build_question_query,
     _content_tokens,
     _option_content_tokens,
+    analyze_evidence_candidate,
     build_bm25_corpus_stats,
+    build_question_retrieval_replay_export,
+    build_retrieval_replay_export,
     compute_evidence_set_hash,
+    dumps_retrieval_replay_export,
     empty_evidence_set_hash,
     prepare_smoke_evidence_set,
     rank_question_evidence_candidates,
+    replay_bm25_candidate_from_record,
     score_evidence_candidate,
 )
 
@@ -1538,6 +1544,157 @@ class TestBm25FocusedRetrievalScenarios(unittest.TestCase):
         self.assertEqual(ranked, [])
         self.assertEqual(qualified, 0)
         self.assertEqual(rejected, 1)
+
+
+class TestRetrievalReplayExport(unittest.TestCase):
+    _BLIND = {
+        "question_text": (
+            "A custom object tracks child records related to a parent object. If "
+            "the parent record is deleted, the child records must remain in "
+            "Salesforce, but the parent reference should be cleared automatically."
+        ),
+        "domain_name": "Object Manager and Lightning App Builder",
+        "options": [
+            {
+                "option_label": "A",
+                "option_text": (
+                    "Lookup relationship with delete behavior set to clear the "
+                    "lookup value"
+                ),
+            }
+        ],
+    }
+
+    def _fixture_candidates(self):
+        relationships = _chunk(
+            chunk_id="11111111-1111-1111-1111-111111111111",
+            resource_id="aaaaaaaa-0000-0000-0000-000000000001",
+            title="Considerations for Object Relationships",
+            chunk_text=(
+                "Lookup Relationships If the lookup field is optional, you can specify "
+                "one of three behaviors to occur if the lookup record is deleted: Clear "
+                "the value of this field."
+            ),
+        )
+        notification = _chunk(
+            chunk_id="22222222-2222-2222-2222-222222222222",
+            resource_id="bbbbbbbb-0000-0000-0000-000000000002",
+            title="Send a Custom Notification with a Flow",
+            chunk_text=(
+                "Create a flow that sends a custom notification to users when a "
+                "specific event occurs."
+            ),
+        )
+        resource_by_id = {
+            "aaaaaaaa-0000-0000-0000-000000000001": {
+                "id": "aaaaaaaa-0000-0000-0000-000000000001",
+                "title": "Considerations for Object Relationships",
+                "metadata": {"topic": "lookup relationship delete behavior"},
+            },
+            "bbbbbbbb-0000-0000-0000-000000000002": {
+                "id": "bbbbbbbb-0000-0000-0000-000000000002",
+                "title": "Send a Custom Notification with a Flow",
+                "metadata": {"topic": "custom notification flow"},
+            },
+        }
+        return [notification, relationships], resource_by_id
+
+    def test_replay_matches_live_scorer_within_tolerance(self):
+        candidates, resource_by_id = self._fixture_candidates()
+        question_export = build_question_retrieval_replay_export(
+            question_version_id="99999999-9999-9999-9999-999999999999",
+            certification_exam_name="CERT-TEST",
+            blind_context=self._BLIND,
+            candidates=candidates,
+            resource_by_id=resource_by_id,
+        )
+        query_text = _build_question_query(self._BLIND)
+        question_tokens = _content_tokens(str(self._BLIND["question_text"]))
+        option_tokens = _option_content_tokens(self._BLIND)
+        query_tokens = _content_tokens(query_text)
+        corpus_stats = build_bm25_corpus_stats(candidates, resource_by_id=resource_by_id)
+
+        for candidate in candidates:
+            resource_row = resource_by_id[str(candidate["resource_id"])]
+            live_breakdown, live_record = analyze_evidence_candidate(
+                candidate,
+                query_text=query_text,
+                query_tokens=query_tokens,
+                question_tokens=question_tokens,
+                option_tokens=option_tokens,
+                question_domain=str(self._BLIND["domain_name"]),
+                resource_metadata=resource_row.get("metadata") or {},
+                resource_title=str(resource_row.get("title") or candidate.get("title") or ""),
+                corpus_stats=corpus_stats,
+                resource_type=str(resource_row.get("resource_type") or candidate.get("resource_type") or ""),
+            )
+            exported = next(
+                item
+                for item in question_export["candidates"]
+                if item["resource_chunk_id"] == live_record["resource_chunk_id"]
+            )
+            replayed = replay_bm25_candidate_from_record(question_export, exported)
+
+            self.assertAlmostEqual(
+                replayed["raw_bm25_field_scores"]["title"],
+                live_record["raw_bm25_field_scores"]["title"],
+                places=9,
+            )
+            self.assertAlmostEqual(
+                replayed["raw_bm25_field_scores"]["metadata"],
+                live_record["raw_bm25_field_scores"]["metadata"],
+                places=9,
+            )
+            self.assertAlmostEqual(
+                replayed["raw_bm25_field_scores"]["body"],
+                live_record["raw_bm25_field_scores"]["body"],
+                places=9,
+            )
+            self.assertAlmostEqual(
+                replayed["bm25_score"],
+                live_record["bm25_score"],
+                places=9,
+            )
+            self.assertAlmostEqual(
+                replayed["relevance_score"],
+                live_record["relevance_score"],
+                places=9,
+            )
+            self.assertEqual(replayed["qualified"], live_breakdown.qualifies)
+            self.assertEqual(replayed["rejection_reason"], live_breakdown.rejection_reason)
+            self.assertEqual(replayed["match_reasons"], list(live_breakdown.match_reasons))
+
+    def test_retrieval_replay_export_is_deterministic_and_excludes_source_text(self):
+        candidates, resource_by_id = self._fixture_candidates()
+        first = build_retrieval_replay_export(
+            [
+                build_question_retrieval_replay_export(
+                    question_version_id="99999999-9999-9999-9999-999999999999",
+                    certification_exam_name="CERT-TEST",
+                    blind_context=self._BLIND,
+                    candidates=candidates,
+                    resource_by_id=resource_by_id,
+                )
+            ]
+        )
+        second = build_retrieval_replay_export(
+            [
+                build_question_retrieval_replay_export(
+                    question_version_id="99999999-9999-9999-9999-999999999999",
+                    certification_exam_name="CERT-TEST",
+                    blind_context=self._BLIND,
+                    candidates=list(reversed(candidates)),
+                    resource_by_id=resource_by_id,
+                )
+            ]
+        )
+
+        self.assertEqual(dumps_retrieval_replay_export(first), dumps_retrieval_replay_export(second))
+        payload = dumps_retrieval_replay_export(first)
+        self.assertNotIn("chunk_text", payload)
+        self.assertNotIn("SUPABASE", payload)
+        self.assertIn("query_tokens", payload)
+        self.assertIn("query_term_frequencies", payload)
 
 
 if __name__ == "__main__":

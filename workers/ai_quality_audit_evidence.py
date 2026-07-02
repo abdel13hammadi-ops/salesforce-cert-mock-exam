@@ -597,7 +597,36 @@ def _bm25_field_score(
     return score
 
 
-def score_evidence_candidate(
+def _round_replay_float(value: float) -> float:
+    return round(float(value), 6)
+
+
+def _query_term_frequency_map(
+    field_tokens: Sequence[str],
+    query_terms: Sequence[str],
+) -> Dict[str, int]:
+    counts = Counter(field_tokens)
+    return {term: int(counts.get(term, 0)) for term in sorted(set(query_terms))}
+
+
+def _bm25_constants_snapshot() -> Dict[str, float]:
+    return {
+        "b": BM25_B,
+        "domain_exact_match_boost": DOMAIN_EXACT_MATCH_BOOST,
+        "domain_text_mention_boost": DOMAIN_TEXT_MENTION_BOOST,
+        "exam_guide_score_multiplier": EXAM_GUIDE_SCORE_MULTIPLIER,
+        "field_weight_body": BM25_FIELD_WEIGHT_BODY,
+        "field_weight_metadata": BM25_FIELD_WEIGHT_METADATA,
+        "field_weight_title": BM25_FIELD_WEIGHT_TITLE,
+        "generic_exam_guide_min_score": GENERIC_EXAM_GUIDE_MIN_SCORE,
+        "k1": BM25_K1,
+        "min_discriminative_overlap_idf": MIN_DISCRIMINATIVE_OVERLAP_IDF,
+        "min_relevance_score": MIN_RELEVANCE_SCORE,
+        "normalization_field_weight": BM25_NORMALIZATION_FIELD_WEIGHT,
+    }
+
+
+def analyze_evidence_candidate(
     candidate: Mapping[str, Any],
     *,
     query_text: str,
@@ -609,14 +638,17 @@ def score_evidence_candidate(
     resource_title: str,
     corpus_stats: Bm25CorpusStats,
     resource_type: str = "",
-) -> EvidenceScoreBreakdown:
-    """BM25 relevance score (per-field-weighted) with precision-first qualification."""
+    final_retrieval_rank: int = 0,
+) -> Tuple[EvidenceScoreBreakdown, Dict[str, Any]]:
+    """Score one candidate and return the live breakdown plus replay export fields."""
     del query_text  # retained in signature for call-site symmetry/debuggability
     chunk_text = str(candidate.get("chunk_text") or "")
     title = str(candidate.get("title") or resource_title or "")
     min_score = _applicable_min_score(resource_type)
+    unique_query_terms = tuple(sorted(set(query_tokens)))
+
     if not (title.strip() or chunk_text.strip()):
-        return EvidenceScoreBreakdown(
+        breakdown = EvidenceScoreBreakdown(
             relevance_score=0.0,
             bm25_score=0.0,
             domain_boost=0.0,
@@ -627,6 +659,52 @@ def score_evidence_candidate(
             applicable_threshold=min_score,
             rejection_reason="empty chunk text and title",
         )
+        replay_record = {
+            "applicable_threshold": _round_replay_float(min_score),
+            "bm25_score": 0.0,
+            "body_field_length": 0,
+            "body_question_overlap_tokens": [],
+            "certification_exam_name": str(
+                candidate.get("certification_exam_name") or ""
+            ).strip(),
+            "content_hash": str(candidate.get("content_hash") or "").strip(),
+            "domain_match": {
+                "domain_boost": 0.0,
+                "exact_domain_match": False,
+                "text_mention_match": False,
+            },
+            "final_retrieval_rank": int(final_retrieval_rank),
+            "match_reasons": [],
+            "metadata_field_length": 0,
+            "metadata_overlap_tokens": [],
+            "option_in_title": False,
+            "option_overlap_tokens": [],
+            "qualified": False,
+            "query_content_overlap_tokens": [],
+            "question_overlap_tokens": [],
+            "query_term_frequencies": {
+                "body": _query_term_frequency_map((), unique_query_terms),
+                "metadata": _query_term_frequency_map((), unique_query_terms),
+                "title": _query_term_frequency_map((), unique_query_terms),
+            },
+            "raw_bm25_field_scores": {"body": 0.0, "metadata": 0.0, "title": 0.0},
+            "rejection_reason": breakdown.rejection_reason,
+            "relevance_score": 0.0,
+            "resource_chunk_id": str(candidate.get("resource_chunk_id") or "")
+            .strip()
+            .lower(),
+            "resource_id": str(candidate.get("resource_id") or "").strip().lower(),
+            "resource_type": str(resource_type or "").strip(),
+            "sort_chunk_index": int(candidate.get("chunk_index") or 0),
+            "sort_resource_chunk_id": str(candidate.get("resource_chunk_id") or "")
+            .strip()
+            .lower(),
+            "sort_resource_id": str(candidate.get("resource_id") or "").strip().lower(),
+            "title": title,
+            "title_field_length": 0,
+            "title_overlap_tokens": [],
+        }
+        return breakdown, replay_record
 
     title_tokens, metadata_tokens, body_tokens = _resolve_document_fields(
         candidate,
@@ -634,11 +712,17 @@ def score_evidence_candidate(
         resource_title=resource_title,
     )
     document_tokens = set(title_tokens) | set(metadata_tokens) | set(body_tokens)
-    unique_query_terms = tuple(sorted(set(query_tokens)))
+    title_token_set = set(title_tokens)
+    metadata_token_set = set(metadata_tokens)
+    body_token_set = set(body_tokens)
 
     overlap_tokens = tuple(sorted(set(query_tokens) & document_tokens))
-    question_overlap = set(question_tokens) & document_tokens
-    option_overlap = set(option_tokens) & document_tokens
+    question_overlap = sorted(set(question_tokens) & document_tokens)
+    option_overlap = sorted(set(option_tokens) & document_tokens)
+    title_overlap = sorted(set(query_tokens) & title_token_set)
+    metadata_overlap = sorted(set(query_tokens) & metadata_token_set)
+    body_question_overlap = sorted(set(question_tokens) & body_token_set)
+    option_in_title = _option_in_title(option_tokens, title)
 
     title_field_score = _bm25_field_score(
         unique_query_terms,
@@ -669,9 +753,6 @@ def score_evidence_candidate(
     bm25_score = (raw_bm25 / normalizer) if normalizer > 0 else 0.0
     bm25_score = max(0.0, min(1.0, bm25_score))
 
-    # Domain match is an alignment/tie-break signal only (see module docstring
-    # and DOMAIN_EXACT_MATCH_BOOST comment) — it is deliberately NOT added to
-    # relevance_score, so domain metadata alone can never qualify a candidate.
     domain_boost = _domain_match_boost(
         question_domain=question_domain,
         resource_metadata=resource_metadata,
@@ -687,7 +768,7 @@ def score_evidence_candidate(
     match_reasons: List[str] = []
     if domain_boost >= DOMAIN_EXACT_MATCH_BOOST:
         match_reasons.append(_MATCH_REASON_DOMAIN)
-    if title_field_score > 0.0 or _option_in_title(option_tokens, title):
+    if title_field_score > 0.0 or option_in_title:
         match_reasons.append(_MATCH_REASON_TITLE)
     if len(question_overlap) >= 2:
         match_reasons.append(_MATCH_REASON_QUESTION)
@@ -709,7 +790,7 @@ def score_evidence_candidate(
         document_count=corpus_stats.document_count,
     )
 
-    return EvidenceScoreBreakdown(
+    breakdown = EvidenceScoreBreakdown(
         relevance_score=relevance_score,
         bm25_score=bm25_score,
         domain_boost=domain_boost,
@@ -720,6 +801,86 @@ def score_evidence_candidate(
         applicable_threshold=min_score,
         rejection_reason=rejection_reason,
     )
+    replay_record = {
+        "applicable_threshold": _round_replay_float(min_score),
+        "bm25_score": _round_replay_float(bm25_score),
+        "body_field_length": len(body_tokens),
+        "body_question_overlap_tokens": body_question_overlap,
+        "certification_exam_name": str(candidate.get("certification_exam_name") or "")
+        .strip(),
+        "content_hash": str(candidate.get("content_hash") or "").strip(),
+        "domain_match": {
+            "domain_boost": _round_replay_float(domain_boost),
+            "exact_domain_match": domain_boost >= DOMAIN_EXACT_MATCH_BOOST,
+            "text_mention_match": DOMAIN_TEXT_MENTION_BOOST
+            <= domain_boost
+            < DOMAIN_EXACT_MATCH_BOOST,
+        },
+        "final_retrieval_rank": int(final_retrieval_rank),
+        "match_reasons": list(match_reasons),
+        "metadata_field_length": len(metadata_tokens),
+        "metadata_overlap_tokens": metadata_overlap,
+        "option_in_title": option_in_title,
+        "option_overlap_tokens": option_overlap,
+        "qualified": qualifies,
+        "query_content_overlap_tokens": list(overlap_tokens),
+        "question_overlap_tokens": question_overlap,
+        "query_term_frequencies": {
+            "body": _query_term_frequency_map(body_tokens, unique_query_terms),
+            "metadata": _query_term_frequency_map(metadata_tokens, unique_query_terms),
+            "title": _query_term_frequency_map(title_tokens, unique_query_terms),
+        },
+        "raw_bm25_field_scores": {
+            "body": _round_replay_float(body_field_score),
+            "metadata": _round_replay_float(metadata_field_score),
+            "title": _round_replay_float(title_field_score),
+        },
+        "rejection_reason": rejection_reason,
+        "relevance_score": _round_replay_float(relevance_score),
+        "resource_chunk_id": str(candidate.get("resource_chunk_id") or "")
+        .strip()
+        .lower(),
+        "resource_id": str(candidate.get("resource_id") or "").strip().lower(),
+        "resource_type": str(resource_type or "").strip(),
+        "sort_chunk_index": int(candidate.get("chunk_index") or 0),
+        "sort_resource_chunk_id": str(candidate.get("resource_chunk_id") or "")
+        .strip()
+        .lower(),
+        "sort_resource_id": str(candidate.get("resource_id") or "").strip().lower(),
+        "title": title,
+        "title_field_length": len(title_tokens),
+        "title_overlap_tokens": title_overlap,
+    }
+    return breakdown, replay_record
+
+
+def score_evidence_candidate(
+    candidate: Mapping[str, Any],
+    *,
+    query_text: str,
+    query_tokens: Sequence[str],
+    question_tokens: Sequence[str],
+    option_tokens: Sequence[str],
+    question_domain: str,
+    resource_metadata: Mapping[str, Any],
+    resource_title: str,
+    corpus_stats: Bm25CorpusStats,
+    resource_type: str = "",
+) -> EvidenceScoreBreakdown:
+    """BM25 relevance score (per-field-weighted) with precision-first qualification."""
+    breakdown, _replay_record = analyze_evidence_candidate(
+        candidate,
+        query_text=query_text,
+        query_tokens=query_tokens,
+        question_tokens=question_tokens,
+        option_tokens=option_tokens,
+        question_domain=question_domain,
+        resource_metadata=resource_metadata,
+        resource_title=resource_title,
+        corpus_stats=corpus_stats,
+        resource_type=resource_type,
+    )
+    return breakdown
 
 
 def _effective_min_discriminative_overlap_idf(document_count: int) -> float:
@@ -1003,6 +1164,282 @@ def _domain_match_boost(
     if normalized_domain in haystack:
         return DOMAIN_TEXT_MENTION_BOOST
     return 0.0
+
+
+RETRIEVAL_REPLAY_EXPORT_VERSION = 1
+RETRIEVAL_REPLAY_EXPORT_BEGIN = "=== RETRIEVAL_REPLAY_EXPORT_BEGIN ==="
+RETRIEVAL_REPLAY_EXPORT_END = "=== RETRIEVAL_REPLAY_EXPORT_END ==="
+
+
+def _replay_bm25_field_score_from_frequencies(
+    *,
+    query_terms: Sequence[str],
+    term_frequencies: Mapping[str, int],
+    field_length: int,
+    avg_field_len: float,
+    query_token_idf: Mapping[str, float],
+    k1: float,
+    b: float,
+) -> float:
+    if field_length <= 0 or not query_terms:
+        return 0.0
+    avg_len = avg_field_len if avg_field_len > 0 else 1.0
+    score = 0.0
+    for term in query_terms:
+        tf = int(term_frequencies.get(term, 0))
+        if tf == 0:
+            continue
+        term_idf = float(query_token_idf.get(term, 0.0))
+        denom = tf + k1 * (1 - b + b * (field_length / avg_len))
+        score += term_idf * (tf * (k1 + 1)) / denom
+    return score
+
+
+def replay_bm25_candidate_from_record(
+    question_record: Mapping[str, Any],
+    candidate_record: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Rebuild BM25 field scores and qualification from one exported candidate."""
+    constants = question_record["bm25_constants"]
+    query_tokens = list(question_record["query_tokens"])
+    unique_query_terms = sorted(set(query_tokens))
+    query_token_idf = question_record["query_token_idf"]
+    term_frequencies = candidate_record["query_term_frequencies"]
+
+    title_field_score = _replay_bm25_field_score_from_frequencies(
+        query_terms=unique_query_terms,
+        term_frequencies=term_frequencies["title"],
+        field_length=int(candidate_record["title_field_length"]),
+        avg_field_len=float(question_record["avg_title_len"]),
+        query_token_idf=query_token_idf,
+        k1=float(constants["k1"]),
+        b=float(constants["b"]),
+    )
+    metadata_field_score = _replay_bm25_field_score_from_frequencies(
+        query_terms=unique_query_terms,
+        term_frequencies=term_frequencies["metadata"],
+        field_length=int(candidate_record["metadata_field_length"]),
+        avg_field_len=float(question_record["avg_metadata_len"]),
+        query_token_idf=query_token_idf,
+        k1=float(constants["k1"]),
+        b=float(constants["b"]),
+    )
+    body_field_score = _replay_bm25_field_score_from_frequencies(
+        query_terms=unique_query_terms,
+        term_frequencies=term_frequencies["body"],
+        field_length=int(candidate_record["body_field_length"]),
+        avg_field_len=float(question_record["avg_body_len"]),
+        query_token_idf=query_token_idf,
+        k1=float(constants["k1"]),
+        b=float(constants["b"]),
+    )
+
+    raw_bm25 = (
+        float(constants["field_weight_title"]) * title_field_score
+        + float(constants["field_weight_metadata"]) * metadata_field_score
+        + float(constants["field_weight_body"]) * body_field_score
+    )
+    total_query_idf = sum(float(query_token_idf.get(term, 0.0)) for term in unique_query_terms)
+    normalizer = (
+        total_query_idf
+        * (float(constants["k1"]) + 1)
+        * float(constants["normalization_field_weight"])
+    )
+    bm25_score = (raw_bm25 / normalizer) if normalizer > 0 else 0.0
+    bm25_score = max(0.0, min(1.0, bm25_score))
+
+    resource_type = str(candidate_record.get("resource_type") or "")
+    raw_relevance = bm25_score
+    if resource_type.strip().lower() == "exam_guide":
+        raw_relevance *= float(constants["exam_guide_score_multiplier"])
+    relevance_score = max(0.0, min(1.0, raw_relevance))
+
+    domain_boost = float(candidate_record["domain_match"]["domain_boost"])
+    match_reasons: List[str] = []
+    if domain_boost >= float(constants["domain_exact_match_boost"]):
+        match_reasons.append(_MATCH_REASON_DOMAIN)
+    if title_field_score > 0.0 or bool(candidate_record.get("option_in_title")):
+        match_reasons.append(_MATCH_REASON_TITLE)
+    if len(candidate_record.get("question_overlap_tokens") or []) >= 2:
+        match_reasons.append(_MATCH_REASON_QUESTION)
+    if candidate_record.get("option_overlap_tokens"):
+        match_reasons.append(_MATCH_REASON_OPTION)
+    if metadata_field_score > 0.0:
+        match_reasons.append(_MATCH_REASON_METADATA)
+
+    overlap_tokens = list(candidate_record.get("query_content_overlap_tokens") or [])
+    discriminative_overlap_idf = sum(
+        float(query_token_idf.get(term, 0.0)) for term in overlap_tokens
+    )
+    qualifies, rejection_reason = _candidate_qualifies(
+        relevance_score=relevance_score,
+        match_reasons=match_reasons,
+        overlap_count=len(overlap_tokens),
+        discriminative_overlap_idf=discriminative_overlap_idf,
+        resource_type=resource_type,
+        document_count=int(question_record["corpus_document_count"]),
+    )
+    min_score = _applicable_min_score(resource_type)
+
+    return {
+        "applicable_threshold": _round_replay_float(min_score),
+        "bm25_score": _round_replay_float(bm25_score),
+        "match_reasons": match_reasons,
+        "qualified": qualifies,
+        "raw_bm25_field_scores": {
+            "body": _round_replay_float(body_field_score),
+            "metadata": _round_replay_float(metadata_field_score),
+            "title": _round_replay_float(title_field_score),
+        },
+        "rejection_reason": rejection_reason,
+        "relevance_score": _round_replay_float(relevance_score),
+    }
+
+
+def build_question_retrieval_replay_export(
+    *,
+    question_version_id: str,
+    certification_exam_name: str,
+    blind_context: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+    resource_by_id: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Build one question's deterministic BM25 replay export record."""
+    query_text = _build_question_query(blind_context)
+    question_text = str(blind_context.get("question_text") or "").strip()
+    question_tokens = _content_tokens(question_text)
+    option_tokens = _option_content_tokens(blind_context)
+    query_tokens = _content_tokens(query_text)
+    question_domain = str(blind_context.get("domain_name") or "").strip()
+    corpus_stats = build_bm25_corpus_stats(candidates, resource_by_id=resource_by_id)
+    unique_query_terms = sorted(set(query_tokens))
+    query_token_idf = {
+        term: _round_replay_float(corpus_stats.idf.get(term, 0.0))
+        for term in unique_query_terms
+    }
+
+    scored: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for candidate in candidates:
+        resource_id = str(candidate["resource_id"])
+        resource_row = resource_by_id.get(resource_id) or {}
+        breakdown, replay_record = analyze_evidence_candidate(
+            candidate,
+            query_text=query_text,
+            query_tokens=query_tokens,
+            question_tokens=question_tokens,
+            option_tokens=option_tokens,
+            question_domain=question_domain,
+            resource_metadata=resource_row.get("metadata") or {},
+            resource_title=str(resource_row.get("title") or candidate.get("title") or ""),
+            corpus_stats=corpus_stats,
+            resource_type=str(
+                resource_row.get("resource_type")
+                or candidate.get("resource_type")
+                or ""
+            ),
+        )
+        del breakdown
+        scored.append((dict(candidate), replay_record))
+
+    scored.sort(
+        key=lambda item: (
+            -float(item[1]["relevance_score"]),
+            0 if _MATCH_REASON_DOMAIN in item[1]["match_reasons"] else 1,
+            str(item[1]["sort_resource_id"]),
+            int(item[1]["sort_chunk_index"]),
+            str(item[1]["sort_resource_chunk_id"]),
+        )
+    )
+
+    candidate_exports: List[Dict[str, Any]] = []
+    for rank, (_candidate, replay_record) in enumerate(scored, start=1):
+        export_record = dict(replay_record)
+        export_record["final_retrieval_rank"] = rank
+        candidate_exports.append(export_record)
+
+    return {
+        "avg_body_len": _round_replay_float(corpus_stats.avg_body_len),
+        "avg_metadata_len": _round_replay_float(corpus_stats.avg_metadata_len),
+        "avg_title_len": _round_replay_float(corpus_stats.avg_title_len),
+        "bm25_constants": _bm25_constants_snapshot(),
+        "candidates": candidate_exports,
+        "certification_exam_name": str(certification_exam_name).strip(),
+        "corpus_document_count": int(corpus_stats.document_count),
+        "effective_discriminative_idf_floor": _round_replay_float(
+            _effective_min_discriminative_overlap_idf(corpus_stats.document_count)
+        ),
+        "option_tokens": list(option_tokens),
+        "query_token_idf": query_token_idf,
+        "query_tokens": list(query_tokens),
+        "question_tokens": list(question_tokens),
+        "question_version_id": str(question_version_id).strip().lower(),
+        "retrieval_method": RETRIEVAL_METHOD,
+    }
+
+
+def build_retrieval_replay_export(
+    question_exports: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Wrap per-question replay records in a deterministic top-level export."""
+    ordered_questions = sorted(
+        question_exports,
+        key=lambda item: str(item["question_version_id"]),
+    )
+    return {
+        "export_version": RETRIEVAL_REPLAY_EXPORT_VERSION,
+        "questions": ordered_questions,
+        "retrieval_method": RETRIEVAL_METHOD,
+    }
+
+
+def dumps_retrieval_replay_export(export: Mapping[str, Any]) -> str:
+    return json.dumps(export, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def write_retrieval_replay_export(export: Mapping[str, Any], path: str) -> None:
+    payload = dumps_retrieval_replay_export(export)
+    if path == "-":
+        print(RETRIEVAL_REPLAY_EXPORT_BEGIN)
+        print(payload)
+        print(RETRIEVAL_REPLAY_EXPORT_END)
+        return
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.write("\n")
+
+
+def prepare_smoke_retrieval_replay_export(
+    client,
+    question_version_ids: Sequence[str],
+) -> Dict[str, Any]:
+    """Collect BM25 replay exports for each smoke question (read-only)."""
+    question_exports: List[Dict[str, Any]] = []
+    for question_version_id in question_version_ids:
+        qvid = _validate_uuid(question_version_id, "question_version_id")
+        blind_context = load_blind_audit_context(client, qvid)
+        certification = str(blind_context["certification_exam_name"]).strip()
+        resources = _load_active_resources(client, certification_exam_name=certification)
+        resource_ids = [item["id"] for item in resources]
+        resource_by_id = {item["id"]: item for item in resources}
+        if not resource_ids:
+            candidates: List[Dict[str, Any]] = []
+        else:
+            candidates = _list_candidate_chunks(
+                client,
+                certification_exam_name=certification,
+                resource_ids=resource_ids,
+                max_chunks=CANDIDATE_POOL_MAX,
+            )
+        question_exports.append(
+            build_question_retrieval_replay_export(
+                question_version_id=qvid,
+                certification_exam_name=certification,
+                blind_context=blind_context,
+                candidates=candidates,
+                resource_by_id=resource_by_id,
+            )
+        )
+    return build_retrieval_replay_export(question_exports)
 
 
 def _validate_uuid(value: object, field_name: str) -> str:
