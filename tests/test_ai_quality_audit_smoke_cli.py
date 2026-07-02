@@ -18,8 +18,10 @@ from scripts.run_ai_quality_audit_smoke import (
     execute_smoke_batch,
     main,
     prepare_all_smoke_evidence,
+    prepare_all_smoke_evidence_dry_run,
     resolve_question_version_ids,
 )
+from workers.ai_quality_audit_evidence import AiQualityAuditEvidenceError
 from workers.anthropic_provider import DEFAULT_MODEL, ENV_MODEL
 
 _REQUIRED = 10
@@ -82,11 +84,39 @@ def _default_evidence_summaries(ids=None):
 def _patch_evidence_preview(ids=None):
     return patch.multiple(
         "scripts.run_ai_quality_audit_smoke",
-        prepare_all_smoke_evidence=MagicMock(
+        prepare_all_smoke_evidence_dry_run=MagicMock(
             return_value=_default_evidence_summaries(ids),
         ),
         _load_client_for_evidence_preview=MagicMock(return_value=object()),
     )
+
+
+def _mixed_evidence_summaries_with_gap(ids=None):
+    summaries = _default_evidence_summaries(ids)
+    gap_index = 2
+    gap_qvid = summaries[gap_index]["question_version_id"]
+    summaries[gap_index] = {
+        "question_version_id": gap_qvid,
+        "certification_exam_name": "Salesforce Certified Platform Administrator",
+        "candidate_count": 24,
+        "qualified_candidate_count": 0,
+        "rejected_below_threshold_count": 24,
+        "selected_count": 0,
+        "evidence_count": 0,
+        "chunk_count": 0,
+        "evidence_set_hash": "d" * 64,
+        "total_evidence_characters": 0,
+        "estimated_tokens": 0,
+        "retrieval_method": "lexical_question_match_v2",
+        "chunk_previews": [],
+        "evidence_gap": True,
+        "evidence_gap_reason": (
+            f"evidence retrieval returned zero qualified chunks for question_version "
+            f"{gap_qvid!r} (certification='Salesforce Certified Platform Administrator', "
+            "candidates=24, qualified=0, rejected=24)"
+        ),
+    }
+    return summaries
 
 
 def _ten_unique_ids() -> list[str]:
@@ -161,6 +191,9 @@ class TestSmokeCliMain(unittest.TestCase):
         self.assertIn(f"primary_model_name: {DEFAULT_MODEL}", output)
         self.assertIn(f"dispute_model_name: {DEFAULT_MODEL}", output)
         self.assertIn("evidence_freeze_preview:", output)
+        self.assertIn("evidence_summary:", output)
+        self.assertIn("questions_with_qualified_evidence: 10", output)
+        self.assertIn("questions_with_evidence_gaps: 0", output)
         self.assertIn("selected=2", output)
         self.assertIn("method=lexical_question_match_v2", output)
         self.assertIn("estimated_tokens=", output)
@@ -169,24 +202,107 @@ class TestSmokeCliMain(unittest.TestCase):
         self.assertNotIn("smoke-primary-model", output)
         self.assertNotIn("smoke-dispute-model", output)
 
-    def test_dry_run_fails_when_evidence_preparation_fails(self):
-        from workers.ai_quality_audit_evidence import AiQualityAuditEvidenceError
-
+    def test_dry_run_fails_when_evidence_client_unavailable(self):
         stderr_buffer = io.StringIO()
+        with patch.dict(os.environ, _PROVIDER_ENV, clear=False):
+            with patch(
+                "scripts.run_ai_quality_audit_smoke._load_client_for_evidence_preview",
+                side_effect=RuntimeError("no preview client"),
+            ):
+                with redirect_stderr(stderr_buffer):
+                    rc = main(_cli_args_with_ids())
+
+        self.assertEqual(rc, 1)
+        self.assertIn("no preview client", stderr_buffer.getvalue())
+
+    def test_dry_run_continues_and_reports_all_questions_when_gaps_exist(self):
+        ids = _ten_unique_ids()
+        mixed_summaries = _mixed_evidence_summaries_with_gap(ids)
+        gap_qvid = mixed_summaries[2]["question_version_id"]
+
+        buffer = io.StringIO()
         with patch.dict(os.environ, _PROVIDER_ENV, clear=False):
             with patch(
                 "scripts.run_ai_quality_audit_smoke._load_client_for_evidence_preview",
                 return_value=object(),
             ):
                 with patch(
-                    "scripts.run_ai_quality_audit_smoke.prepare_all_smoke_evidence",
-                    side_effect=AiQualityAuditEvidenceError("zero chunks"),
-                ):
-                    with redirect_stderr(stderr_buffer):
+                    "scripts.run_ai_quality_audit_smoke.prepare_all_smoke_evidence_dry_run",
+                    return_value=mixed_summaries,
+                ) as dry_run_mock:
+                    with redirect_stdout(buffer):
                         rc = main(_cli_args_with_ids())
 
         self.assertEqual(rc, 1)
-        self.assertIn("zero chunks", stderr_buffer.getvalue())
+        dry_run_mock.assert_called_once()
+        output = buffer.getvalue()
+        for qvid in ids:
+            self.assertIn(qvid, output)
+        self.assertIn("EVIDENCE_GAP", output)
+        self.assertIn(gap_qvid, output)
+        self.assertIn("questions_with_qualified_evidence: 9", output)
+        self.assertIn("questions_with_evidence_gaps: 1", output)
+        self.assertIn(f"    - {gap_qvid}: EVIDENCE_GAP", output)
+        self.assertIn("Dry-run completed with 1 evidence gap(s). Exit code 1.", output)
+        self.assertIn("No jobs enqueued (dry-run).", output)
+
+    @patch("scripts.run_ai_quality_audit_smoke.prepare_smoke_evidence_set")
+    def test_prepare_all_smoke_evidence_dry_run_continues_after_zero_qualified(
+        self,
+        prepare_mock,
+    ):
+        ids = _ten_unique_ids()[:3]
+        prepared_ok = MagicMock()
+        prepared_ok.qualified_candidate_count = 2
+        prepared_ok.to_summary_dict.return_value = {
+            "question_version_id": ids[0],
+            "qualified_candidate_count": 2,
+            "selected_count": 2,
+            "evidence_gap": False,
+        }
+        prepared_gap = MagicMock()
+        prepared_gap.question_version_id = ids[1]
+        prepared_gap.certification_exam_name = "Cert A"
+        prepared_gap.candidate_count = 24
+        prepared_gap.qualified_candidate_count = 0
+        prepared_gap.rejected_below_threshold_count = 24
+        prepared_gap.to_summary_dict.return_value = {
+            "question_version_id": ids[1],
+            "certification_exam_name": "Cert A",
+            "candidate_count": 24,
+            "qualified_candidate_count": 0,
+            "rejected_below_threshold_count": 24,
+            "selected_count": 0,
+        }
+        prepared_ok_2 = MagicMock()
+        prepared_ok_2.qualified_candidate_count = 1
+        prepared_ok_2.to_summary_dict.return_value = {
+            "question_version_id": ids[2],
+            "qualified_candidate_count": 1,
+            "selected_count": 1,
+        }
+        prepare_mock.side_effect = [prepared_ok, prepared_gap, prepared_ok_2]
+
+        client = object()
+        summaries = prepare_all_smoke_evidence_dry_run(client, ids)
+
+        self.assertEqual(len(summaries), 3)
+        self.assertFalse(summaries[0].get("evidence_gap"))
+        self.assertTrue(summaries[1].get("evidence_gap"))
+        self.assertFalse(summaries[2].get("evidence_gap"))
+        self.assertEqual(prepare_mock.call_count, 3)
+        prepare_mock.assert_any_call(client, ids[1], allow_no_evidence=True)
+
+    @patch("scripts.run_ai_quality_audit_smoke.prepare_smoke_evidence_set")
+    def test_prepare_all_smoke_evidence_stops_on_zero_qualified(self, prepare_mock):
+        ids = _ten_unique_ids()[:2]
+        prepare_mock.side_effect = AiQualityAuditEvidenceError("zero chunks")
+
+        client = object()
+        with self.assertRaisesRegex(AiQualityAuditEvidenceError, "zero chunks"):
+            prepare_all_smoke_evidence(client, ids)
+
+        prepare_mock.assert_called_once_with(client, ids[0])
 
     def test_dry_run_shows_configured_anthropic_model(self):
         configured_model = "claude-test-model-v1"
@@ -261,8 +377,6 @@ class TestSmokeCliMain(unittest.TestCase):
         self.assertNotIn("smoke-dispute-model", params.values())
 
     def test_execute_refuses_empty_evidence_summary(self):
-        from workers.ai_quality_audit_evidence import AiQualityAuditEvidenceError
-
         client = object()
         qvid = _ten_unique_ids()[0]
         with self.assertRaisesRegex(

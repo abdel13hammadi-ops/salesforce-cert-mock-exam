@@ -20,6 +20,7 @@ if _REPO_ROOT not in sys.path:
 
 from workers.ai_quality_audit_evidence import (  # noqa: E402
     AiQualityAuditEvidenceError,
+    empty_evidence_set_hash,
     prepare_smoke_evidence_set,
 )
 from workers.ai_quality_provider_factory import (  # noqa: E402
@@ -119,6 +120,71 @@ def build_create_run_params(
     }
 
 
+def _is_evidence_gap(summary: dict) -> bool:
+    return bool(summary.get("evidence_gap"))
+
+
+def _gap_summary_from_prepared(prepared) -> dict:
+    summary = prepared.to_summary_dict()
+    summary["evidence_gap"] = True
+    summary["evidence_gap_reason"] = (
+        "evidence retrieval returned zero qualified chunks for question_version "
+        f"{prepared.question_version_id!r} "
+        f"(certification={prepared.certification_exam_name!r}, "
+        f"candidates={prepared.candidate_count}, "
+        f"qualified={prepared.qualified_candidate_count}, "
+        f"rejected={prepared.rejected_below_threshold_count})"
+    )
+    return summary
+
+
+def _gap_summary_from_error(
+    question_version_id: str,
+    exc: AiQualityAuditEvidenceError,
+) -> dict:
+    return {
+        "question_version_id": question_version_id,
+        "certification_exam_name": "unknown",
+        "candidate_count": 0,
+        "qualified_candidate_count": 0,
+        "rejected_below_threshold_count": 0,
+        "selected_count": 0,
+        "evidence_count": 0,
+        "chunk_count": 0,
+        "evidence_set_hash": empty_evidence_set_hash(),
+        "total_evidence_characters": 0,
+        "estimated_tokens": 0,
+        "retrieval_method": "unknown",
+        "chunk_previews": [],
+        "evidence_gap": True,
+        "evidence_gap_reason": str(exc),
+    }
+
+
+def prepare_all_smoke_evidence_dry_run(
+    client,
+    question_version_ids: Sequence[str],
+) -> List[dict]:
+    """Retrieve evidence for every smoke question; continue after per-question gaps."""
+    summaries: List[dict] = []
+    for question_version_id in question_version_ids:
+        try:
+            prepared = prepare_smoke_evidence_set(
+                client,
+                question_version_id,
+                allow_no_evidence=True,
+            )
+        except AiQualityAuditEvidenceError as exc:
+            summaries.append(_gap_summary_from_error(question_version_id, exc))
+            continue
+
+        if prepared.qualified_candidate_count == 0:
+            summaries.append(_gap_summary_from_prepared(prepared))
+        else:
+            summaries.append(prepared.to_summary_dict())
+    return summaries
+
+
 def format_dry_run_report(
     *,
     question_version_ids: Sequence[str],
@@ -144,6 +210,19 @@ def format_dry_run_report(
     lines.extend(f"  - {qvid}" for qvid in question_version_ids)
     lines.append("evidence_freeze_preview:")
     for summary in evidence_summaries:
+        if _is_evidence_gap(summary):
+            lines.append(
+                "  - "
+                f"{summary['question_version_id']}: "
+                "EVIDENCE_GAP "
+                f"certification={summary.get('certification_exam_name', 'unknown')!r}, "
+                f"candidates={summary.get('candidate_count', 0)}, "
+                f"qualified={summary.get('qualified_candidate_count', 0)}, "
+                f"rejected={summary.get('rejected_below_threshold_count', 0)}, "
+                f"reason={summary.get('evidence_gap_reason', 'unknown')}"
+            )
+            continue
+
         lines.append(
             "  - "
             f"{summary['question_version_id']}: "
@@ -166,6 +245,31 @@ def format_dry_run_report(
                 f"title={preview.get('title')!r} "
                 f"reasons={reasons}"
             )
+
+    with_qualified = sum(1 for summary in evidence_summaries if not _is_evidence_gap(summary))
+    with_gaps = sum(1 for summary in evidence_summaries if _is_evidence_gap(summary))
+    lines.append("evidence_summary:")
+    lines.append(f"  total_questions: {len(question_version_ids)}")
+    lines.append(f"  questions_with_qualified_evidence: {with_qualified}")
+    lines.append(f"  questions_with_evidence_gaps: {with_gaps}")
+    lines.append("  qualified_evidence_count_by_question:")
+    for summary in evidence_summaries:
+        qvid = summary["question_version_id"]
+        if _is_evidence_gap(summary):
+            lines.append(f"    - {qvid}: EVIDENCE_GAP")
+        else:
+            selected = summary.get(
+                "selected_count",
+                summary.get("evidence_count", 0),
+            )
+            lines.append(f"    - {qvid}: {selected}")
+
+    if with_gaps:
+        lines.append(
+            f"Dry-run completed with {with_gaps} evidence gap(s). Exit code 1."
+        )
+    else:
+        lines.append("Dry-run completed with qualified evidence for all questions.")
     lines.append("No jobs enqueued (dry-run).")
     return "\n".join(lines)
 
@@ -344,8 +448,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args.execute:
         try:
             preview_client = _load_client_for_evidence_preview()
-            evidence_summaries = prepare_all_smoke_evidence(preview_client, ids)
-        except (RuntimeError, AiQualityAuditEvidenceError) as exc:
+            evidence_summaries = prepare_all_smoke_evidence_dry_run(preview_client, ids)
+        except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
 
@@ -361,7 +465,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 evidence_summaries=evidence_summaries,
             )
         )
-        return 0
+        gap_count = sum(1 for summary in evidence_summaries if _is_evidence_gap(summary))
+        return 1 if gap_count else 0
 
     if not args.confirm:
         print(

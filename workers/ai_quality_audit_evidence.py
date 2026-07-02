@@ -655,13 +655,16 @@ def _apply_character_budget(
 
 
 def _build_question_query(blind_context: Mapping[str, Any]) -> str:
+    """Build the base lexical query from stem and domain only.
+
+    Answer options are excluded here because they are scored separately via
+    ``_option_content_tokens`` and option-overlap match reasons. Including full
+    option strings inflates the query and dilutes Jaccard/similarity scoring.
+    """
     parts = [
         str(blind_context.get("question_text") or "").strip(),
         str(blind_context.get("domain_name") or "").strip(),
     ]
-    for option in blind_context.get("options") or []:
-        if isinstance(option, dict):
-            parts.append(str(option.get("option_text") or "").strip())
     return " ".join(part for part in parts if part)
 
 
@@ -707,7 +710,7 @@ def _token_jaccard(tokens_a: Sequence[str], tokens_b: Sequence[str]) -> float:
 
 def _metadata_text_values(metadata: Mapping[str, Any]) -> set[str]:
     values: set[str] = set()
-    for key in ("domain", "domains", "exam_domain", "category", "feature", "features"):
+    for key in ("domain", "domains", "exam_domain", "category", "feature", "features", "topic"):
         raw = metadata.get(key)
         if isinstance(raw, str) and raw.strip():
             values.add(_normalize_text(raw))

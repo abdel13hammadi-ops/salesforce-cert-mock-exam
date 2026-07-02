@@ -14,9 +14,13 @@ from workers.ai_quality_audit_evidence import (
     DEFAULT_MAX_CHUNKS_PER_RESOURCE,
     DEFAULT_MAX_EVIDENCE_CHARACTERS,
     DEFAULT_MAX_EVIDENCE_CHUNKS,
+    MIN_RELEVANCE_SCORE,
     RETRIEVAL_METHOD,
     AiQualityAuditEvidenceError,
     CANDIDATE_POOL_MAX,
+    _build_question_query,
+    _content_tokens,
+    _option_content_tokens,
     compute_evidence_set_hash,
     empty_evidence_set_hash,
     prepare_smoke_evidence_set,
@@ -454,7 +458,7 @@ class TestQuestionEvidenceRanking(unittest.TestCase):
                 chunk_id=f"{index:012x}-1111-1111-1111-111111111111",
                 resource_id=same_resource,
                 title="Profiles Help",
-                chunk_text=f"Profiles define defaults section {index}.",
+                chunk_text="Profiles define default settings and object permissions.",
                 chunk_index=index,
             )
             for index in range(4)
@@ -462,6 +466,13 @@ class TestQuestionEvidenceRanking(unittest.TestCase):
         ranked, _, _, _ = _rank(
             self.blind_context,
             candidates,
+            resource_by_id={
+                same_resource: {
+                    "id": same_resource,
+                    "title": "Profiles Help",
+                    "metadata": {"domain": "Configuration"},
+                },
+            },
             max_chunks=4,
             max_chunks_per_resource=2,
         )
@@ -641,6 +652,225 @@ class TestPrepareSmokeEvidenceSet(unittest.TestCase):
         self.client._candidate_rows[0]["certification_exam_name"] = "OTHER-EXAM"
         with self.assertRaisesRegex(AiQualityAuditEvidenceError, "certification mismatch"):
             prepare_smoke_evidence_set(self.client, self.qvid)
+
+
+class TestQ490LexicalQueryDilutionFix(unittest.TestCase):
+    """Regression for Q490 lookup-delete evidence retrieval."""
+
+    _RELATIONSHIPS_RESOURCE_ID = "67dcaaf3-b7dc-4c93-b122-133c8a51ca36"
+    _FLOW_RESOURCE_ID = "069ec1b3-798a-4bc2-85c4-21056e9d87c5"
+
+    _BLIND_CONTEXT = {
+        "question_text": (
+            "AW Computing tracks Service Contract records related to Accounts. "
+            "If an Account is deleted, the Service Contract records must remain in "
+            "Salesforce for compliance, but the Account reference should be cleared "
+            "automatically. Service Contract records must keep their own owner and "
+            "sharing behavior. Which relationship configuration should the "
+            "administrator use?"
+        ),
+        "domain_name": "Object Manager and Lightning App Builder",
+        "options": [
+            {
+                "option_label": "A",
+                "option_text": (
+                    "Lookup relationship from Service Contract to Account with the "
+                    "delete behavior set to clear the lookup value"
+                ),
+                "display_order": 1,
+            },
+            {
+                "option_label": "B",
+                "option_text": (
+                    "Master-detail relationship from Service Contract to Account with "
+                    "standard cascade delete behavior"
+                ),
+                "display_order": 2,
+            },
+            {
+                "option_label": "C",
+                "option_text": (
+                    "Lookup relationship from Account to Service Contract with roll-up "
+                    "summary enabled"
+                ),
+                "display_order": 3,
+            },
+            {
+                "option_label": "D",
+                "option_text": (
+                    "External lookup relationship from Account to Service Contract with "
+                    "indirect matching"
+                ),
+                "display_order": 4,
+            },
+        ],
+    }
+
+    _RELATIONSHIPS_METADATA = {
+        "topic": "lookup relationship delete behavior",
+        "ingestion_status": "catalog_created",
+        "smoke_question_ids": [490],
+    }
+
+    _RELATIONSHIPS_CHUNK_TEXT = (
+        "Roll-up summary fields that summarize data from the junction object can be "
+        "created on both master objects.\n"
+        "Formula fields and validation rules on the junction object can reference "
+        "fields on both master objects.\n"
+        "You can define Apex triggers on both master objects and the junction object.\n"
+        "A junction object can't be on the master side of another master-detail "
+        "relationship.\n"
+        "You can't create a many-to-many self-relationship, that is, the two "
+        "master-detail relationships on the junction object can't have the same "
+        "master object.\n"
+        "Lookup Relationships\n"
+        "If the lookup field is optional, you can specify one of three behaviors to "
+        "occur if the lookup record is deleted:\n"
+        "Clear the value of this field—This is the default. Clearing the field is a "
+        "good choice when the field doesn't have to contain a value from the "
+        "associated lookup record.\n"
+        "Don't allow deletion of the lookup record that's part of a lookup "
+        "relationship—If you have dependencies built on the lookup relationship, such "
+        "as a workflow rule, this option doesn't allow the lookup record to be "
+        "deleted.\n"
+        "Delete this record also—Available only for a custom lookup field on a custom "
+        "object. This option isn't available for a custom lookup field that refers to "
+        "a standard object. Choose when the lookup field and its associated record "
+        "are tightly coupled and you want to completely delete related data.\n"
+        "Cascade-delete and its related options aren't available for lookup "
+        "relationships to standard objects."
+    )
+
+    _FLOW_CHUNK_TEXT = (
+        "Send a Custom Notification with a Flow\n"
+        "Create a flow that sends a custom notification to users when a specific "
+        "event occurs. Notifications can appear in the desktop and mobile app."
+    )
+
+    def _score(
+        self,
+        *,
+        chunk_text: str,
+        title: str,
+        metadata: dict,
+        resource_id: str,
+        query_text: str | None = None,
+    ):
+        if query_text is None:
+            query_text = _build_question_query(self._BLIND_CONTEXT)
+        query_tokens = _content_tokens(query_text)
+        question_tokens = _content_tokens(self._BLIND_CONTEXT["question_text"])
+        option_tokens = _option_content_tokens(self._BLIND_CONTEXT)
+        candidate = {
+            "resource_chunk_id": f"{resource_id}-0",
+            "resource_id": resource_id,
+            "content_hash": "c" * 64,
+            "chunk_index": 0,
+            "certification_exam_name": "Salesforce Certified Platform Administrator",
+            "chunk_text": chunk_text,
+            "title": title,
+            "resource_type": "official_documentation",
+        }
+        breakdown = score_evidence_candidate(
+            candidate,
+            query_text=query_text,
+            query_tokens=query_tokens,
+            question_tokens=question_tokens,
+            option_tokens=option_tokens,
+            question_domain=self._BLIND_CONTEXT["domain_name"],
+            resource_metadata=metadata,
+            resource_title=title,
+            resource_type="official_documentation",
+        )
+        return breakdown, candidate
+
+    def _legacy_dilute_query_text(self) -> str:
+        parts = [
+            self._BLIND_CONTEXT["question_text"],
+            self._BLIND_CONTEXT["domain_name"],
+        ]
+        for option in self._BLIND_CONTEXT["options"]:
+            parts.append(str(option["option_text"]))
+        return " ".join(parts)
+
+    def test_focused_query_excludes_option_strings(self):
+        focused_query = _build_question_query(self._BLIND_CONTEXT)
+
+        self.assertNotIn("clear the lookup value", focused_query.lower())
+        self.assertNotIn("cascade delete", focused_query.lower())
+        self.assertIn("Service Contract", focused_query)
+        self.assertIn("Object Manager and Lightning App Builder", focused_query)
+
+    def test_option_overlap_is_separate_from_base_lexical_overlap(self):
+        breakdown, _ = self._score(
+            chunk_text=self._RELATIONSHIPS_CHUNK_TEXT,
+            title="Considerations for Object Relationships",
+            metadata=self._RELATIONSHIPS_METADATA,
+            resource_id=self._RELATIONSHIPS_RESOURCE_ID,
+        )
+        query_tokens = set(_content_tokens(_build_question_query(self._BLIND_CONTEXT)))
+        option_tokens = set(_option_content_tokens(self._BLIND_CONTEXT))
+        chunk_tokens = set(
+            _content_tokens(
+                f"Considerations for Object Relationships {self._RELATIONSHIPS_CHUNK_TEXT}"
+            )
+        )
+        option_only_tokens = (option_tokens & chunk_tokens) - query_tokens
+
+        self.assertIn("Clear the value of this field", self._RELATIONSHIPS_CHUNK_TEXT)
+        self.assertTrue(option_only_tokens)
+        for token in option_only_tokens:
+            self.assertNotIn(token, breakdown.content_overlap_tokens)
+        self.assertIn("option overlap", breakdown.match_reasons)
+        self.assertIn("question-text overlap", breakdown.match_reasons)
+        self.assertGreater(breakdown.content_overlap_count, 0)
+        self.assertEqual(
+            breakdown.content_overlap_count,
+            len(set(breakdown.content_overlap_tokens)),
+        )
+        self.assertFalse(breakdown.qualifies)
+        self.assertLess(breakdown.relevance_score, MIN_RELEVANCE_SCORE)
+
+    def test_dilute_query_inflates_base_lexical_overlap_token_set(self):
+        focused_breakdown, _ = self._score(
+            chunk_text=self._RELATIONSHIPS_CHUNK_TEXT,
+            title="Considerations for Object Relationships",
+            metadata=self._RELATIONSHIPS_METADATA,
+            resource_id=self._RELATIONSHIPS_RESOURCE_ID,
+        )
+        dilute_breakdown, _ = self._score(
+            chunk_text=self._RELATIONSHIPS_CHUNK_TEXT,
+            title="Considerations for Object Relationships",
+            metadata=self._RELATIONSHIPS_METADATA,
+            resource_id=self._RELATIONSHIPS_RESOURCE_ID,
+            query_text=self._legacy_dilute_query_text(),
+        )
+
+        self.assertGreater(
+            len(dilute_breakdown.content_overlap_tokens),
+            len(focused_breakdown.content_overlap_tokens),
+        )
+
+    def test_unrelated_flow_chunk_stays_rejected(self):
+        flow_breakdown, _ = self._score(
+            chunk_text=self._FLOW_CHUNK_TEXT,
+            title="Send a Custom Notification with a Flow",
+            metadata={"topic": "Flow custom notifications for desktop and mobile"},
+            resource_id=self._FLOW_RESOURCE_ID,
+        )
+        relationships_breakdown, _ = self._score(
+            chunk_text=self._RELATIONSHIPS_CHUNK_TEXT,
+            title="Considerations for Object Relationships",
+            metadata=self._RELATIONSHIPS_METADATA,
+            resource_id=self._RELATIONSHIPS_RESOURCE_ID,
+        )
+
+        self.assertFalse(flow_breakdown.qualifies)
+        self.assertLess(flow_breakdown.relevance_score, MIN_RELEVANCE_SCORE)
+        self.assertGreater(
+            relationships_breakdown.relevance_score,
+            flow_breakdown.relevance_score,
+        )
 
 
 if __name__ == "__main__":
