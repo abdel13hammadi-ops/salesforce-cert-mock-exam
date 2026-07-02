@@ -5,26 +5,51 @@ Uses existing RPCs only:
   - get_question_version_blind_context_v1 (question + certification context)
   - list_audit_candidate_resource_chunks_v1 (certification candidate pool)
 
-Question-specific ranking is performed in Python using precision-first bounded
-lexical matching against blind question context. Vector/semantic chunk retrieval
-is not available yet (embedding_generation is stubbed; resource_chunks have no
+Question-specific ranking is performed in Python using a small internal BM25
+(Okapi-style, per-field-weighted) scorer against the certification's candidate
+pool for each question. Corpus statistics (document frequency / IDF, average
+field lengths) are computed once per question from that question's own
+candidate pool, so generic terms that recur across most candidates are
+automatically down-weighted while terms distinctive to a smaller subset of
+candidates carry more discriminating power. Vector/semantic chunk retrieval is
+not available yet (embedding_generation is stubbed; resource_chunks have no
 embedding columns).
 
+BM25 query construction:
+  The query is built from the question stem and question domain/category only
+  (see ``_build_question_query``). Answer-option text is intentionally excluded
+  from the BM25 query; option content is evaluated separately as an alignment
+  signal only (``_MATCH_REASON_OPTION``), never blended into base term
+  overlap/IDF scoring.
+
+BM25 document construction (per candidate chunk), scored as three weighted
+fields sharing corpus-wide IDF:
+  - title field: resource/chunk title
+  - metadata field: official_resources.metadata topic/domain/domains/
+    exam_domain/category/feature/features values
+  - body field: chunk_text
+Title and metadata fields carry more weight than the body field so that a
+document's stated topic/domain matters more than incidental body overlap.
+
 Qualification rule (conservative, precision-first):
-  A candidate must reach MIN_RELEVANCE_SCORE and satisfy at least one alignment
-  signal (domain metadata, title overlap, question/option content overlap,
-  metadata/feature overlap, or strong content similarity). Weak candidates are
-  excluded even when top-K has unused capacity.
+  A candidate must reach MIN_RELEVANCE_SCORE (or GENERIC_EXAM_GUIDE_MIN_SCORE
+  for exam_guide resources, which are additionally penalized), have
+  non-generic, discriminating question-to-content overlap (i.e. overlap terms
+  that are not near-universal within the candidate pool), and satisfy at least
+  one credible alignment signal (exact domain-metadata match, title match,
+  metadata/feature match, or option overlap). Ranking first is not sufficient;
+  weak candidates are excluded even when top-K has unused capacity.
 
 Freezing itself happens through create_or_get_ai_quality_audit_run_v1.
 """
 
 from __future__ import annotations
 
-import difflib
 import hashlib
 import json
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
@@ -32,13 +57,49 @@ from workers.ai_quality_audit_context import load_blind_audit_context
 
 LIST_CANDIDATE_CHUNKS_RPC = "list_audit_candidate_resource_chunks_v1"
 
-RETRIEVAL_METHOD = "lexical_question_match_v2"
+RETRIEVAL_METHOD = "bm25_question_match_v1"
 CANDIDATE_POOL_MAX = 200
 DEFAULT_MAX_EVIDENCE_CHUNKS = 8
 DEFAULT_MAX_EVIDENCE_CHARACTERS = 16_000
 DEFAULT_MAX_CHUNKS_PER_RESOURCE = 2
+
+# BM25 tuning (standard Okapi BM25 defaults; fixed constants, not tuned per
+# question). Corpus statistics (IDF, average field lengths) are still computed
+# fresh per question from that question's own candidate pool.
+BM25_K1 = 1.5
+BM25_B = 0.75
+BM25_FIELD_WEIGHT_TITLE = 3.0
+BM25_FIELD_WEIGHT_METADATA = 2.5
+BM25_FIELD_WEIGHT_BODY = 1.0
+# Normalization reference: realistic best-case single-field saturation bound.
+# Using the title weight directly assumes a focused document can strongly match
+# via its title (or another single high-weight field), but not that it
+# simultaneously saturates title, metadata, and body. Calibrated slightly below
+# the raw title weight so marginally focused docs (e.g. strong body overlap
+# without title saturation) can reach MIN_RELEVANCE_SCORE without lowering
+# qualification guards.
+BM25_NORMALIZATION_FIELD_WEIGHT = 2.60
+
+# Exact domain/metadata-field match classification thresholds. Domain matching
+# is a match-reason (alignment signal) and a deterministic tie-break signal
+# ONLY — it is never added to relevance_score and can never independently
+# push a candidate over the qualification threshold.
+DOMAIN_EXACT_MATCH_BOOST = 0.18
+DOMAIN_TEXT_MENTION_BOOST = 0.06
+
+# Multiplicative penalty applied to generic exam-guide resources on top of the
+# stricter GENERIC_EXAM_GUIDE_MIN_SCORE threshold below.
+EXAM_GUIDE_SCORE_MULTIPLIER = 0.7
+
 MIN_RELEVANCE_SCORE = 0.20
 GENERIC_EXAM_GUIDE_MIN_SCORE = 0.30
+
+# Every candidate's query/content overlap must include terms that are not
+# near-universal within the candidate pool (i.e. carry real IDF weight). This
+# guard applies unconditionally — including to exact-domain-match candidates —
+# so domain metadata alone can never substitute for genuine content overlap.
+MIN_DISCRIMINATIVE_OVERLAP_IDF = 0.35
+
 ESTIMATED_CHARS_PER_TOKEN = 4
 
 _UUID_RE = re.compile(
@@ -102,7 +163,6 @@ _MATCH_REASON_TITLE = "title match"
 _MATCH_REASON_QUESTION = "question-text overlap"
 _MATCH_REASON_OPTION = "option overlap"
 _MATCH_REASON_METADATA = "metadata/feature match"
-_MATCH_REASON_STRONG = "strong content similarity"
 
 _EMPTY_EVIDENCE_CANONICAL_JSON = "[]"
 
@@ -112,12 +172,23 @@ class AiQualityAuditEvidenceError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Bm25CorpusStats:
+    """Per-question BM25 corpus statistics computed from that question's own
+    certification candidate pool (deterministic given the same candidate list).
+    """
+
+    document_count: int
+    idf: Dict[str, float]
+    avg_title_len: float
+    avg_metadata_len: float
+    avg_body_len: float
+
+
+@dataclass(frozen=True)
 class EvidenceScoreBreakdown:
     relevance_score: float
-    token_score: float
-    similarity_score: float
+    bm25_score: float
     domain_boost: float
-    feature_boost: float
     content_overlap_count: int
     content_overlap_tokens: Tuple[str, ...]
     match_reasons: Tuple[str, ...]
@@ -336,6 +407,8 @@ def rank_question_evidence_candidates(
     query_tokens = _content_tokens(query_text)
     question_domain = str(blind_context.get("domain_name") or "").strip()
 
+    corpus_stats = build_bm25_corpus_stats(candidates, resource_by_id=resource_by_id)
+
     scored: List[Dict[str, Any]] = []
     for candidate in candidates:
         resource_id = str(candidate["resource_id"])
@@ -349,6 +422,7 @@ def rank_question_evidence_candidates(
             question_domain=question_domain,
             resource_metadata=resource_row.get("metadata") or {},
             resource_title=str(resource_row.get("title") or candidate.get("title") or ""),
+            corpus_stats=corpus_stats,
             resource_type=str(
                 resource_row.get("resource_type")
                 or candidate.get("resource_type")
@@ -369,6 +443,7 @@ def rank_question_evidence_candidates(
     scored.sort(
         key=lambda item: (
             -float(item["relevance_score"]),
+            0 if _MATCH_REASON_DOMAIN in item["match_reasons"] else 1,
             str(item["resource_id"]),
             int(item["chunk_index"]),
             str(item["resource_chunk_id"]),
@@ -427,6 +502,101 @@ def rank_question_evidence_candidates(
     return ranked, previews, len(qualified), rejected_count, rejected_previews
 
 
+def _resolve_document_fields(
+    candidate: Mapping[str, Any],
+    *,
+    resource_metadata: Mapping[str, Any],
+    resource_title: str,
+) -> Tuple[Tuple[str, ...], Tuple[str, ...], Tuple[str, ...]]:
+    """Return (title_tokens, metadata_tokens, body_tokens) for BM25 fields.
+
+    Tokens preserve repeats (term frequency matters for BM25); ``_content_tokens``
+    already strips stopwords and normalizes case/punctuation.
+    """
+    title = str(candidate.get("title") or resource_title or "")
+    chunk_text = str(candidate.get("chunk_text") or "")
+    title_tokens = _content_tokens(title)
+    metadata_tokens: List[str] = []
+    for value in sorted(_metadata_text_values(resource_metadata)):
+        metadata_tokens.extend(_content_tokens(value))
+    body_tokens = _content_tokens(chunk_text)
+    return title_tokens, tuple(metadata_tokens), body_tokens
+
+
+def build_bm25_corpus_stats(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    resource_by_id: Mapping[str, Mapping[str, Any]],
+) -> Bm25CorpusStats:
+    """Compute document-frequency/IDF and average field lengths for one question's
+    candidate pool. Statistics are local to this call's candidate list only, so
+    generic terms recurring across most candidates are naturally down-weighted.
+    """
+    document_count = len(candidates)
+    document_frequency: Dict[str, int] = {}
+    title_lengths: List[int] = []
+    metadata_lengths: List[int] = []
+    body_lengths: List[int] = []
+
+    for candidate in candidates:
+        resource_id = str(candidate.get("resource_id"))
+        resource_row = resource_by_id.get(resource_id) or {}
+        resource_metadata = resource_row.get("metadata") or {}
+        resource_title = str(resource_row.get("title") or candidate.get("title") or "")
+        title_tokens, metadata_tokens, body_tokens = _resolve_document_fields(
+            candidate,
+            resource_metadata=resource_metadata,
+            resource_title=resource_title,
+        )
+        title_lengths.append(len(title_tokens))
+        metadata_lengths.append(len(metadata_tokens))
+        body_lengths.append(len(body_tokens))
+
+        document_terms = set(title_tokens) | set(metadata_tokens) | set(body_tokens)
+        for term in document_terms:
+            document_frequency[term] = document_frequency.get(term, 0) + 1
+
+    idf = {
+        term: math.log(1 + (document_count - freq + 0.5) / (freq + 0.5))
+        for term, freq in document_frequency.items()
+    }
+
+    def _avg(values: Sequence[int]) -> float:
+        return (sum(values) / len(values)) if values else 1.0
+
+    return Bm25CorpusStats(
+        document_count=document_count,
+        idf=idf,
+        avg_title_len=_avg(title_lengths) or 1.0,
+        avg_metadata_len=_avg(metadata_lengths) or 1.0,
+        avg_body_len=_avg(body_lengths) or 1.0,
+    )
+
+
+def _bm25_field_score(
+    query_terms: Sequence[str],
+    field_tokens: Sequence[str],
+    *,
+    idf: Mapping[str, float],
+    avg_field_len: float,
+) -> float:
+    """Okapi BM25 term-frequency-saturated score for one document field."""
+    if not field_tokens or not query_terms:
+        return 0.0
+    counts = Counter(field_tokens)
+    field_len = len(field_tokens)
+    avg_len = avg_field_len if avg_field_len > 0 else 1.0
+    score = 0.0
+    for term in query_terms:
+        tf = counts.get(term, 0)
+        if tf == 0:
+            continue
+        term_idf = idf.get(term, 0.0)
+        denom = tf + BM25_K1 * (1 - BM25_B + BM25_B * (field_len / avg_len))
+        score += term_idf * (tf * (BM25_K1 + 1)) / denom
+    return score
+
+
 def score_evidence_candidate(
     candidate: Mapping[str, Any],
     *,
@@ -437,20 +607,19 @@ def score_evidence_candidate(
     question_domain: str,
     resource_metadata: Mapping[str, Any],
     resource_title: str,
+    corpus_stats: Bm25CorpusStats,
     resource_type: str = "",
 ) -> EvidenceScoreBreakdown:
-    """Lexical relevance score with precision-first qualification."""
+    """BM25 relevance score (per-field-weighted) with precision-first qualification."""
+    del query_text  # retained in signature for call-site symmetry/debuggability
     chunk_text = str(candidate.get("chunk_text") or "")
     title = str(candidate.get("title") or resource_title or "")
-    combined = f"{title} {chunk_text}".strip()
     min_score = _applicable_min_score(resource_type)
-    if not combined:
+    if not (title.strip() or chunk_text.strip()):
         return EvidenceScoreBreakdown(
             relevance_score=0.0,
-            token_score=0.0,
-            similarity_score=0.0,
+            bm25_score=0.0,
             domain_boost=0.0,
-            feature_boost=0.0,
             content_overlap_count=0,
             content_overlap_tokens=(),
             match_reasons=(),
@@ -459,66 +628,91 @@ def score_evidence_candidate(
             rejection_reason="empty chunk text and title",
         )
 
-    chunk_tokens = _content_tokens(combined)
-    title_tokens = _content_tokens(title)
-    overlap_tokens = tuple(sorted(set(query_tokens) & set(chunk_tokens)))
-    question_overlap = set(question_tokens) & set(chunk_tokens)
-    option_overlap = set(option_tokens) & (set(chunk_tokens) | set(title_tokens))
+    title_tokens, metadata_tokens, body_tokens = _resolve_document_fields(
+        candidate,
+        resource_metadata=resource_metadata,
+        resource_title=resource_title,
+    )
+    document_tokens = set(title_tokens) | set(metadata_tokens) | set(body_tokens)
+    unique_query_terms = tuple(sorted(set(query_tokens)))
 
-    token_score = _token_jaccard(query_tokens, chunk_tokens)
-    content_query = " ".join(query_tokens)
-    content_combined = " ".join(chunk_tokens)
-    similarity_score = difflib.SequenceMatcher(
-        None,
-        content_query,
-        content_combined,
-    ).ratio()
+    overlap_tokens = tuple(sorted(set(query_tokens) & document_tokens))
+    question_overlap = set(question_tokens) & document_tokens
+    option_overlap = set(option_tokens) & document_tokens
 
+    title_field_score = _bm25_field_score(
+        unique_query_terms,
+        title_tokens,
+        idf=corpus_stats.idf,
+        avg_field_len=corpus_stats.avg_title_len,
+    )
+    metadata_field_score = _bm25_field_score(
+        unique_query_terms,
+        metadata_tokens,
+        idf=corpus_stats.idf,
+        avg_field_len=corpus_stats.avg_metadata_len,
+    )
+    body_field_score = _bm25_field_score(
+        unique_query_terms,
+        body_tokens,
+        idf=corpus_stats.idf,
+        avg_field_len=corpus_stats.avg_body_len,
+    )
+
+    raw_bm25 = (
+        BM25_FIELD_WEIGHT_TITLE * title_field_score
+        + BM25_FIELD_WEIGHT_METADATA * metadata_field_score
+        + BM25_FIELD_WEIGHT_BODY * body_field_score
+    )
+    total_query_idf = sum(corpus_stats.idf.get(term, 0.0) for term in unique_query_terms)
+    normalizer = total_query_idf * (BM25_K1 + 1) * BM25_NORMALIZATION_FIELD_WEIGHT
+    bm25_score = (raw_bm25 / normalizer) if normalizer > 0 else 0.0
+    bm25_score = max(0.0, min(1.0, bm25_score))
+
+    # Domain match is an alignment/tie-break signal only (see module docstring
+    # and DOMAIN_EXACT_MATCH_BOOST comment) — it is deliberately NOT added to
+    # relevance_score, so domain metadata alone can never qualify a candidate.
     domain_boost = _domain_match_boost(
         question_domain=question_domain,
         resource_metadata=resource_metadata,
         title=title,
         chunk_text=chunk_text,
     )
-    feature_boost = _feature_match_boost(
-        query_tokens=query_tokens,
-        resource_metadata=resource_metadata,
-        title=title,
-        chunk_text=chunk_text,
-    )
 
-    raw = (0.35 * token_score) + (0.35 * similarity_score) + domain_boost + feature_boost
+    raw_relevance = bm25_score
     if str(resource_type).strip().lower() == "exam_guide":
-        raw -= 0.05
-    relevance_score = max(0.0, min(1.0, raw))
+        raw_relevance *= EXAM_GUIDE_SCORE_MULTIPLIER
+    relevance_score = max(0.0, min(1.0, raw_relevance))
 
     match_reasons: List[str] = []
-    if domain_boost >= 0.20:
+    if domain_boost >= DOMAIN_EXACT_MATCH_BOOST:
         match_reasons.append(_MATCH_REASON_DOMAIN)
-    if len(set(title_tokens) & set(query_tokens)) >= 2 or _option_in_title(option_tokens, title):
+    if title_field_score > 0.0 or _option_in_title(option_tokens, title):
         match_reasons.append(_MATCH_REASON_TITLE)
     if len(question_overlap) >= 2:
         match_reasons.append(_MATCH_REASON_QUESTION)
     if option_overlap:
         match_reasons.append(_MATCH_REASON_OPTION)
-    if feature_boost >= 0.04:
+    if metadata_field_score > 0.0:
         match_reasons.append(_MATCH_REASON_METADATA)
-    if similarity_score >= 0.40 and overlap_tokens:
-        match_reasons.append(_MATCH_REASON_STRONG)
+
+    discriminative_overlap_idf = sum(
+        corpus_stats.idf.get(term, 0.0) for term in overlap_tokens
+    )
 
     qualifies, rejection_reason = _candidate_qualifies(
         relevance_score=relevance_score,
         match_reasons=match_reasons,
         overlap_count=len(overlap_tokens),
+        discriminative_overlap_idf=discriminative_overlap_idf,
         resource_type=resource_type,
+        document_count=corpus_stats.document_count,
     )
 
     return EvidenceScoreBreakdown(
         relevance_score=relevance_score,
-        token_score=token_score,
-        similarity_score=similarity_score,
+        bm25_score=bm25_score,
         domain_boost=domain_boost,
-        feature_boost=feature_boost,
         content_overlap_count=len(overlap_tokens),
         content_overlap_tokens=overlap_tokens,
         match_reasons=tuple(match_reasons),
@@ -526,6 +720,19 @@ def score_evidence_candidate(
         applicable_threshold=min_score,
         rejection_reason=rejection_reason,
     )
+
+
+def _effective_min_discriminative_overlap_idf(document_count: int) -> float:
+    """Scale the discriminative-overlap floor to the candidate-pool size.
+
+    In a one-document pool every overlapping term carries the maximum IDF
+    achievable for that pool, so the global floor would reject valid evidence.
+    For multi-document pools the configured floor applies unchanged.
+    """
+    if document_count <= 1:
+        return 0.0
+    max_unique_term_idf = math.log(1 + (document_count - 1 + 0.5) / (1 + 0.5))
+    return min(MIN_DISCRIMINATIVE_OVERLAP_IDF, max_unique_term_idf)
 
 
 def _applicable_min_score(resource_type: str) -> float:
@@ -539,15 +746,31 @@ def _candidate_qualifies(
     relevance_score: float,
     match_reasons: Sequence[str],
     overlap_count: int,
+    discriminative_overlap_idf: float,
     resource_type: str,
+    document_count: int,
 ) -> Tuple[bool, str]:
+    """Content-overlap and discriminative-IDF guards apply unconditionally.
+
+    Domain metadata matching alone (``_MATCH_REASON_DOMAIN``) is never exempt
+    from these guards: every candidate, including an exact-domain-match
+    candidate, must independently demonstrate meaningful, non-generic
+    question-to-document overlap and clear the relevance-score threshold.
+    """
     if not match_reasons:
         return False, (
             "no alignment signal (requires domain, title, question-text, option, "
-            "metadata/feature, or strong content similarity match)"
+            "or metadata/feature match)"
         )
-    if overlap_count == 0 and _MATCH_REASON_DOMAIN not in match_reasons:
-        return False, "zero query-token overlap without exact domain match"
+    if overlap_count == 0:
+        return False, "zero query-token overlap with document content"
+    min_discriminative_idf = _effective_min_discriminative_overlap_idf(document_count)
+    if discriminative_overlap_idf < min_discriminative_idf:
+        return False, (
+            "question-to-content overlap lacks non-generic discriminating terms "
+            f"(discriminative overlap {discriminative_overlap_idf:.6f} below "
+            f"{min_discriminative_idf:.2f})"
+        )
     min_score = _applicable_min_score(resource_type)
     if relevance_score < min_score:
         return (
@@ -706,11 +929,11 @@ def _apply_character_budget(
 
 
 def _build_question_query(blind_context: Mapping[str, Any]) -> str:
-    """Build the base lexical query from stem and domain only.
+    """Build the base BM25 query from stem and domain only.
 
     Answer options are excluded here because they are scored separately via
-    ``_option_content_tokens`` and option-overlap match reasons. Including full
-    option strings inflates the query and dilutes Jaccard/similarity scoring.
+    ``_option_content_tokens`` and the option-overlap match reason. Including
+    full option strings would inflate the query and dilute BM25 term weighting.
     """
     parts = [
         str(blind_context.get("question_text") or "").strip(),
@@ -749,16 +972,6 @@ def _content_tokens(value: str) -> tuple[str, ...]:
     )
 
 
-def _token_jaccard(tokens_a: Sequence[str], tokens_b: Sequence[str]) -> float:
-    set_a = set(tokens_a)
-    set_b = set(tokens_b)
-    if not set_a and not set_b:
-        return 1.0
-    if not set_a or not set_b:
-        return 0.0
-    return len(set_a & set_b) / len(set_a | set_b)
-
-
 def _metadata_text_values(metadata: Mapping[str, Any]) -> set[str]:
     values: set[str] = set()
     for key in ("domain", "domains", "exam_domain", "category", "feature", "features", "topic"):
@@ -785,35 +998,10 @@ def _domain_match_boost(
 
     metadata_domains = _metadata_text_values(resource_metadata)
     if normalized_domain in metadata_domains:
-        return 0.20
+        return DOMAIN_EXACT_MATCH_BOOST
     haystack = _normalize_text(f"{title} {chunk_text}")
     if normalized_domain in haystack:
-        return 0.10
-    return 0.0
-
-
-def _feature_match_boost(
-    *,
-    query_tokens: Sequence[str],
-    resource_metadata: Mapping[str, Any],
-    title: str,
-    chunk_text: str,
-) -> float:
-    metadata_values = _metadata_text_values(resource_metadata)
-    metadata_tokens = set()
-    for value in metadata_values:
-        metadata_tokens.update(_content_tokens(value))
-    overlap = len(set(query_tokens) & metadata_tokens)
-    if overlap >= 2:
-        return 0.10
-    if overlap == 1:
-        return 0.04
-    title_overlap = len(set(query_tokens) & set(_content_tokens(title)))
-    if title_overlap >= 2:
-        return 0.06
-    body_overlap = len(set(query_tokens) & set(_content_tokens(chunk_text)))
-    if body_overlap >= 3:
-        return 0.05
+        return DOMAIN_TEXT_MENTION_BOOST
     return 0.0
 
 

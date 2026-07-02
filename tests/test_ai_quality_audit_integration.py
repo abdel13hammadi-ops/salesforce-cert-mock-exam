@@ -340,7 +340,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     chunk1,
                     hash1,
                     "Profiles Help",
-                    "Profiles define default settings and object permissions for users.",
+                    "Profiles are a Salesforce feature that enable profile-based defaults and configuration settings for users.",
                     '{"domain": "Configuration"}',
                 ),
                 (
@@ -350,7 +350,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     hash2,
                     "Roles Overview",
                     "Roles define record-level access and hierarchy visibility.",
-                    '{"domain": "Configuration"}',
+                    '{"topic": "roles hierarchy"}',
                 ),
             ):
                 cur.execute(
