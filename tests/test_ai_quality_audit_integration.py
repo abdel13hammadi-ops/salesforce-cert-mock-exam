@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sys
 import unittest
 import uuid
@@ -32,6 +33,7 @@ from workers.ai_quality_audit_worker import (
     AiQualityAuditProviders,
     process_ai_quality_audit_job,
 )
+from workers.ai_quality_audit_evidence import prepare_smoke_evidence_set
 from workers.llm_providers import LlmResponse
 
 _DSN_ENV = "V48_TEST_DATABASE_URL"
@@ -39,8 +41,21 @@ _DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:54329/certbound_v48_tes
 _EMPTY_EVIDENCE_HASH = hashlib.sha256(b"[]").hexdigest()
 
 
+_UUID_ARG_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
 def _adapt_rpc_arg(value: object):
-    if isinstance(value, (dict, list)):
+    if isinstance(value, list):
+        if value and all(
+            isinstance(item, str) and _UUID_ARG_RE.match(item) for item in value
+        ):
+            elements = ",".join(f"'{item}'::uuid" for item in value)
+            return psycopg2.extensions.AsIs(f"ARRAY[{elements}]")
+        return psycopg2.extras.Json(value)
+    if isinstance(value, dict):
         return psycopg2.extras.Json(value)
     return value
 
@@ -68,7 +83,7 @@ class PsycopgV48Client:
 
     def rpc(self, name: str, params: dict):
         args = [_adapt_rpc_arg(value) for value in params.values()]
-        placeholders = ", ".join(["%s"] * len(args))
+        placeholders = ", ".join(f"{key} => %s" for key in params)
         sql = f"SELECT * FROM public.{name}({placeholders})"
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, args)
@@ -566,6 +581,183 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
         self.assertEqual(row["status"], "completed")
         self.assertEqual(row["attempt_count"], 2)
         self.assertIsNotNone(row["result_json"])
+
+    def test_smoke_evidence_is_frozen_before_job_enqueue(self):
+        prepared = prepare_smoke_evidence_set(
+            self.client,
+            self.fixture["question_version_id"],
+        )
+
+        self.assertEqual(len(prepared.evidence_chunks), 2)
+
+        create_row = self.client.rpc(
+            "create_or_get_ai_quality_audit_run_v1",
+            {
+                "p_target_question_version_id": self.fixture["question_version_id"],
+                "p_prompt_version": "v48-integration-prompt",
+                "p_ruleset_version": "v48-integration-rules",
+                "p_primary_model_name": "integration-primary",
+                "p_dispute_model_name": "integration-dispute",
+                "p_pilot_batch_id": "v48-integration-batch",
+                "p_evidence_set_hash": prepared.evidence_set_hash,
+                "p_evidence_chunks": prepared.evidence_chunks,
+                "p_created_by": "v48-integration-test",
+                "p_metadata": {},
+            },
+        ).execute()
+        self.assertFalse(create_row.error, create_row.error)
+        audit_run_id = str(create_row.data[0]["audit_run_id"])
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT retrieval_rank, resource_chunk_id, content_hash_at_execution
+                FROM public.audit_run_evidence_set
+                WHERE audit_run_id = %s
+                ORDER BY retrieval_rank
+                """,
+                (audit_run_id,),
+            )
+            evidence_rows = cur.fetchall()
+
+        self.assertEqual(len(evidence_rows), 2)
+        for index, chunk in enumerate(prepared.evidence_chunks):
+            self.assertEqual(evidence_rows[index]["retrieval_rank"], chunk["retrieval_rank"])
+            self.assertEqual(
+                str(evidence_rows[index]["resource_chunk_id"]).lower(),
+                chunk["resource_chunk_id"],
+            )
+
+        enqueue_row = self.client.rpc(
+            "enqueue_background_job_v1",
+            {
+                "p_job_type": "ai_quality_audit_smoke",
+                "p_payload": {
+                    "audit_run_id": audit_run_id,
+                    "question_version_id": self.fixture["question_version_id"],
+                },
+                "p_priority": 100,
+                "p_max_attempts": 3,
+                "p_created_by": "v48-integration-test",
+                "p_model_name": "integration-primary",
+                "p_prompt_version": "v48-integration-prompt",
+                "p_metadata": {"pilot_batch_id": "v48-integration-batch"},
+            },
+        ).execute()
+        self.assertFalse(enqueue_row.error, enqueue_row.error)
+        self.assertEqual(enqueue_row.data[0]["job_status"], "pending")
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM public.audit_run_evidence_set
+                WHERE audit_run_id = %s
+                """,
+                (audit_run_id,),
+            )
+            frozen_count = cur.fetchone()[0]
+
+        self.assertEqual(frozen_count, 2)
+
+    def test_pass_b_source_support_retry_completes_under_rollback(self):
+        audit_run_id = self._create_run()
+        pass_b_calls = {"count": 0}
+
+        invalid_source_support = {
+            "selected_option_labels": ["A"],
+            "proposed_findings": [
+                {
+                    "finding_ref": "F2",
+                    "finding_code": "SOURCE_SUPPORT_WEAK",
+                    "finding_type": "source_support",
+                    "severity": "medium",
+                    "materiality": "warning",
+                    "title": "Weak source support",
+                    "description": "No supporting chunk.",
+                    "evidence_chunk_ids": [],
+                    "metadata": {},
+                }
+            ],
+        }
+        valid_source_support = {
+            "selected_option_labels": ["A"],
+            "proposed_findings": [
+                {
+                    "finding_ref": "F2",
+                    "finding_code": "SOURCE_SUPPORT_WEAK",
+                    "finding_type": "source_support",
+                    "severity": "medium",
+                    "materiality": "warning",
+                    "title": "Weak source support",
+                    "description": "No supporting chunk.",
+                    "evidence_chunk_ids": [],
+                    "metadata": {
+                        "source_support_context": {
+                            "attempted_retrieval": 2,
+                            "evidence_limitation": "Frozen evidence did not substantiate the claim.",
+                            "proposed_technical_claim": "The explanation overstates source support.",
+                            "insufficiency_reason": "No frozen chunk directly supports the explanation.",
+                        }
+                    },
+                }
+            ],
+        }
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            pass_b_calls["count"] += 1
+            if pass_b_calls["count"] == 1:
+                return LlmResponse(
+                    parsed_response=invalid_source_support,
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response=valid_source_support,
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            AiQualityAuditProviders(primary=primary, dispute=primary),
+            worker_id="v48-integration-worker",
+        )
+
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertEqual(pass_b_calls["count"], 2)
+        self.assertIn("B", summary["passes_executed"])
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT status, attempt_count, result_json
+                FROM public.audit_run_pass_results
+                WHERE audit_run_id = %s AND pass_code = 'B'
+                """,
+                (audit_run_id,),
+            )
+            row = cur.fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "completed")
+        self.assertEqual(row["attempt_count"], 2)
+        context = row["result_json"]["proposed_findings"][0]["metadata"][
+            "source_support_context"
+        ]
+        self.assertEqual(context["attempted_retrieval"], 2)
+        self.assertTrue(context["evidence_limitation"])
 
     def test_wait_coordination_does_not_raise_under_rollback(self):
         audit_run_id = self._create_run()

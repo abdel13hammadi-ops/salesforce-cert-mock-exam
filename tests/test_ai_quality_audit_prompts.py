@@ -180,6 +180,32 @@ class TestPassCDiscriminator(unittest.TestCase):
         self.assertIn("Comparison context for your substituted review:", user_prompt)
 
 
+    def test_pass_b_prompt_contains_zero_evidence_source_support_contract(self):
+        _, user_prompt = build_pass_b_prompt(_comparison_context())
+
+        self.assertIn("metadata.source_support_context", user_prompt)
+        self.assertIn('"attempted_retrieval"', user_prompt)
+        self.assertIn('"evidence_limitation"', user_prompt)
+        self.assertIn('"proposed_technical_claim"', user_prompt)
+        self.assertIn('"insufficiency_reason"', user_prompt)
+        self.assertIn("metadata: {} is invalid", user_prompt)
+        self.assertIn("SOURCE_SUPPORT_WEAK cannot use materiality=blocking", user_prompt)
+        self.assertIn('"finding_code": "SOURCE_SUPPORT_WEAK"', user_prompt)
+        self.assertIn('"evidence_chunk_ids": []', user_prompt)
+
+    def test_pass_b_retry_prompt_includes_prior_validation_error(self):
+        _, user_prompt = build_pass_b_prompt(
+            _comparison_context(),
+            retry_schema_errors=[
+                "proposed_findings[0].metadata.source_support_context must be a JSON object"
+            ],
+        )
+
+        self.assertIn("Prior Pass B response failed deterministic schema validation:", user_prompt)
+        self.assertIn("source_support_context must be a JSON object", user_prompt)
+        self.assertIn("Correct only the invalid JSON shape", user_prompt)
+
+
 class TestPromptStability(unittest.TestCase):
 
     def test_identical_inputs_produce_identical_prompts(self):

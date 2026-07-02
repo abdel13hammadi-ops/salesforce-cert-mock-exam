@@ -9,13 +9,15 @@ import os
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.run_ai_quality_audit_smoke import (
     build_create_run_params,
+    execute_smoke_batch,
     main,
+    prepare_all_smoke_evidence,
     resolve_question_version_ids,
 )
 from workers.anthropic_provider import DEFAULT_MODEL, ENV_MODEL
@@ -24,6 +26,47 @@ _REQUIRED = 10
 _PROVIDER_ENV = {
     "CERTBOUND_LLM_PROVIDER": "anthropic",
 }
+
+
+def _default_evidence_summaries(ids=None):
+    ids = ids or _ten_unique_ids()
+    return [
+        {
+            "question_version_id": qvid,
+            "chunk_count": 2,
+            "evidence_count": 2,
+            "evidence_set_hash": "c" * 64,
+            "retrieval_method": "lexical_question_match_v1",
+            "total_evidence_characters": 1200,
+            "estimated_tokens": 300,
+            "selected_chunk_ids": [
+                "11111111-1111-1111-1111-111111111111",
+                "22222222-2222-2222-2222-222222222222",
+            ],
+            "source_titles": ["Help 1", "Help 2"],
+            "evidence_chunks": [
+                {
+                    "resource_chunk_id": "11111111-1111-1111-1111-111111111111",
+                    "retrieval_rank": 1,
+                },
+                {
+                    "resource_chunk_id": "22222222-2222-2222-2222-222222222222",
+                    "retrieval_rank": 2,
+                },
+            ],
+        }
+        for qvid in ids
+    ]
+
+
+def _patch_evidence_preview(ids=None):
+    return patch.multiple(
+        "scripts.run_ai_quality_audit_smoke",
+        prepare_all_smoke_evidence=MagicMock(
+            return_value=_default_evidence_summaries(ids),
+        ),
+        _load_client_for_evidence_preview=MagicMock(return_value=object()),
+    )
 
 
 def _ten_unique_ids() -> list[str]:
@@ -79,18 +122,50 @@ class TestSmokeCliMain(unittest.TestCase):
 
     def test_dry_run_is_default(self):
         buffer = io.StringIO()
+        evidence_summary = [
+            {
+                "question_version_id": qvid,
+                "chunk_count": 2,
+                "evidence_set_hash": "c" * 64,
+            }
+            for qvid in _ten_unique_ids()
+        ]
         with patch.dict(os.environ, _PROVIDER_ENV, clear=False):
-            with redirect_stdout(buffer):
-                rc = main(_cli_args_with_ids())
+            with _patch_evidence_preview():
+                with redirect_stdout(buffer):
+                    rc = main(_cli_args_with_ids())
 
         self.assertEqual(rc, 0)
         output = buffer.getvalue()
         self.assertIn("AI quality audit smoke dry-run", output)
         self.assertIn(f"primary_model_name: {DEFAULT_MODEL}", output)
         self.assertIn(f"dispute_model_name: {DEFAULT_MODEL}", output)
+        self.assertIn("evidence_freeze_preview:", output)
+        self.assertIn("evidence_count=2", output)
+        self.assertIn("method=lexical_question_match_v1", output)
+        self.assertIn("estimated_tokens=", output)
         self.assertIn("No jobs enqueued (dry-run).", output)
         self.assertNotIn("smoke-primary-model", output)
         self.assertNotIn("smoke-dispute-model", output)
+
+    def test_dry_run_fails_when_evidence_preparation_fails(self):
+        from workers.ai_quality_audit_evidence import AiQualityAuditEvidenceError
+
+        stderr_buffer = io.StringIO()
+        with patch.dict(os.environ, _PROVIDER_ENV, clear=False):
+            with patch(
+                "scripts.run_ai_quality_audit_smoke._load_client_for_evidence_preview",
+                return_value=object(),
+            ):
+                with patch(
+                    "scripts.run_ai_quality_audit_smoke.prepare_all_smoke_evidence",
+                    side_effect=AiQualityAuditEvidenceError("zero chunks"),
+                ):
+                    with redirect_stderr(stderr_buffer):
+                        rc = main(_cli_args_with_ids())
+
+        self.assertEqual(rc, 1)
+        self.assertIn("zero chunks", stderr_buffer.getvalue())
 
     def test_dry_run_shows_configured_anthropic_model(self):
         configured_model = "claude-test-model-v1"
@@ -99,8 +174,9 @@ class TestSmokeCliMain(unittest.TestCase):
 
         buffer = io.StringIO()
         with patch.dict(os.environ, env, clear=False):
-            with redirect_stdout(buffer):
-                rc = main(_cli_args_with_ids())
+            with _patch_evidence_preview():
+                with redirect_stdout(buffer):
+                    rc = main(_cli_args_with_ids())
 
         self.assertEqual(rc, 0)
         output = buffer.getvalue()
@@ -132,9 +208,10 @@ class TestSmokeCliMain(unittest.TestCase):
     def test_dry_run_does_not_enqueue_or_execute_batch(self):
         buffer = io.StringIO()
         with patch.dict(os.environ, _PROVIDER_ENV, clear=False):
-            with patch("scripts.run_ai_quality_audit_smoke.execute_smoke_batch") as execute_mock:
-                with redirect_stdout(buffer):
-                    rc = main(_cli_args_with_ids())
+            with _patch_evidence_preview():
+                with patch("scripts.run_ai_quality_audit_smoke.execute_smoke_batch") as execute_mock:
+                    with redirect_stdout(buffer):
+                        rc = main(_cli_args_with_ids())
 
         self.assertEqual(rc, 0)
         execute_mock.assert_not_called()
@@ -148,11 +225,47 @@ class TestSmokeCliMain(unittest.TestCase):
             dispute_model_name=DEFAULT_MODEL,
             pilot_batch_id="v48-ai-quality-smoke",
             created_by="ai-quality-smoke-cli",
+            evidence_set_hash="a" * 64,
+            evidence_chunks=[
+                {
+                    "resource_chunk_id": "11111111-1111-1111-1111-111111111111",
+                    "retrieval_rank": 1,
+                }
+            ],
         )
         self.assertEqual(params["p_primary_model_name"], DEFAULT_MODEL)
         self.assertEqual(params["p_dispute_model_name"], DEFAULT_MODEL)
+        self.assertEqual(len(params["p_evidence_chunks"]), 1)
         self.assertNotIn("smoke-primary-model", params.values())
         self.assertNotIn("smoke-dispute-model", params.values())
+
+    def test_execute_refuses_empty_evidence_summary(self):
+        from workers.ai_quality_audit_evidence import AiQualityAuditEvidenceError
+
+        client = object()
+        qvid = _ten_unique_ids()[0]
+        with self.assertRaisesRegex(
+            AiQualityAuditEvidenceError,
+            "refusing to enqueue smoke job",
+        ):
+            execute_smoke_batch(
+                client,
+                question_version_ids=[qvid],
+                prompt_version="v48-smoke-prompt-v1",
+                ruleset_version="v48-smoke-ruleset-v1",
+                primary_model_name=DEFAULT_MODEL,
+                dispute_model_name=DEFAULT_MODEL,
+                pilot_batch_id="v48-ai-quality-smoke",
+                created_by="ai-quality-smoke-cli",
+                evidence_summaries=[
+                    {
+                        "question_version_id": qvid,
+                        "chunk_count": 0,
+                        "evidence_set_hash": "a" * 64,
+                        "evidence_chunks": [],
+                    }
+                ],
+            )
 
     def test_execute_requires_confirm(self):
         stderr_buffer = io.StringIO()
@@ -172,8 +285,9 @@ class TestSmokeCliMain(unittest.TestCase):
 
         buffer = io.StringIO()
         with patch.dict(os.environ, _PROVIDER_ENV, clear=False):
-            with redirect_stdout(buffer):
-                rc = main(["--seed", "42"])
+            with _patch_evidence_preview():
+                with redirect_stdout(buffer):
+                    rc = main(["--seed", "42"])
 
         self.assertEqual(rc, 0)
         for qvid in ids:

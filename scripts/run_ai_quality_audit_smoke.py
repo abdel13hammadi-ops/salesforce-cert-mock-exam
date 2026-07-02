@@ -9,7 +9,6 @@ requires explicit --execute and --confirm flags.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -19,6 +18,10 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from workers.ai_quality_audit_evidence import (  # noqa: E402
+    AiQualityAuditEvidenceError,
+    prepare_smoke_evidence_set,
+)
 from workers.ai_quality_provider_factory import (  # noqa: E402
     AiQualityProviderConfigError,
     resolve_ai_quality_model_provenance_from_env,
@@ -30,7 +33,6 @@ from workers.quality_audit_pilot import (  # noqa: E402
 
 _ENQUEUE_RPC = "enqueue_background_job_v1"
 _JOB_TYPE = "ai_quality_audit_smoke"
-_EMPTY_EVIDENCE_SET_HASH = hashlib.sha256(b"[]").hexdigest()
 _REQUIRED_QUESTION_COUNT = 10
 
 
@@ -100,6 +102,8 @@ def build_create_run_params(
     dispute_model_name: str,
     pilot_batch_id: str,
     created_by: str,
+    evidence_set_hash: str,
+    evidence_chunks: Sequence[dict],
 ) -> dict:
     return {
         "p_target_question_version_id": question_version_id,
@@ -108,8 +112,8 @@ def build_create_run_params(
         "p_primary_model_name": primary_model_name,
         "p_dispute_model_name": dispute_model_name,
         "p_pilot_batch_id": pilot_batch_id,
-        "p_evidence_set_hash": _EMPTY_EVIDENCE_SET_HASH,
-        "p_evidence_chunks": [],
+        "p_evidence_set_hash": evidence_set_hash,
+        "p_evidence_chunks": list(evidence_chunks),
         "p_created_by": created_by,
         "p_metadata": {"pilot_batch": pilot_batch_id},
     }
@@ -124,6 +128,7 @@ def format_dry_run_report(
     dispute_model_name: str,
     pilot_batch_id: str,
     created_by: str,
+    evidence_summaries: Sequence[dict],
 ) -> str:
     lines = [
         "AI quality audit smoke dry-run",
@@ -137,8 +142,37 @@ def format_dry_run_report(
         "question_version_ids:",
     ]
     lines.extend(f"  - {qvid}" for qvid in question_version_ids)
+    lines.append("evidence_freeze_preview:")
+    for summary in evidence_summaries:
+        lines.append(
+            "  - "
+            f"{summary['question_version_id']}: "
+            f"evidence_count={summary.get('evidence_count', summary.get('chunk_count', 0))}, "
+            f"total_chars={summary.get('total_evidence_characters', 0)}, "
+            f"estimated_tokens={summary.get('estimated_tokens', 0)}, "
+            f"method={summary.get('retrieval_method', 'unknown')}, "
+            f"hash={summary['evidence_set_hash']}"
+        )
+        chunk_ids = summary.get("selected_chunk_ids") or []
+        if chunk_ids:
+            lines.append(f"      chunk_ids: {', '.join(chunk_ids)}")
+        titles = summary.get("source_titles") or []
+        if titles:
+            lines.append(f"      titles: {', '.join(titles)}")
     lines.append("No jobs enqueued (dry-run).")
     return "\n".join(lines)
+
+
+def prepare_all_smoke_evidence(
+    client,
+    question_version_ids: Sequence[str],
+) -> List[dict]:
+    """Retrieve and validate evidence for every smoke question (read-only)."""
+    summaries: List[dict] = []
+    for question_version_id in question_version_ids:
+        prepared = prepare_smoke_evidence_set(client, question_version_id)
+        summaries.append(prepared.to_summary_dict())
+    return summaries
 
 
 def execute_smoke_batch(
@@ -151,10 +185,32 @@ def execute_smoke_batch(
     dispute_model_name: str,
     pilot_batch_id: str,
     created_by: str,
+    evidence_summaries: Sequence[dict],
 ) -> List[dict]:
     """Create audit runs and enqueue one smoke job per question."""
+    if len(evidence_summaries) != len(question_version_ids):
+        raise ValueError(
+            "evidence_summaries length "
+            f"{len(evidence_summaries)} does not match question count "
+            f"{len(question_version_ids)}"
+        )
+
+    evidence_by_qvid = {
+        str(item["question_version_id"]).lower(): item for item in evidence_summaries
+    }
     results: List[dict] = []
     for question_version_id in question_version_ids:
+        evidence = evidence_by_qvid.get(str(question_version_id).lower())
+        if evidence is None:
+            raise ValueError(
+                f"missing evidence summary for question_version_id {question_version_id!r}"
+            )
+        evidence_chunks = list(evidence.get("evidence_chunks") or [])
+        if not evidence_chunks:
+            raise AiQualityAuditEvidenceError(
+                f"refusing to enqueue smoke job for question_version_id "
+                f"{question_version_id!r} with an empty evidence set"
+            )
         create_row = client.rpc(
             "create_or_get_ai_quality_audit_run_v1",
             build_create_run_params(
@@ -165,6 +221,8 @@ def execute_smoke_batch(
                 dispute_model_name=dispute_model_name,
                 pilot_batch_id=pilot_batch_id,
                 created_by=created_by,
+                evidence_set_hash=evidence["evidence_set_hash"],
+                evidence_chunks=evidence_chunks,
             ),
         ).execute()
         if getattr(create_row, "error", None):
@@ -206,6 +264,8 @@ def execute_smoke_batch(
                 "audit_run_id": audit_run_id,
                 "job_id": enqueue_data[0].get("job_id"),
                 "job_status": enqueue_data[0].get("job_status"),
+                "evidence_chunk_count": len(evidence_chunks),
+                "evidence_set_hash": evidence["evidence_set_hash"],
             }
         )
     return results
@@ -275,6 +335,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     if not args.execute:
+        try:
+            preview_client = _load_client_for_evidence_preview()
+            evidence_summaries = prepare_all_smoke_evidence(preview_client, ids)
+        except (RuntimeError, AiQualityAuditEvidenceError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+
         print(
             format_dry_run_report(
                 question_version_ids=ids,
@@ -284,6 +351,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 dispute_model_name=model_provenance.dispute_model_name,
                 pilot_batch_id=args.pilot_batch_id,
                 created_by=args.created_by,
+                evidence_summaries=evidence_summaries,
             )
         )
         return 0
@@ -301,11 +369,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         client = _load_client_for_execution()
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-
-    try:
+        evidence_summaries = prepare_all_smoke_evidence(client, ids)
         rows = execute_smoke_batch(
             client,
             question_version_ids=ids,
@@ -315,13 +379,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             dispute_model_name=model_provenance.dispute_model_name,
             pilot_batch_id=args.pilot_batch_id,
             created_by=args.created_by,
+            evidence_summaries=evidence_summaries,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, AiQualityAuditEvidenceError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     print(json.dumps(rows, indent=2, sort_keys=True))
     return 0
+
+
+def _load_client_for_evidence_preview():
+    if running_under_pytest():
+        raise RuntimeError("evidence preview client must be injected in tests")
+    return _load_client_for_selection()
 
 
 def _load_client_for_selection():

@@ -1243,6 +1243,86 @@ class TestAiQualityAuditWaitCoordination(unittest.TestCase):
         self.assertGreaterEqual(len(heartbeats), 2)
 
 
+class TestPassBRetryFeedback(unittest.TestCase):
+
+    def test_pass_b_retry_includes_prior_schema_error_in_provider_prompt(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("EXECUTE_PASS_B", "B", is_retry=True),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+
+        invalid_source_support = {
+            "selected_option_labels": ["A"],
+            "proposed_findings": [
+                {
+                    "finding_ref": "F2",
+                    "finding_code": "SOURCE_SUPPORT_WEAK",
+                    "finding_type": "source_support",
+                    "severity": "medium",
+                    "materiality": "warning",
+                    "title": "Weak source support",
+                    "description": "No supporting chunk.",
+                    "evidence_chunk_ids": [],
+                    "metadata": {},
+                }
+            ],
+        }
+        valid_source_support = {
+            "selected_option_labels": ["A"],
+            "proposed_findings": [
+                {
+                    "finding_ref": "F2",
+                    "finding_code": "SOURCE_SUPPORT_WEAK",
+                    "finding_type": "source_support",
+                    "severity": "medium",
+                    "materiality": "warning",
+                    "title": "Weak source support",
+                    "description": "No supporting chunk.",
+                    "evidence_chunk_ids": [],
+                    "metadata": {
+                        "source_support_context": {
+                            "attempted_retrieval": 2,
+                            "evidence_limitation": "Frozen evidence did not substantiate the claim.",
+                            "proposed_technical_claim": "The explanation overstates source support.",
+                            "insufficiency_reason": "No frozen chunk directly supports the explanation.",
+                        }
+                    },
+                }
+            ],
+        }
+
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(invalid_source_support),
+                _llm_response(valid_source_support),
+            ]
+        )
+
+        with patch(
+            "workers.ai_quality_audit_worker.build_pass_b_prompt",
+            wraps=__import__(
+                "workers.ai_quality_audit_prompts", fromlist=["build_pass_b_prompt"]
+            ).build_pass_b_prompt,
+        ) as build_b:
+            _run_job(
+                client,
+                AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+            )
+
+        self.assertEqual(len(primary.calls), 3)
+        retry_kwargs = build_b.call_args_list[1].kwargs
+        self.assertIn("source_support_context", retry_kwargs["retry_schema_errors"][0])
+        pass_b_records = [
+            call for call in client.record_calls if call["p_pass_code"] == "B"
+        ]
+        self.assertEqual(pass_b_records[0]["p_status"], "schema_invalid")
+        self.assertEqual(pass_b_records[1]["p_status"], "completed")
+
+
 class TestAiQualityAuditProviderTimeout(unittest.TestCase):
 
     def test_pass_a_primary_timeout_recorded_as_failed(self):

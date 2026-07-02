@@ -130,6 +130,7 @@ def process_ai_quality_audit_job(
     passes_executed: List[str] = []
     completion_shape: Optional[str] = None
     wait_polls = 0
+    pass_b_retry_errors: Optional[List[str]] = None
 
     while True:
         if heartbeat_fn is not None:
@@ -258,16 +259,20 @@ def process_ai_quality_audit_job(
             continue
 
         if action == "EXECUTE_PASS_B":
-            pass_b_result = _execute_pass_b(
+            pass_b_result, schema_errors = _execute_pass_b(
                 client,
                 audit_run_id=audit_run_id,
                 question_version_id=question_version_id,
                 claim=claim,
                 providers=providers,
                 schema_version=schema_version,
+                retry_schema_errors=pass_b_retry_errors,
             )
             passes_executed.append("B")
-            if pass_b_result is not None:
+            if schema_errors:
+                pass_b_retry_errors = schema_errors
+            elif pass_b_result is not None:
+                pass_b_retry_errors = None
                 _maybe_persist_blocking_defect_trigger(
                     client,
                     audit_run_id=audit_run_id,
@@ -379,13 +384,17 @@ def _execute_pass_b(
     claim: Mapping[str, Any],
     providers: AiQualityAuditProviders,
     schema_version: str,
-) -> Optional[Dict[str, Any]]:
+    retry_schema_errors: Optional[Sequence[str]] = None,
+) -> tuple[Optional[Dict[str, Any]], Optional[List[str]]]:
     comparison_context = load_comparison_audit_context(
         client,
         question_version_id,
         audit_run_id,
     )
-    system_prompt, user_prompt = build_pass_b_prompt(comparison_context)
+    system_prompt, user_prompt = build_pass_b_prompt(
+        comparison_context,
+        retry_schema_errors=retry_schema_errors,
+    )
     allowed_labels = {
         option["option_label"] for option in comparison_context.get("options") or []
     }
@@ -493,7 +502,7 @@ def _invoke_and_record_pass(
     schema_version: str,
     input_hash: str,
     validate: Callable[[object], Dict[str, Any]],
-) -> Optional[Dict[str, Any]]:
+) -> tuple[Optional[Dict[str, Any]], Optional[List[str]]]:
     lease_token = claim.get("lease_token")
     model_name = str(claim.get("model_name") or "")
 
@@ -525,8 +534,9 @@ def _invoke_and_record_pass(
                 "error_type": type(exc).__name__,
             },
         )
-        return None
+        return None, None
     except LlmAuditValidationError as exc:
+        errors = [str(exc)]
         _record_pass_result(
             client,
             audit_run_id=audit_run_id,
@@ -538,15 +548,16 @@ def _invoke_and_record_pass(
             raw_response_text=_safe_truncate_raw_response(
                 getattr(exc, "parsed_response", None)
             ),
-            schema_validation_errors={"errors": [str(exc)]},
+            schema_validation_errors={"errors": errors},
         )
-        return None
+        return None, errors
 
     raw_text = _safe_truncate_raw_response(response.parsed_response)
 
     try:
         validated = validate(response.parsed_response)
     except AiQualityAuditValidationError as exc:
+        errors = [str(exc)]
         _record_pass_result(
             client,
             audit_run_id=audit_run_id,
@@ -556,13 +567,13 @@ def _invoke_and_record_pass(
             schema_version=schema_version,
             input_hash=input_hash,
             raw_response_text=raw_text,
-            schema_validation_errors={"errors": [str(exc)]},
+            schema_validation_errors={"errors": errors},
             provider_request_id=response.provider_request_id,
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
             actual_cost_usd=response.actual_cost_usd,
         )
-        return None
+        return None, errors
 
     _record_pass_result(
         client,
@@ -579,7 +590,7 @@ def _invoke_and_record_pass(
         output_tokens=response.output_tokens,
         actual_cost_usd=response.actual_cost_usd,
     )
-    return validated
+    return validated, None
 
 
 def _call_provider_with_timeout(

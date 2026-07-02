@@ -85,7 +85,11 @@ def build_pass_a_prompt(blind_context: dict) -> Tuple[str, str]:
     return _PASS_A_SYSTEM, "\n".join(lines)
 
 
-def build_pass_b_prompt(comparison_context: dict) -> Tuple[str, str]:
+def build_pass_b_prompt(
+    comparison_context: dict,
+    *,
+    retry_schema_errors: Sequence[str] | None = None,
+) -> Tuple[str, str]:
     """Build Pass B prompts with frozen evidence in retrieval rank order."""
     required_count = int(comparison_context["required_selection_count"])
     options = _sorted_options(comparison_context.get("options") or [])
@@ -142,6 +146,35 @@ def build_pass_b_prompt(comparison_context: dict) -> Tuple[str, str]:
     else:
         lines.append("(no frozen evidence chunks for this run)")
 
+    zero_evidence_example = json.dumps(
+        {
+            "finding_ref": "F2",
+            "finding_code": "SOURCE_SUPPORT_WEAK",
+            "finding_type": "source_support",
+            "severity": "medium",
+            "materiality": "warning",
+            "title": "Weak source support",
+            "description": "Official evidence does not substantiate the explanation.",
+            "evidence_chunk_ids": [],
+            "metadata": {
+                "source_support_context": {
+                    "attempted_retrieval": len(frozen_evidence),
+                    "evidence_limitation": (
+                        "Frozen evidence did not substantiate the stored explanation."
+                    ),
+                    "proposed_technical_claim": (
+                        "The stored explanation overstates what the official sources support."
+                    ),
+                    "insufficiency_reason": (
+                        "No frozen chunk directly supports the explanation claim."
+                    ),
+                }
+            },
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
     lines.extend(
         [
             "",
@@ -157,6 +190,40 @@ def build_pass_b_prompt(comparison_context: dict) -> Tuple[str, str]:
             "- Do not invent unsupported blocking findings.",
             "- evidence_chunk_ids must reference frozen chunk_id values only.",
             "- Use unique finding_ref values (for example F1, F2).",
+            "- metadata must be a JSON object; metadata: {} is invalid when "
+            "SOURCE_SUPPORT_WEAK uses zero evidence_chunk_ids.",
+            "",
+            "Zero-evidence SOURCE_SUPPORT_WEAK contract (required when "
+            "evidence_chunk_ids is []):",
+            "- metadata.source_support_context must be a JSON object with:",
+            '  "attempted_retrieval": <nonnegative integer>,',
+            '  "evidence_limitation": "<non-empty string>",',
+            '  "proposed_technical_claim": "<non-empty string>",',
+            '  "insufficiency_reason": "<non-empty string>"',
+            "- SOURCE_SUPPORT_WEAK cannot use materiality=blocking.",
+            "- DOMAIN_MISALIGNMENT remains warning-only.",
+            "",
+            "Minimal valid zero-evidence SOURCE_SUPPORT_WEAK example:",
+            zero_evidence_example,
+        ]
+    )
+
+    if retry_schema_errors:
+        lines.extend(
+            [
+                "",
+                "Prior Pass B response failed deterministic schema validation:",
+                *[f"- {error}" for error in retry_schema_errors],
+                "Correct only the invalid JSON shape from the prior attempt.",
+                "Preserve the same question context, selected_option_labels intent, "
+                "and finding intent where valid.",
+                "Do not omit required metadata.source_support_context for zero-evidence "
+                "SOURCE_SUPPORT_WEAK findings.",
+            ]
+        )
+
+    lines.extend(
+        [
             "",
             f"Select exactly {required_count} option label(s) for your own answer.",
             "Return JSON with selected_option_labels and proposed_findings "
