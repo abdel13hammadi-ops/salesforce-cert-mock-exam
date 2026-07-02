@@ -333,17 +333,34 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     """,
                     (qvid, label, text, order, correct),
                 )
-            for resource_id, rv_id, chunk_id, chunk_hash, title in (
-                (resource1, rv1, chunk1, hash1, "Help 1"),
-                (resource2, rv2, chunk2, hash2, "Help 2"),
+            for resource_id, rv_id, chunk_id, chunk_hash, title, chunk_text, metadata in (
+                (
+                    resource1,
+                    rv1,
+                    chunk1,
+                    hash1,
+                    "Profiles Help",
+                    "Profiles define default settings and object permissions for users.",
+                    '{"domain": "Configuration"}',
+                ),
+                (
+                    resource2,
+                    rv2,
+                    chunk2,
+                    hash2,
+                    "Roles Overview",
+                    "Roles define record-level access and hierarchy visibility.",
+                    '{"domain": "Configuration"}',
+                ),
             ):
                 cur.execute(
                     """
                     INSERT INTO public.official_resources (
-                        id, certification_exam_name, resource_type, title, is_active, created_by
-                    ) VALUES (%s, %s, 'official_documentation', %s, true, 'v48-integration')
+                        id, certification_exam_name, resource_type, title,
+                        metadata, is_active, created_by
+                    ) VALUES (%s, %s, 'official_documentation', %s, %s::jsonb, true, 'v48-integration')
                     """,
-                    (resource_id, exam, title),
+                    (resource_id, exam, title, metadata),
                 )
                 cur.execute(
                     """
@@ -351,7 +368,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                         id, resource_id, version_number, content_text, content_hash, created_by
                     ) VALUES (%s, %s, 1, %s, %s, 'v48-integration')
                     """,
-                    (rv_id, resource_id, f"{title} content", chunk_hash),
+                    (rv_id, resource_id, chunk_text, chunk_hash),
                 )
                 cur.execute(
                     """
@@ -359,7 +376,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                         id, resource_version_id, chunk_index, chunk_text, content_hash
                     ) VALUES (%s, %s, 0, %s, %s)
                     """,
-                    (chunk_id, rv_id, f"{title} chunk text", chunk_hash),
+                    (chunk_id, rv_id, chunk_text, chunk_hash),
                 )
 
         with self.conn.cursor() as cur:
@@ -588,7 +605,11 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
             self.fixture["question_version_id"],
         )
 
-        self.assertEqual(len(prepared.evidence_chunks), 2)
+        self.assertGreaterEqual(len(prepared.evidence_chunks), 1)
+        self.assertIn(
+            self.fixture["chunk1"].lower(),
+            {item["resource_chunk_id"] for item in prepared.evidence_chunks},
+        )
 
         create_row = self.client.rpc(
             "create_or_get_ai_quality_audit_run_v1",
@@ -620,7 +641,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
             )
             evidence_rows = cur.fetchall()
 
-        self.assertEqual(len(evidence_rows), 2)
+        self.assertEqual(len(evidence_rows), len(prepared.evidence_chunks))
         for index, chunk in enumerate(prepared.evidence_chunks):
             self.assertEqual(evidence_rows[index]["retrieval_rank"], chunk["retrieval_rank"])
             self.assertEqual(
@@ -658,7 +679,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
             )
             frozen_count = cur.fetchone()[0]
 
-        self.assertEqual(frozen_count, 2)
+        self.assertEqual(frozen_count, len(prepared.evidence_chunks))
 
     def test_pass_b_source_support_retry_completes_under_rollback(self):
         audit_run_id = self._create_run()

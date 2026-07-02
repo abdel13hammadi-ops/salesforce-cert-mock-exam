@@ -147,18 +147,25 @@ def format_dry_run_report(
         lines.append(
             "  - "
             f"{summary['question_version_id']}: "
-            f"evidence_count={summary.get('evidence_count', summary.get('chunk_count', 0))}, "
+            f"candidates={summary.get('candidate_count', 0)}, "
+            f"qualified={summary.get('qualified_candidate_count', 0)}, "
+            f"selected={summary.get('selected_count', summary.get('evidence_count', 0))}, "
+            f"rejected={summary.get('rejected_below_threshold_count', 0)}, "
             f"total_chars={summary.get('total_evidence_characters', 0)}, "
             f"estimated_tokens={summary.get('estimated_tokens', 0)}, "
             f"method={summary.get('retrieval_method', 'unknown')}, "
             f"hash={summary['evidence_set_hash']}"
         )
-        chunk_ids = summary.get("selected_chunk_ids") or []
-        if chunk_ids:
-            lines.append(f"      chunk_ids: {', '.join(chunk_ids)}")
-        titles = summary.get("source_titles") or []
-        if titles:
-            lines.append(f"      titles: {', '.join(titles)}")
+        for preview in summary.get("chunk_previews") or []:
+            reasons = ", ".join(preview.get("match_reasons") or []) or "n/a"
+            lines.append(
+                "      "
+                f"rank={preview.get('retrieval_rank')} "
+                f"chunk={preview.get('resource_chunk_id')} "
+                f"score={preview.get('relevance_score')} "
+                f"title={preview.get('title')!r} "
+                f"reasons={reasons}"
+            )
     lines.append("No jobs enqueued (dry-run).")
     return "\n".join(lines)
 

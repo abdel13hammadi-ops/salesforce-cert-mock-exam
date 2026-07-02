@@ -36,14 +36,34 @@ def _default_evidence_summaries(ids=None):
             "chunk_count": 2,
             "evidence_count": 2,
             "evidence_set_hash": "c" * 64,
-            "retrieval_method": "lexical_question_match_v1",
+            "retrieval_method": "lexical_question_match_v2",
             "total_evidence_characters": 1200,
             "estimated_tokens": 300,
+            "candidate_count": 20,
+            "qualified_candidate_count": 3,
+            "selected_count": 2,
+            "rejected_below_threshold_count": 17,
             "selected_chunk_ids": [
                 "11111111-1111-1111-1111-111111111111",
                 "22222222-2222-2222-2222-222222222222",
             ],
             "source_titles": ["Help 1", "Help 2"],
+            "chunk_previews": [
+                {
+                    "resource_chunk_id": "11111111-1111-1111-1111-111111111111",
+                    "retrieval_rank": 1,
+                    "title": "Help 1",
+                    "relevance_score": 0.42,
+                    "match_reasons": ["question-text overlap"],
+                },
+                {
+                    "resource_chunk_id": "22222222-2222-2222-2222-222222222222",
+                    "retrieval_rank": 2,
+                    "title": "Help 2",
+                    "relevance_score": 0.31,
+                    "match_reasons": ["title match"],
+                },
+            ],
             "evidence_chunks": [
                 {
                     "resource_chunk_id": "11111111-1111-1111-1111-111111111111",
@@ -141,9 +161,10 @@ class TestSmokeCliMain(unittest.TestCase):
         self.assertIn(f"primary_model_name: {DEFAULT_MODEL}", output)
         self.assertIn(f"dispute_model_name: {DEFAULT_MODEL}", output)
         self.assertIn("evidence_freeze_preview:", output)
-        self.assertIn("evidence_count=2", output)
-        self.assertIn("method=lexical_question_match_v1", output)
+        self.assertIn("selected=2", output)
+        self.assertIn("method=lexical_question_match_v2", output)
         self.assertIn("estimated_tokens=", output)
+        self.assertIn("reasons=", output)
         self.assertIn("No jobs enqueued (dry-run).", output)
         self.assertNotIn("smoke-primary-model", output)
         self.assertNotIn("smoke-dispute-model", output)
