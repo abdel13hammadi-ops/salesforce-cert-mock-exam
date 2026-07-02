@@ -221,6 +221,18 @@ def format_dry_run_report(
                 f"rejected={summary.get('rejected_below_threshold_count', 0)}, "
                 f"reason={summary.get('evidence_gap_reason', 'unknown')}"
             )
+            for rejected in (summary.get("rejected_previews") or [])[:3]:
+                reasons = ", ".join(rejected.get("match_reasons") or []) or "n/a"
+                lines.append(
+                    "      rejected_"
+                    f"rank={rejected.get('retrieval_rank')} "
+                    f"chunk={rejected.get('resource_chunk_id')} "
+                    f"score={rejected.get('relevance_score')} "
+                    f"threshold={rejected.get('applicable_threshold')} "
+                    f"title={rejected.get('title')!r} "
+                    f"reasons={reasons} "
+                    f"rejection={rejected.get('rejection_reason', 'unknown')}"
+                )
             continue
 
         lines.append(

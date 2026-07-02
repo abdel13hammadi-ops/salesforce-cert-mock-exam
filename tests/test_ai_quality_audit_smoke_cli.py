@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.run_ai_quality_audit_smoke import (
     build_create_run_params,
     execute_smoke_batch,
+    format_dry_run_report,
     main,
     prepare_all_smoke_evidence,
     prepare_all_smoke_evidence_dry_run,
@@ -109,6 +110,26 @@ def _mixed_evidence_summaries_with_gap(ids=None):
         "estimated_tokens": 0,
         "retrieval_method": "lexical_question_match_v2",
         "chunk_previews": [],
+        "rejected_previews": [
+            {
+                "retrieval_rank": 1,
+                "resource_chunk_id": "33333333-3333-3333-3333-333333333333",
+                "relevance_score": 0.121561,
+                "applicable_threshold": 0.20,
+                "title": "Considerations for Object Relationships",
+                "match_reasons": ["question-text overlap", "metadata/feature match"],
+                "rejection_reason": "relevance score 0.121561 below threshold 0.20",
+            },
+            {
+                "retrieval_rank": 2,
+                "resource_chunk_id": "44444444-4444-4444-4444-444444444444",
+                "relevance_score": 0.082021,
+                "applicable_threshold": 0.20,
+                "title": "Flow Builder Overview",
+                "match_reasons": ["question-text overlap"],
+                "rejection_reason": "relevance score 0.082021 below threshold 0.20",
+            },
+        ],
         "evidence_gap": True,
         "evidence_gap_reason": (
             f"evidence retrieval returned zero qualified chunks for question_version "
@@ -240,6 +261,12 @@ class TestSmokeCliMain(unittest.TestCase):
             self.assertIn(qvid, output)
         self.assertIn("EVIDENCE_GAP", output)
         self.assertIn(gap_qvid, output)
+        self.assertIn("rejected_rank=1", output)
+        self.assertIn("33333333-3333-3333-3333-333333333333", output)
+        self.assertIn("score=0.121561", output)
+        self.assertIn("threshold=0.2", output)
+        self.assertIn("Considerations for Object Relationships", output)
+        self.assertIn("rejection=relevance score 0.121561 below threshold 0.20", output)
         self.assertIn("questions_with_qualified_evidence: 9", output)
         self.assertIn("questions_with_evidence_gaps: 1", output)
         self.assertIn(f"    - {gap_qvid}: EVIDENCE_GAP", output)
@@ -303,6 +330,28 @@ class TestSmokeCliMain(unittest.TestCase):
             prepare_all_smoke_evidence(client, ids)
 
         prepare_mock.assert_called_once_with(client, ids[0])
+
+    def test_format_dry_run_report_includes_top_rejected_candidates_for_gaps(self):
+        ids = _ten_unique_ids()
+        gap_summary = _mixed_evidence_summaries_with_gap(ids)[2]
+        report = format_dry_run_report(
+            question_version_ids=ids,
+            prompt_version="v48-smoke-prompt-v1",
+            ruleset_version="v48-smoke-ruleset-v1",
+            primary_model_name=DEFAULT_MODEL,
+            dispute_model_name=DEFAULT_MODEL,
+            pilot_batch_id="v48-ai-quality-smoke",
+            created_by="ai-quality-smoke-cli",
+            evidence_summaries=_default_evidence_summaries(ids)[:2] + [gap_summary],
+        )
+
+        self.assertIn("rejected_rank=1", report)
+        self.assertIn("rejected_rank=2", report)
+        self.assertNotIn("rejected_rank=3", report)
+        self.assertIn("score=0.121561", report)
+        self.assertIn("threshold=0.2", report)
+        self.assertIn("rejection=relevance score 0.121561 below threshold 0.20", report)
+        self.assertIn("selected=2", report)
 
     def test_dry_run_shows_configured_anthropic_model(self):
         configured_model = "claude-test-model-v1"

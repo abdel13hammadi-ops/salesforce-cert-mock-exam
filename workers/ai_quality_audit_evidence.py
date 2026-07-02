@@ -122,6 +122,8 @@ class EvidenceScoreBreakdown:
     content_overlap_tokens: Tuple[str, ...]
     match_reasons: Tuple[str, ...]
     qualifies: bool
+    applicable_threshold: float
+    rejection_reason: str
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,7 @@ class PreparedEvidenceSet:
     total_evidence_characters: int
     estimated_tokens: int
     chunk_previews: List[Dict[str, Any]]
+    rejected_previews: List[Dict[str, Any]]
     candidate_count: int
     qualified_candidate_count: int
     selected_count: int
@@ -164,6 +167,7 @@ class PreparedEvidenceSet:
             ],
             "source_titles": [item["title"] for item in self.chunk_previews],
             "chunk_previews": list(self.chunk_previews),
+            "rejected_previews": list(self.rejected_previews),
         }
 
 
@@ -248,12 +252,14 @@ def prepare_smoke_evidence_set(
     resource_by_id = {item["id"]: item for item in resources}
 
     candidate_count = 0
+    rejected_previews: List[Dict[str, Any]] = []
     if not resource_ids:
         if allow_no_evidence:
             ranked: List[Dict[str, Any]] = []
             previews: List[Dict[str, Any]] = []
             qualified_count = 0
             rejected_count = 0
+            rejected_previews = []
         else:
             raise AiQualityAuditEvidenceError(
                 f"no active official_resources found for certification {certification!r}; "
@@ -267,7 +273,13 @@ def prepare_smoke_evidence_set(
             max_chunks=CANDIDATE_POOL_MAX,
         )
         candidate_count = len(candidates)
-        ranked, previews, qualified_count, rejected_count = rank_question_evidence_candidates(
+        (
+            ranked,
+            previews,
+            qualified_count,
+            rejected_count,
+            rejected_previews,
+        ) = rank_question_evidence_candidates(
             candidates,
             blind_context=blind_context,
             resource_by_id=resource_by_id,
@@ -299,6 +311,7 @@ def prepare_smoke_evidence_set(
         if total_chars
         else 0,
         chunk_previews=previews,
+        rejected_previews=rejected_previews,
         candidate_count=candidate_count,
         qualified_candidate_count=qualified_count,
         selected_count=len(ranked),
@@ -314,7 +327,7 @@ def rank_question_evidence_candidates(
     max_chunks: int,
     max_characters: int,
     max_chunks_per_resource: int = DEFAULT_MAX_CHUNKS_PER_RESOURCE,
-) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int]:
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int, List[Dict[str, Any]]]:
     """Rank certification candidate chunks for one question and apply bounds."""
     query_text = _build_question_query(blind_context)
     question_text = str(blind_context.get("question_text") or "").strip()
@@ -348,6 +361,8 @@ def rank_question_evidence_candidates(
                 "relevance_score": round(breakdown.relevance_score, 6),
                 "match_reasons": list(breakdown.match_reasons),
                 "qualifies": breakdown.qualifies,
+                "applicable_threshold": breakdown.applicable_threshold,
+                "rejection_reason": breakdown.rejection_reason,
             }
         )
 
@@ -390,7 +405,26 @@ def rank_question_evidence_candidates(
                 "match_reasons": list(item.get("match_reasons") or []),
             }
         )
-    return ranked, previews, len(qualified), rejected_count
+
+    rejected_previews: List[Dict[str, Any]] = []
+    for rank, item in enumerate(scored, start=1):
+        if item["qualifies"]:
+            continue
+        rejected_previews.append(
+            {
+                "retrieval_rank": rank,
+                "resource_chunk_id": str(item["resource_chunk_id"]).lower(),
+                "relevance_score": item["relevance_score"],
+                "applicable_threshold": item["applicable_threshold"],
+                "title": str(item.get("title") or ""),
+                "match_reasons": list(item.get("match_reasons") or []),
+                "rejection_reason": str(item.get("rejection_reason") or ""),
+            }
+        )
+        if len(rejected_previews) >= 3:
+            break
+
+    return ranked, previews, len(qualified), rejected_count, rejected_previews
 
 
 def score_evidence_candidate(
@@ -409,6 +443,7 @@ def score_evidence_candidate(
     chunk_text = str(candidate.get("chunk_text") or "")
     title = str(candidate.get("title") or resource_title or "")
     combined = f"{title} {chunk_text}".strip()
+    min_score = _applicable_min_score(resource_type)
     if not combined:
         return EvidenceScoreBreakdown(
             relevance_score=0.0,
@@ -420,6 +455,8 @@ def score_evidence_candidate(
             content_overlap_tokens=(),
             match_reasons=(),
             qualifies=False,
+            applicable_threshold=min_score,
+            rejection_reason="empty chunk text and title",
         )
 
     chunk_tokens = _content_tokens(combined)
@@ -469,7 +506,7 @@ def score_evidence_candidate(
     if similarity_score >= 0.40 and overlap_tokens:
         match_reasons.append(_MATCH_REASON_STRONG)
 
-    qualifies = _candidate_qualifies(
+    qualifies, rejection_reason = _candidate_qualifies(
         relevance_score=relevance_score,
         match_reasons=match_reasons,
         overlap_count=len(overlap_tokens),
@@ -486,7 +523,15 @@ def score_evidence_candidate(
         content_overlap_tokens=overlap_tokens,
         match_reasons=tuple(match_reasons),
         qualifies=qualifies,
+        applicable_threshold=min_score,
+        rejection_reason=rejection_reason,
     )
+
+
+def _applicable_min_score(resource_type: str) -> float:
+    if str(resource_type).strip().lower() == "exam_guide":
+        return GENERIC_EXAM_GUIDE_MIN_SCORE
+    return MIN_RELEVANCE_SCORE
 
 
 def _candidate_qualifies(
@@ -495,15 +540,21 @@ def _candidate_qualifies(
     match_reasons: Sequence[str],
     overlap_count: int,
     resource_type: str,
-) -> bool:
+) -> Tuple[bool, str]:
     if not match_reasons:
-        return False
+        return False, (
+            "no alignment signal (requires domain, title, question-text, option, "
+            "metadata/feature, or strong content similarity match)"
+        )
     if overlap_count == 0 and _MATCH_REASON_DOMAIN not in match_reasons:
-        return False
-    min_score = MIN_RELEVANCE_SCORE
-    if str(resource_type).strip().lower() == "exam_guide":
-        min_score = GENERIC_EXAM_GUIDE_MIN_SCORE
-    return relevance_score >= min_score
+        return False, "zero query-token overlap without exact domain match"
+    min_score = _applicable_min_score(resource_type)
+    if relevance_score < min_score:
+        return (
+            False,
+            f"relevance score {relevance_score:.6f} below threshold {min_score:.2f}",
+        )
+    return True, ""
 
 
 def _apply_per_resource_cap(
