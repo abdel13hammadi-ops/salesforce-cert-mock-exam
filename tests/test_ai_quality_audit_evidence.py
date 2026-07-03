@@ -21,9 +21,18 @@ from workers.ai_quality_audit_evidence import (
     RETRIEVAL_METHOD,
     AiQualityAuditEvidenceError,
     CANDIDATE_POOL_MAX,
+    _MATCH_REASON_DOMAIN,
+    _MATCH_REASON_METADATA,
+    _MATCH_REASON_OPTION,
+    _MATCH_REASON_QUESTION,
+    _MATCH_REASON_TITLE,
+    _applicable_min_score,
     _build_question_query,
+    _candidate_qualifies,
     _content_tokens,
     _option_content_tokens,
+    _replay_bm25_field_score_from_frequencies,
+    _round_replay_float,
     analyze_evidence_candidate,
     build_bm25_corpus_stats,
     build_question_retrieval_replay_export,
@@ -1695,6 +1704,314 @@ class TestRetrievalReplayExport(unittest.TestCase):
         self.assertNotIn("SUPABASE", payload)
         self.assertIn("query_tokens", payload)
         self.assertIn("query_term_frequencies", payload)
+
+
+def _recompute_candidate_from_frozen_export(
+    question_record: dict, candidate_record: dict
+) -> dict:
+    """Rebuild one candidate from exported query tokens and frozen bm25_constants.
+
+    This mirrors ``replay_bm25_candidate_from_record`` field-for-field using the
+    original exported query-token set (no stopword re-filtering) and the frozen
+    constants embedded in the export. Safety tests and the parity guard share
+    this single formula so test-only drift cannot diverge from replay again.
+    """
+    constants = question_record["bm25_constants"]
+    query_tokens = list(question_record["query_tokens"])
+    unique_query_terms = sorted(set(query_tokens))
+    query_token_idf = question_record["query_token_idf"]
+    term_frequencies = candidate_record["query_term_frequencies"]
+
+    title_field_score = _replay_bm25_field_score_from_frequencies(
+        query_terms=unique_query_terms,
+        term_frequencies=term_frequencies["title"],
+        field_length=int(candidate_record["title_field_length"]),
+        avg_field_len=float(question_record["avg_title_len"]),
+        query_token_idf=query_token_idf,
+        k1=float(constants["k1"]),
+        b=float(constants["b"]),
+    )
+    metadata_field_score = _replay_bm25_field_score_from_frequencies(
+        query_terms=unique_query_terms,
+        term_frequencies=term_frequencies["metadata"],
+        field_length=int(candidate_record["metadata_field_length"]),
+        avg_field_len=float(question_record["avg_metadata_len"]),
+        query_token_idf=query_token_idf,
+        k1=float(constants["k1"]),
+        b=float(constants["b"]),
+    )
+    body_field_score = _replay_bm25_field_score_from_frequencies(
+        query_terms=unique_query_terms,
+        term_frequencies=term_frequencies["body"],
+        field_length=int(candidate_record["body_field_length"]),
+        avg_field_len=float(question_record["avg_body_len"]),
+        query_token_idf=query_token_idf,
+        k1=float(constants["k1"]),
+        b=float(constants["b"]),
+    )
+
+    raw_bm25 = (
+        float(constants["field_weight_title"]) * title_field_score
+        + float(constants["field_weight_metadata"]) * metadata_field_score
+        + float(constants["field_weight_body"]) * body_field_score
+    )
+    total_query_idf = sum(float(query_token_idf.get(term, 0.0)) for term in unique_query_terms)
+    normalizer = (
+        total_query_idf
+        * (float(constants["k1"]) + 1)
+        * float(constants["normalization_field_weight"])
+    )
+    bm25_score = (raw_bm25 / normalizer) if normalizer > 0 else 0.0
+    bm25_score = max(0.0, min(1.0, bm25_score))
+
+    resource_type = str(candidate_record.get("resource_type") or "")
+    raw_relevance = bm25_score
+    if resource_type.strip().lower() == "exam_guide":
+        raw_relevance *= float(constants["exam_guide_score_multiplier"])
+    relevance_score = max(0.0, min(1.0, raw_relevance))
+
+    domain_boost = float(candidate_record["domain_match"]["domain_boost"])
+    match_reasons: list[str] = []
+    if domain_boost >= float(constants["domain_exact_match_boost"]):
+        match_reasons.append(_MATCH_REASON_DOMAIN)
+    if title_field_score > 0.0 or bool(candidate_record.get("option_in_title")):
+        match_reasons.append(_MATCH_REASON_TITLE)
+    if len(candidate_record.get("question_overlap_tokens") or []) >= 2:
+        match_reasons.append(_MATCH_REASON_QUESTION)
+    if candidate_record.get("option_overlap_tokens"):
+        match_reasons.append(_MATCH_REASON_OPTION)
+    if metadata_field_score > 0.0:
+        match_reasons.append(_MATCH_REASON_METADATA)
+
+    overlap_tokens = list(candidate_record.get("query_content_overlap_tokens") or [])
+    discriminative_overlap_idf = sum(
+        float(query_token_idf.get(term, 0.0)) for term in overlap_tokens
+    )
+    qualifies, rejection_reason = _candidate_qualifies(
+        relevance_score=relevance_score,
+        match_reasons=match_reasons,
+        overlap_count=len(overlap_tokens),
+        discriminative_overlap_idf=discriminative_overlap_idf,
+        resource_type=resource_type,
+        document_count=int(question_record["corpus_document_count"]),
+    )
+    min_score = _applicable_min_score(resource_type)
+
+    return {
+        "title": candidate_record["title"],
+        "applicable_threshold": _round_replay_float(min_score),
+        "bm25_score": _round_replay_float(bm25_score),
+        "relevance_score": _round_replay_float(relevance_score),
+        "qualified": qualifies,
+        "rejection_reason": rejection_reason,
+        "match_reasons": match_reasons,
+        "raw_bm25_field_scores": {
+            "body": _round_replay_float(body_field_score),
+            "metadata": _round_replay_float(metadata_field_score),
+            "title": _round_replay_float(title_field_score),
+        },
+    }
+
+
+class TestProductionReplayFixtureRegression(unittest.TestCase):
+    """Authoritative frozen production replay baseline: v48_retrieval_replay_v1.json.
+
+    Captures the committed production scoring baseline (10 questions, 250
+    candidates) before hybrid retrieval work. Tests verify deterministic replay,
+    helper/replay parity, threshold invariants, and monotonic safety contracts
+    that allow future focused-source qualification without weakening unrelated-
+    source rejection or confirmed coverage-gap fail-closed behavior.
+    """
+
+    _FIXTURE_PATH = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "fixtures", "v48_retrieval_replay_v1.json"
+    )
+
+    _FOCUSED_TITLE_SUBSTRING = {
+        "1f181e6e-28dc-41d9-a31b-5512b5948f7d": "considerations for object relationships",
+        "391344c6-be0a-40fb-8521-3045c2169032": "send a custom notification with a flow",
+        "9eb69660-7f78-4bc6-972e-c9262db3eb59": "filter across objects with cross filters",
+        "39b3fd46-a448-49c5-bc26-303b0a4f4497": "getting started with record-triggered flows",
+        "a8b305ed-b342-4e12-9ee2-47ab29db6ea2": "manage the recycle bin in lightning experience",
+        "3cb5b76e-c803-4a44-b621-e38fafe56211": "user story",
+        "3ecb32c4-7572-456c-8b4f-db0aea8eae32": "project scope management",
+        "b5e5a34e-7252-42f9-bbe6-6d4a7b86ae6a": "creating effective business process maps",
+    }
+
+    _STRICT_FUNCTIONAL = frozenset(
+        {
+            "39b3fd46-a448-49c5-bc26-303b0a4f4497",
+            "a8b305ed-b342-4e12-9ee2-47ab29db6ea2",
+            "3cb5b76e-c803-4a44-b621-e38fafe56211",
+        }
+    )
+
+    _FOCUSED_EVIDENCE_GAP = frozenset(
+        {
+            "1f181e6e-28dc-41d9-a31b-5512b5948f7d",
+            "391344c6-be0a-40fb-8521-3045c2169032",
+            "9eb69660-7f78-4bc6-972e-c9262db3eb59",
+            "3ecb32c4-7572-456c-8b4f-db0aea8eae32",
+            "b5e5a34e-7252-42f9-bbe6-6d4a7b86ae6a",
+        }
+    )
+
+    _COVERAGE_GAP = frozenset(
+        {
+            "ef34001a-1751-4083-933a-0348173f8055",
+            "97dc77e0-027b-44aa-9ebb-d9171299528e",
+        }
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        with open(cls._FIXTURE_PATH, "r", encoding="utf-8") as handle:
+            cls.fixture = json.load(handle)
+        cls.questions_by_id = {
+            q["question_version_id"]: q for q in cls.fixture["questions"]
+        }
+
+    def test_fixture_has_all_ten_smoke_questions(self):
+        self.assertEqual(len(self.fixture["questions"]), 10)
+        self.assertEqual(sum(len(q["candidates"]) for q in self.fixture["questions"]), 250)
+        self.assertEqual(self.fixture["retrieval_method"], RETRIEVAL_METHOD)
+
+    def test_replay_reproduces_frozen_export_deterministically(self):
+        """Frozen bm25_constants + term frequencies must replay production export."""
+        for question in self.fixture["questions"]:
+            for candidate in question["candidates"]:
+                replayed = replay_bm25_candidate_from_record(question, candidate)
+                self.assertAlmostEqual(
+                    replayed["relevance_score"], candidate["relevance_score"], places=4
+                )
+                self.assertEqual(replayed["qualified"], candidate["qualified"])
+                self.assertEqual(replayed["rejection_reason"], candidate.get("rejection_reason"))
+                self.assertEqual(replayed["match_reasons"], candidate["match_reasons"])
+                for field in ("title", "metadata", "body"):
+                    self.assertAlmostEqual(
+                        replayed["raw_bm25_field_scores"][field],
+                        candidate["raw_bm25_field_scores"][field],
+                        places=4,
+                    )
+
+    def test_recompute_helper_matches_replay_for_all_candidates(self):
+        """Parity guard: helper formula must stay identical to replay for all 250 rows."""
+        for question in self.fixture["questions"]:
+            for candidate in question["candidates"]:
+                replayed = replay_bm25_candidate_from_record(question, candidate)
+                recomputed = _recompute_candidate_from_frozen_export(question, candidate)
+                self.assertAlmostEqual(
+                    recomputed["bm25_score"], replayed["bm25_score"], places=9
+                )
+                self.assertAlmostEqual(
+                    recomputed["relevance_score"], replayed["relevance_score"], places=9
+                )
+                self.assertEqual(recomputed["qualified"], replayed["qualified"])
+                self.assertEqual(recomputed["rejection_reason"], replayed["rejection_reason"])
+                self.assertEqual(recomputed["match_reasons"], replayed["match_reasons"])
+                for field in ("title", "metadata", "body"):
+                    self.assertAlmostEqual(
+                        recomputed["raw_bm25_field_scores"][field],
+                        replayed["raw_bm25_field_scores"][field],
+                        places=9,
+                    )
+
+    def test_thresholds_unchanged(self):
+        self.assertEqual(MIN_RELEVANCE_SCORE, 0.20)
+        self.assertEqual(GENERIC_EXAM_GUIDE_MIN_SCORE, 0.30)
+
+    def _recomputed_candidates(self, question_version_id: str) -> list[dict]:
+        question = self.questions_by_id[question_version_id]
+        return [
+            _recompute_candidate_from_frozen_export(question, candidate)
+            for candidate in question["candidates"]
+        ]
+
+    def _focused_title_substring(self, question_version_id: str) -> str:
+        return self._FOCUSED_TITLE_SUBSTRING[question_version_id]
+
+    def _is_focused_resource(self, question_version_id: str, candidate_result: dict) -> bool:
+        return self._focused_title_substring(question_version_id) in candidate_result["title"].lower()
+
+    def _assert_unrelated_candidates_never_qualify(
+        self, question_version_id: str, results: list[dict]
+    ):
+        for result in results:
+            if self._is_focused_resource(question_version_id, result):
+                continue
+            self.assertFalse(
+                result["qualified"],
+                msg=(
+                    f"{question_version_id}: unrelated candidate must not qualify: "
+                    f"{result['title']!r}"
+                ),
+            )
+
+    def _assert_focused_monotonic_safety(self, question_version_id: str, results: list[dict]):
+        expected_substring = self._focused_title_substring(question_version_id)
+        qualified = [r for r in results if r["qualified"]]
+        self._assert_unrelated_candidates_never_qualify(question_version_id, results)
+        for result in qualified:
+            self.assertIn(
+                expected_substring,
+                result["title"].lower(),
+                msg=(
+                    f"{question_version_id}: every qualified candidate must belong "
+                    "to the expected focused resource"
+                ),
+            )
+
+    def test_strict_functional_focused_sources_qualify_and_are_selected(self):
+        for question_version_id in sorted(self._STRICT_FUNCTIONAL):
+            expected_substring = self._focused_title_substring(question_version_id)
+            with self.subTest(question_version_id=question_version_id):
+                results = self._recomputed_candidates(question_version_id)
+                qualified = [r for r in results if r["qualified"]]
+                focused_qualified = [
+                    r for r in qualified if expected_substring in r["title"].lower()
+                ]
+
+                self.assertTrue(
+                    focused_qualified,
+                    msg=f"{question_version_id}: expected focused resource to qualify",
+                )
+                self._assert_unrelated_candidates_never_qualify(question_version_id, results)
+
+                qualified.sort(key=lambda r: -r["relevance_score"])
+                self.assertIn(
+                    expected_substring,
+                    qualified[0]["title"].lower(),
+                    msg=f"{question_version_id}: expected focused resource to be selected first",
+                )
+
+    def test_focused_evidence_gap_cases_use_monotonic_safety_contract(self):
+        """Zero qualified is allowed today; future qualification must stay on-topic."""
+        for question_version_id in sorted(self._FOCUSED_EVIDENCE_GAP):
+            with self.subTest(question_version_id=question_version_id):
+                results = self._recomputed_candidates(question_version_id)
+                self._assert_focused_monotonic_safety(question_version_id, results)
+
+    def test_coverage_gap_questions_remain_fail_closed(self):
+        for question_version_id in sorted(self._COVERAGE_GAP):
+            with self.subTest(question_version_id=question_version_id):
+                results = self._recomputed_candidates(question_version_id)
+                qualified = [r for r in results if r["qualified"]]
+                self.assertEqual(
+                    len(qualified),
+                    0,
+                    msg=f"{question_version_id}: confirmed coverage gap must remain fail-closed",
+                )
+
+    def test_no_exam_guide_qualifies_through_generic_overlap(self):
+        for question in self.fixture["questions"]:
+            for candidate in question["candidates"]:
+                if str(candidate.get("resource_type") or "").strip().lower() != "exam_guide":
+                    continue
+                result = _recompute_candidate_from_frozen_export(question, candidate)
+                self.assertFalse(
+                    result["qualified"],
+                    msg=f"exam guide unexpectedly qualified for {question['question_version_id']}",
+                )
 
 
 if __name__ == "__main__":
