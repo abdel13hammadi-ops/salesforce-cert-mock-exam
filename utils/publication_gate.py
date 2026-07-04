@@ -133,6 +133,45 @@ def get_publication_status(client, *, question_version_id: str) -> dict:
     }
 
 
+def approve_question_version(
+    client,
+    *,
+    question_version_id: str,
+    actor_email: str,
+    reason: str,
+    event_data: Optional[dict] = None,
+) -> dict:
+    """Call approve_question_version_v1 and normalize errors for UI display.
+
+    This only appends an ``approved`` event through the existing RPC; it does
+    not duplicate any database-side eligibility checks in Python and does not
+    publish. Re-approval of an already-approved version is idempotent at the
+    RPC layer and is treated here as a normal successful result.
+    """
+    qvid = _clean_uuid(question_version_id)
+    email = str(actor_email or "").strip().lower()
+    note = str(reason or "").strip()
+    if not qvid:
+        raise PublicationGateError("question_version_id is required")
+    if not email:
+        raise PublicationGateError("actor email is required")
+    if not note:
+        raise PublicationGateError("approval reason is required")
+    rows = _call_rpc(
+        client,
+        "approve_question_version_v1",
+        {
+            "p_question_version_id": qvid,
+            "p_actor_email": email,
+            "p_reason": note,
+            "p_event_data": event_data or {},
+        },
+    )
+    if not rows:
+        raise PublicationGateError("approve_question_version_v1 returned no rows")
+    return rows[0]
+
+
 def publish_question_version(
     client,
     *,

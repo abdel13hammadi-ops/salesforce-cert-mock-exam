@@ -27,6 +27,7 @@ from utils.audit_review import (
 )
 from utils.publication_gate import (
     PublicationGateError,
+    approve_question_version,
     format_blocking_findings_summary,
     format_publication_status_message,
     get_publication_status,
@@ -242,6 +243,7 @@ def _render_finding_detail(finding_id: str) -> None:
     version_id = detail.get("target_question_version_id")
     if version_id:
         st.markdown("**Publication gate**")
+        pub_status = None
         try:
             pub_status = get_publication_status(_client(), question_version_id=str(version_id))
             if pub_status.get("publishable"):
@@ -256,6 +258,44 @@ def _render_finding_detail(finding_id: str) -> None:
                 )
         except PublicationGateError as exc:
             st.error(f"Could not load publication status: {escape_review_text(exc)}")
+
+        with st.expander("Approve version (admin only)"):
+            st.caption(
+                "Approval only records an append-only approved event through the existing "
+                "database RPC. It does not publish the version."
+            )
+            is_publishable = bool(pub_status and pub_status.get("publishable"))
+            if not is_publishable:
+                st.warning(
+                    "Approval is disabled while open or accepted blocking findings remain "
+                    "for this version. Reject or resolve the blocking findings above first."
+                )
+            approve_reason = st.text_input(
+                "Approval reason",
+                key=f"audit_review_approve_reason_{finding_id}",
+                disabled=not is_publishable,
+            )
+            if st.button(
+                "Approve version",
+                key=f"audit_review_approve_{finding_id}",
+                disabled=not is_publishable,
+            ):
+                reviewer_email = get_current_user_email()
+                if not approve_reason.strip():
+                    st.error("Approval reason is required.")
+                else:
+                    try:
+                        approve_question_version(
+                            _client(),
+                            question_version_id=str(version_id),
+                            actor_email=reviewer_email or "",
+                            reason=approve_reason,
+                        )
+                        st.success("Version approved. Publication may now be attempted below.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except PublicationGateError as exc:
+                        st.error(escape_review_text(exc))
 
         with st.expander("Manual publish attempt (admin only)"):
             st.caption(

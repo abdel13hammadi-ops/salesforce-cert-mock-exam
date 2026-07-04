@@ -14,6 +14,7 @@ from utils.publication_gate import (
     BLOCKING_FINDING_STATUSES,
     NON_BLOCKING_FINDING_STATUSES,
     PublicationGateError,
+    approve_question_version,
     finding_blocks_publication,
     finding_tied_to_question_version,
     format_publication_status_message,
@@ -218,6 +219,97 @@ class TestPublicationRpcIntegration(unittest.TestCase):
             reason="Ready to publish",
         )
         self.assertEqual(row["question_id"], 1067)
+
+
+class TestApproveQuestionVersion(unittest.TestCase):
+    def test_missing_question_version_id_rejected(self):
+        fake = FakeSupabase()
+        with self.assertRaises(PublicationGateError):
+            approve_question_version(
+                fake,
+                question_version_id="",
+                actor_email=_REVIEWER,
+                reason="Looks good",
+            )
+        self.assertEqual(fake.calls, [])
+
+    def test_missing_actor_email_rejected(self):
+        fake = FakeSupabase()
+        with self.assertRaises(PublicationGateError):
+            approve_question_version(
+                fake,
+                question_version_id=_VERSION_A,
+                actor_email="",
+                reason="Looks good",
+            )
+        self.assertEqual(fake.calls, [])
+
+    def test_empty_reason_rejected(self):
+        fake = FakeSupabase()
+        with self.assertRaises(PublicationGateError):
+            approve_question_version(
+                fake,
+                question_version_id=_VERSION_A,
+                actor_email=_REVIEWER,
+                reason="   ",
+            )
+        self.assertEqual(fake.calls, [])
+
+    def test_calls_approve_question_version_v1_with_expected_params(self):
+        fake = FakeSupabase()
+        fake.set_response(
+            "approve_question_version_v1",
+            [{"question_version_id": _VERSION_A, "question_id": 1067, "version_number": 2}],
+        )
+        row = approve_question_version(
+            fake,
+            question_version_id=_VERSION_A,
+            actor_email=_REVIEWER,
+            reason="No remaining blocking findings",
+        )
+        self.assertEqual(row["question_id"], 1067)
+        name, params = fake.calls[0]
+        self.assertEqual(name, "approve_question_version_v1")
+        self.assertEqual(params["p_question_version_id"], _VERSION_A)
+        self.assertEqual(params["p_actor_email"], _REVIEWER)
+        self.assertEqual(params["p_reason"], "No remaining blocking findings")
+        self.assertEqual(params["p_event_data"], {})
+
+    def test_idempotent_reapproval_is_treated_as_success(self):
+        fake = FakeSupabase()
+        fake.set_response(
+            "approve_question_version_v1",
+            [{"question_version_id": _VERSION_A, "question_id": 1067, "version_number": 2}],
+        )
+        first = approve_question_version(
+            fake,
+            question_version_id=_VERSION_A,
+            actor_email=_REVIEWER,
+            reason="Initial approval",
+        )
+        second = approve_question_version(
+            fake,
+            question_version_id=_VERSION_A,
+            actor_email=_REVIEWER,
+            reason="Re-approval attempt",
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(len(fake.calls), 2)
+
+    def test_approval_does_not_call_publish(self):
+        fake = FakeSupabase()
+        fake.set_response(
+            "approve_question_version_v1",
+            [{"question_version_id": _VERSION_A, "question_id": 1067, "version_number": 2}],
+        )
+        approve_question_version(
+            fake,
+            question_version_id=_VERSION_A,
+            actor_email=_REVIEWER,
+            reason="Ready",
+        )
+        called_names = [name for name, _ in fake.calls]
+        self.assertNotIn("publish_question_version_v1", called_names)
 
 
 class TestAdminReviewCompatibility(unittest.TestCase):

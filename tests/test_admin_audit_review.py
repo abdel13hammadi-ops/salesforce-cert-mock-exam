@@ -499,6 +499,207 @@ class TestRecordDecisionAmbiguityFix(unittest.TestCase):
         self.assertIn("idempotent       boolean", self.sql)
 
 
+def _build_interactive_fake_streamlit(*, button_clicks: dict, text_inputs: dict):
+    """Streamlit stub that records widget calls and returns scripted values by key."""
+    recorded = {"button": [], "text_input": []}
+
+    def _button(label, key=None, **kwargs):
+        recorded["button"].append({"label": label, "key": key, "kwargs": kwargs})
+        return button_clicks.get(key, False)
+
+    def _text_input(label, key=None, **kwargs):
+        recorded["text_input"].append({"label": label, "key": key, "kwargs": kwargs})
+        return text_inputs.get(key, "")
+
+    class _FakeExpander:
+        def __enter__(self_inner):
+            return self_inner
+
+        def __exit__(self_inner, *exc_info):
+            return False
+
+    def _expander(*args, **kwargs):
+        return _FakeExpander()
+
+    def _cache_data(**kwargs):
+        return lambda fn: fn
+
+    _cache_data.clear = lambda: None
+
+    fake_st = types.SimpleNamespace(
+        set_page_config=lambda *args, **kwargs: None,
+        title=lambda *args, **kwargs: None,
+        caption=lambda *args, **kwargs: None,
+        subheader=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        success=lambda *args, **kwargs: None,
+        markdown=lambda *args, **kwargs: None,
+        text=lambda *args, **kwargs: None,
+        text_input=_text_input,
+        text_area=lambda *args, **kwargs: "note",
+        selectbox=lambda *args, **kwargs: args[1][0] if len(args) > 1 and args[1] else "",
+        checkbox=lambda *args, **kwargs: False,
+        columns=lambda n: [MagicMock() for _ in range(n)],
+        metric=lambda *args, **kwargs: None,
+        button=_button,
+        dataframe=lambda *args, **kwargs: None,
+        json=lambda *args, **kwargs: None,
+        cache_data=_cache_data,
+        rerun=lambda: None,
+        expander=_expander,
+        session_state={},
+        stop=lambda: (_ for _ in ()).throw(SystemExit()),
+    )
+    return fake_st, recorded
+
+
+def _run_page_with_fixtures(fake_st, fake_client):
+    with patch.dict(sys.modules, {"streamlit": fake_st}):
+        with patch("utils.access_control.get_current_user_email", return_value=_REVIEWER), \
+             patch("utils.access_control.get_supabase_admin_client", return_value=fake_client), \
+             patch("utils.access_control.is_admin_unlocked", return_value=True), \
+             patch("utils.access_control.is_admin_user", return_value=True), \
+             patch("utils.access_control.render_app_chrome"), \
+             patch("utils.access_control.require_admin", return_value=_REVIEWER), \
+             patch("utils.session_timeout.enforce_session_timeout"), \
+             patch("utils.session_timeout.show_session_expired_notice"), \
+             patch("utils.version.APP_VERSION", "test"):
+            spec = importlib.util.spec_from_file_location(
+                "admin_audit_review_page_approval",
+                REPO_ROOT / "pages" / "Admin_Audit_Review.py",
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+
+
+class TestApprovalWiring(unittest.TestCase):
+    """V51-ADMIN-PUBLISH-01: approve_question_version wiring in the admin page."""
+
+    def _base_client(self, *, publishable: bool):
+        fake = FakeSupabase()
+        fake.set_response("list_audit_runs_for_review_v1", [_sample_run()])
+        fake.set_response("list_audit_findings_for_review_v1", [_sample_finding()])
+        fake.set_response("get_audit_finding_review_detail_v1", [_sample_detail()])
+        fake.set_response(
+            "get_question_version_publication_status_v1",
+            [{
+                "question_version_id": _VERSION_ID,
+                "publishable": publishable,
+                "blocking_finding_count": 0 if publishable else 1,
+                "blocking_findings": [] if publishable else [
+                    {"finding_id": _FINDING_ID, "finding_code": "X", "finding_status": "open"}
+                ],
+            }],
+        )
+        fake.set_response(
+            "approve_question_version_v1",
+            [{"question_version_id": _VERSION_ID, "question_id": 1067, "version_number": 3}],
+        )
+        return fake
+
+    def test_approval_action_disabled_when_not_publishable(self):
+        # No button_clicks entry for the approve key: a real disabled Streamlit
+        # button can never register a click, so the harness never simulates one.
+        fake = self._base_client(publishable=False)
+        fake_st, recorded = _build_interactive_fake_streamlit(
+            button_clicks={},
+            text_inputs={f"audit_review_approve_reason_{_FINDING_ID}": "Trying anyway"},
+        )
+        _run_page_with_fixtures(fake_st, fake)
+
+        approve_button_calls = [
+            call for call in recorded["button"]
+            if call["key"] == f"audit_review_approve_{_FINDING_ID}"
+        ]
+        self.assertEqual(len(approve_button_calls), 1)
+        self.assertTrue(approve_button_calls[0]["kwargs"].get("disabled"))
+
+        approve_text_calls = [
+            call for call in recorded["text_input"]
+            if call["key"] == f"audit_review_approve_reason_{_FINDING_ID}"
+        ]
+        self.assertEqual(len(approve_text_calls), 1)
+        self.assertTrue(approve_text_calls[0]["kwargs"].get("disabled"))
+
+        called_names = [name for name, _ in fake.calls]
+        self.assertNotIn("approve_question_version_v1", called_names)
+
+    def test_approval_enabled_and_wired_when_publishable(self):
+        fake = self._base_client(publishable=True)
+        fake_st, recorded = _build_interactive_fake_streamlit(
+            button_clicks={f"audit_review_approve_{_FINDING_ID}": True},
+            text_inputs={
+                f"audit_review_approve_reason_{_FINDING_ID}": "No remaining blocking findings"
+            },
+        )
+        _run_page_with_fixtures(fake_st, fake)
+
+        approve_button_calls = [
+            call for call in recorded["button"]
+            if call["key"] == f"audit_review_approve_{_FINDING_ID}"
+        ]
+        self.assertEqual(len(approve_button_calls), 1)
+        self.assertFalse(approve_button_calls[0]["kwargs"].get("disabled"))
+
+        approve_calls = [
+            params for name, params in fake.calls if name == "approve_question_version_v1"
+        ]
+        self.assertEqual(len(approve_calls), 1)
+        self.assertEqual(approve_calls[0]["p_question_version_id"], _VERSION_ID)
+        self.assertEqual(approve_calls[0]["p_actor_email"], _REVIEWER)
+        self.assertEqual(approve_calls[0]["p_reason"], "No remaining blocking findings")
+
+        called_names = [name for name, _ in fake.calls]
+        self.assertNotIn("publish_question_version_v1", called_names)
+
+    def test_actor_email_comes_from_authenticated_session_not_free_text(self):
+        fake = self._base_client(publishable=True)
+        fake_st, recorded = _build_interactive_fake_streamlit(
+            button_clicks={f"audit_review_approve_{_FINDING_ID}": True},
+            text_inputs={
+                f"audit_review_approve_reason_{_FINDING_ID}": "Reviewed",
+            },
+        )
+        with patch(
+            "utils.access_control.get_current_user_email", return_value=_REVIEWER
+        ):
+            _run_page_with_fixtures(fake_st, fake)
+
+        approve_reason_inputs = [
+            call for call in recorded["text_input"]
+            if call["key"] == f"audit_review_approve_reason_{_FINDING_ID}"
+        ]
+        # Only the approval reason is free text; identity is never sourced from a widget.
+        self.assertEqual(len(approve_reason_inputs), 1)
+        approve_calls = [
+            params for name, params in fake.calls if name == "approve_question_version_v1"
+        ]
+        self.assertEqual(approve_calls[0]["p_actor_email"], _REVIEWER)
+
+    def test_existing_publish_action_still_wired(self):
+        fake = self._base_client(publishable=True)
+        fake_st, recorded = _build_interactive_fake_streamlit(
+            button_clicks={f"audit_review_publish_{_FINDING_ID}": True},
+            text_inputs={f"audit_review_publish_reason_{_FINDING_ID}": "Ready to publish"},
+        )
+        fake.set_response(
+            "publish_question_version_v1",
+            [{"question_version_id": _VERSION_ID, "question_id": 1067, "version_number": 3}],
+        )
+        _run_page_with_fixtures(fake_st, fake)
+
+        publish_calls = [
+            params for name, params in fake.calls if name == "publish_question_version_v1"
+        ]
+        self.assertEqual(len(publish_calls), 1)
+        self.assertEqual(publish_calls[0]["p_actor_email"], _REVIEWER)
+        called_names = [name for name, _ in fake.calls]
+        self.assertNotIn("approve_question_version_v1", called_names)
+
+
 class TestPageImport(unittest.TestCase):
     def test_page_imports_without_streamlit_runtime_failure(self):
         import utils.access_control  # noqa: F401
