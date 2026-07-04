@@ -246,6 +246,14 @@ class CandidateTextBinding:
     expected_relevance_score: float
 
 
+@dataclass(frozen=True)
+class AuthoritativeCandidateMatch:
+    resource_id: str
+    resource_chunk_id: str
+    title: str
+    resource_type: str
+
+
 def normalize_embedding_input_text(text: str) -> str:
     """Normalize embedding input text deterministically for hashing."""
     return _WHITESPACE_RE.sub(" ", str(text).strip())
@@ -355,14 +363,14 @@ def _selected_semantic_review_bindings(
     return eligible[:candidate_limit]
 
 
-def _match_live_candidate_chunk_text(
+def _match_live_candidate_chunk(
     *,
     binding: CandidateTextBinding,
     question_record: Mapping[str, Any],
     blind_context: Mapping[str, Any],
     live_candidates: Sequence[Mapping[str, Any]],
     resource_by_id: Mapping[str, Mapping[str, Any]],
-) -> str:
+) -> tuple[str, AuthoritativeCandidateMatch]:
     title_matches = [
         candidate
         for candidate in live_candidates
@@ -448,6 +456,31 @@ def _match_live_candidate_chunk_text(
             failure_stage=FAILURE_STAGE_AUTHORITATIVE_MATCHING,
             error_detail="matched live candidate chunk has empty chunk_text",
         )
+    return chunk_text, AuthoritativeCandidateMatch(
+        resource_id=str(best_candidate["resource_id"]),
+        resource_chunk_id=str(best_candidate["resource_chunk_id"]),
+        title=str(best_candidate.get("title") or binding.title),
+        resource_type=str(
+            best_candidate.get("resource_type") or binding.resource_type
+        ),
+    )
+
+
+def _match_live_candidate_chunk_text(
+    *,
+    binding: CandidateTextBinding,
+    question_record: Mapping[str, Any],
+    blind_context: Mapping[str, Any],
+    live_candidates: Sequence[Mapping[str, Any]],
+    resource_by_id: Mapping[str, Mapping[str, Any]],
+) -> str:
+    chunk_text, _match = _match_live_candidate_chunk(
+        binding=binding,
+        question_record=question_record,
+        blind_context=blind_context,
+        live_candidates=live_candidates,
+        resource_by_id=resource_by_id,
+    )
     return chunk_text
 
 
@@ -485,6 +518,7 @@ class AuthoritativeEmbeddingTextResolver:
         self._candidate_pool_loader = candidate_pool_loader
         self._question_text_by_id: dict[str, str] = {}
         self._candidate_text_by_identity: dict[str, str] = {}
+        self._candidate_match_by_identity: dict[str, AuthoritativeCandidateMatch] = {}
         self._content_hashes: list[str] = []
         self._prepared = False
 
@@ -541,7 +575,7 @@ class AuthoritativeEmbeddingTextResolver:
                         f"{binding.candidate_identity!r}"
                     )
                 seen_candidate_identities.add(binding.candidate_identity)
-                chunk_text = _match_live_candidate_chunk_text(
+                chunk_text, candidate_match = _match_live_candidate_chunk(
                     binding=binding,
                     question_record=question_record,
                     blind_context=blind_context,
@@ -549,6 +583,7 @@ class AuthoritativeEmbeddingTextResolver:
                     resource_by_id=resource_by_id,
                 )
                 self._candidate_text_by_identity[binding.candidate_identity] = chunk_text
+                self._candidate_match_by_identity[binding.candidate_identity] = candidate_match
                 content_hashes.append(compute_authoritative_content_hash(chunk_text))
 
         self._content_hashes = content_hashes
@@ -614,6 +649,13 @@ class AuthoritativeEmbeddingTextResolver:
                 "authoritative embedding text must be prepared before resolution"
             )
         return self._candidate_text_by_identity.get(candidate_identity)
+
+    def resolve_candidate_match(self, candidate_identity: str) -> Optional[AuthoritativeCandidateMatch]:
+        if not self._prepared:
+            raise AuthoritativeEmbeddingTextError(
+                "authoritative embedding text must be prepared before resolution"
+            )
+        return self._candidate_match_by_identity.get(candidate_identity)
 
 
 class FixtureEmbeddingTextResolver:

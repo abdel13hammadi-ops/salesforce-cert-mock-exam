@@ -4,3 +4,4 @@ __pycache__/
 *.zip
 .env
 .DS_Store
+.local/v48/relevance_review/
