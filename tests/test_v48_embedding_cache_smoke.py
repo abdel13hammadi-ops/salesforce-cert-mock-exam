@@ -16,17 +16,21 @@ from scripts.v48_embedding_cache_smoke import (
     ENV_OPENAI_API_KEY,
     ENV_SUPABASE_SERVICE_ROLE_KEY,
     ENV_SUPABASE_URL,
+    FLOAT8_ARRAY_STORAGE_ABS_TOL,
     EmbeddingCacheSmokeCleanupError,
     EmbeddingCacheSmokeConfig,
     EmbeddingCacheSmokeConfigError,
+    EmbeddingCacheSmokeConsistencyError,
     EmbeddingCacheSmokeEnvironmentError,
     EmbeddingCacheSmokeProviderError,
+    assert_vectors_equivalent_within_float8_round_trip,
     build_initial_summary,
     build_synthetic_smoke_texts,
     cleanup_smoke_cache_rows,
     delete_cache_row_by_identity,
     format_redacted_summary,
     main,
+    max_absolute_vector_difference,
     parse_args,
     run_embedding_cache_smoke,
     validate_execute_configuration,
@@ -181,10 +185,46 @@ class _MockSupabaseClient:
             ]
             if len(query._filters) != 6:
                 raise AssertionError("delete must filter on all cache identity fields")
+            deleted_rows = [dict(self.rows[key]) for key in keys_to_delete]
             for key in keys_to_delete:
                 del self.rows[key]
-            return _MockSupabaseResult([])
+            return _MockSupabaseResult(deleted_rows)
         raise AssertionError(f"unexpected operation {query._operation!r}")
+
+
+class _Float8RoundTripMockClient(_MockSupabaseClient):
+    """Simulate harmless float8[] reload precision drift on cache hits."""
+
+    def _execute_query(self, query: _MockSupabaseQuery) -> _MockSupabaseResult:
+        if query._operation != "select":
+            return super()._execute_query(query)
+        result = super()._execute_query(query)
+        if not result.data:
+            return result
+        perturbed_rows = []
+        for row in result.data:
+            adjusted = dict(row)
+            vector = [float(value) for value in adjusted["embedding_vector"]]
+            vector[0] = vector[0] + 1e-13
+            adjusted["embedding_vector"] = vector
+            perturbed_rows.append(adjusted)
+        return _MockSupabaseResult(perturbed_rows)
+
+
+class _MaterialVectorDriftMockClient(_MockSupabaseClient):
+    """Simulate a materially different vector after cache reload."""
+
+    def _execute_query(self, query: _MockSupabaseQuery) -> _MockSupabaseResult:
+        if query._operation != "select":
+            return super()._execute_query(query)
+        result = super()._execute_query(query)
+        if not result.data:
+            return result
+        row = dict(result.data[0])
+        row["embedding_vector"] = [
+            float(value) + 1.0 for value in row["embedding_vector"]
+        ]
+        return _MockSupabaseResult([row])
 
 
 def _execute_config(**overrides: Any) -> EmbeddingCacheSmokeConfig:
@@ -326,6 +366,40 @@ class TestEmbeddingCacheSmokeExecution(unittest.TestCase):
         self.assertEqual(summary["final_status"], "success")
         self.assertEqual(client.rows, {})
 
+    def test_float8_round_trip_precision_difference_passes(self):
+        config = _execute_config()
+        transport = RecordingTransport()
+        client = _Float8RoundTripMockClient()
+
+        summary = run_embedding_cache_smoke(
+            config,
+            env=_REQUIRED_ENV,
+            client_factory=lambda: client,
+            transport_factory=lambda: transport,
+        )
+
+        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(summary["final_status"], "success")
+        self.assertTrue(summary["cleanup_succeeded"])
+        self.assertEqual(client.rows, {})
+
+    def test_cleanup_succeeds_after_material_vector_validation_failure(self):
+        config = _execute_config()
+        client = _MaterialVectorDriftMockClient()
+        summary = build_initial_summary(config)
+
+        with self.assertRaises(EmbeddingCacheSmokeConsistencyError):
+            run_embedding_cache_smoke(
+                config,
+                env=_REQUIRED_ENV,
+                client_factory=lambda: client,
+                transport_factory=lambda: RecordingTransport(),
+                summary=summary,
+            )
+
+        self.assertTrue(summary["cleanup_succeeded"])
+        self.assertEqual(client.rows, {})
+
     def test_repeated_lookups_are_cache_hits(self):
         config = _execute_config()
         transport = RecordingTransport()
@@ -395,7 +469,7 @@ class TestEmbeddingCacheSmokeExecution(unittest.TestCase):
                 summary=summary,
             )
 
-        self.assertFalse(summary["cleanup_succeeded"])
+        self.assertTrue(summary["cleanup_succeeded"])
         delete_queries = [query for query in client.queries if query._operation == "delete"]
         self.assertEqual(len(delete_queries), 2)
 
@@ -417,6 +491,22 @@ class TestEmbeddingCacheSmokeExecution(unittest.TestCase):
         self.assertFalse(summary["cleanup_succeeded"])
         delete_queries = [query for query in client.queries if query._operation == "delete"]
         self.assertEqual(len(delete_queries), 2)
+
+    def test_passed_summary_dict_is_updated_in_place(self):
+        config = _execute_config()
+        summary = build_initial_summary(config)
+
+        returned = run_embedding_cache_smoke(
+            config,
+            env=_REQUIRED_ENV,
+            client_factory=_MockSupabaseClient,
+            transport_factory=lambda: RecordingTransport(),
+            summary=summary,
+        )
+
+        self.assertIs(returned, summary)
+        self.assertTrue(summary["cleanup_succeeded"])
+        self.assertEqual(summary["final_status"], "success")
 
     def test_broad_delete_is_not_possible(self):
         client = _MockSupabaseClient()
@@ -462,6 +552,69 @@ class TestEmbeddingCacheSmokeOutputPrivacy(unittest.TestCase):
         self.assertNotIn(_SENSITIVE_QUERY, combined)
 
 
+class TestEmbeddingCacheSmokeVectorEquivalence(unittest.TestCase):
+    def test_identical_vectors_pass(self):
+        assert_vectors_equivalent_within_float8_round_trip(
+            left=_VECTOR,
+            right=_VECTOR,
+            label="query",
+            dimensions=_DIMENSIONS,
+        )
+
+    def test_harmless_float8_round_trip_difference_passes(self):
+        perturbed = (_VECTOR[0] + 1e-13, _VECTOR[1], _VECTOR[2])
+        assert_vectors_equivalent_within_float8_round_trip(
+            left=_VECTOR,
+            right=perturbed,
+            label="query",
+            dimensions=_DIMENSIONS,
+        )
+
+    def test_material_vector_difference_fails(self):
+        different = (_VECTOR[0] + 1.0, _VECTOR[1], _VECTOR[2])
+        with self.assertRaises(EmbeddingCacheSmokeConsistencyError) as ctx:
+            assert_vectors_equivalent_within_float8_round_trip(
+                left=_VECTOR,
+                right=different,
+                label="query",
+                dimensions=_DIMENSIONS,
+            )
+        self.assertIn("max_abs_diff", str(ctx.exception))
+        self.assertNotIn(str(_VECTOR[0]), str(ctx.exception))
+
+    def test_dimension_mismatch_fails(self):
+        with self.assertRaises(EmbeddingCacheSmokeConsistencyError):
+            assert_vectors_equivalent_within_float8_round_trip(
+                left=_VECTOR,
+                right=_VECTOR[:2],
+                label="query",
+                dimensions=_DIMENSIONS,
+            )
+
+    def test_nan_and_infinity_are_rejected(self):
+        with self.assertRaises(EmbeddingCacheSmokeConsistencyError):
+            assert_vectors_equivalent_within_float8_round_trip(
+                left=(float("nan"), 0.2, 0.3),
+                right=_VECTOR,
+                label="query",
+                dimensions=_DIMENSIONS,
+            )
+        with self.assertRaises(EmbeddingCacheSmokeConsistencyError):
+            assert_vectors_equivalent_within_float8_round_trip(
+                left=_VECTOR,
+                right=(float("inf"), 0.2, 0.3),
+                label="query",
+                dimensions=_DIMENSIONS,
+            )
+
+    def test_max_absolute_difference_helper(self):
+        self.assertAlmostEqual(
+            max_absolute_vector_difference(_VECTOR, (_VECTOR[0] + 1e-13, *_VECTOR[1:])),
+            1e-13,
+        )
+        self.assertEqual(FLOAT8_ARRAY_STORAGE_ABS_TOL, 1e-12)
+
+
 class TestEmbeddingCacheSmokeHelpers(unittest.TestCase):
     def test_parse_args_requires_explicit_dimensions_for_execute(self):
         config = parse_args(
@@ -497,8 +650,24 @@ class TestEmbeddingCacheSmokeHelpers(unittest.TestCase):
         )
         client.rows[client._row_key(row)] = row
 
-        delete_cache_row_by_identity(client, identity)
+        deleted_count = delete_cache_row_by_identity(client, identity)
 
+        self.assertEqual(deleted_count, 1)
+        self.assertEqual(client.rows, {})
+        self.assertEqual(len(client.queries[-1]._filters), 6)
+
+    def test_cleanup_smoke_cache_rows_reports_success_when_rows_absent(self):
+        client = _MockSupabaseClient()
+        repository = SupabaseEmbeddingCacheRepository(client)
+        query_identity, chunk_identity = _identities()
+
+        cleanup_smoke_cache_rows(
+            client=client,
+            repository=repository,
+            identities=[query_identity, chunk_identity],
+        )
+
+        self.assertEqual(client.delete_calls, 2)
         self.assertEqual(client.rows, {})
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import uuid
@@ -44,6 +45,12 @@ ENV_SUPABASE_URL = "SUPABASE_URL"
 ENV_SUPABASE_SERVICE_ROLE_KEY = "SUPABASE_SERVICE_ROLE_KEY"
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
+
+# retrieval_embedding_cache.embedding_vector is PostgreSQL double precision[] (float8[]).
+# On cache miss the service returns the in-memory provider tuple; on cache hit it
+# reloads the persisted float8[] via Supabase JSON. Finite float8 round-trip may
+# differ slightly from the first in-memory tuple without indicating cache corruption.
+FLOAT8_ARRAY_STORAGE_ABS_TOL = 1e-12
 
 
 class EmbeddingCacheSmokeError(RuntimeError):
@@ -256,7 +263,7 @@ def build_initial_summary(config: EmbeddingCacheSmokeConfig) -> dict[str, Any]:
     }
 
 
-def delete_cache_row_by_identity(client: Any, identity: EmbeddingCacheIdentity) -> None:
+def delete_cache_row_by_identity(client: Any, identity: EmbeddingCacheIdentity) -> int:
     """Delete exactly one cache row matching the full cache identity."""
     query = client.table(TABLE_NAME).delete()
     for field_name, value in (
@@ -268,7 +275,9 @@ def delete_cache_row_by_identity(client: Any, identity: EmbeddingCacheIdentity) 
         ("embedding_dimensions", identity.embedding_dimensions),
     ):
         query = query.eq(field_name, value)
-    query.execute()
+    response = query.execute()
+    deleted_rows = getattr(response, "data", None) or []
+    return len(deleted_rows)
 
 
 def cleanup_smoke_cache_rows(
@@ -285,7 +294,19 @@ def cleanup_smoke_cache_rows(
     cleanup_errors: list[str] = []
     for identity in identities:
         try:
-            delete_cache_row_by_identity(client, identity)
+            deleted_count = delete_cache_row_by_identity(client, identity)
+            if deleted_count == 0:
+                remaining = repository.lookup(identity)
+                if remaining is not None:
+                    cleanup_errors.append(
+                        "delete matched zero rows for "
+                        f"content_hash={identity.content_hash}"
+                    )
+            elif deleted_count > 1:
+                cleanup_errors.append(
+                    "delete matched more than one row for "
+                    f"content_hash={identity.content_hash}"
+                )
         except Exception as exc:
             cleanup_errors.append(
                 f"delete failed for content_hash={identity.content_hash}: {type(exc).__name__}"
@@ -320,9 +341,10 @@ def run_embedding_cache_smoke(
 ) -> dict[str, Any]:
     """Run the smoke flow or return a dry-run summary without external calls."""
     environment = dict(os.environ if env is None else env)
-    result_summary: dict[str, Any] = dict(
-        summary if summary is not None else build_initial_summary(config)
-    )
+    if summary is not None:
+        result_summary = summary
+    else:
+        result_summary = build_initial_summary(config)
 
     if not config.execute:
         return result_summary
@@ -475,6 +497,57 @@ def run_embedding_cache_smoke(
     return result_summary
 
 
+def max_absolute_vector_difference(
+    left: Sequence[float],
+    right: Sequence[float],
+) -> float:
+    """Return the maximum absolute component difference between two vectors."""
+    if len(left) != len(right):
+        raise EmbeddingCacheSmokeConsistencyError(
+            "vector length mismatch during float8 round-trip comparison"
+        )
+    return max(abs(float(left_value) - float(right_value)) for left_value, right_value in zip(left, right))
+
+
+def assert_vectors_equivalent_within_float8_round_trip(
+    *,
+    left: Sequence[float],
+    right: Sequence[float],
+    label: str,
+    dimensions: int,
+) -> None:
+    """Assert two vectors match within float8[] storage round-trip tolerance."""
+    if len(left) != dimensions:
+        raise EmbeddingCacheSmokeConsistencyError(
+            f"{label} embedding vector length does not match requested dimensions"
+        )
+    if len(right) != dimensions:
+        raise EmbeddingCacheSmokeConsistencyError(
+            f"repeated {label} embedding vector length does not match requested dimensions"
+        )
+
+    for index, (left_value, right_value) in enumerate(zip(left, right)):
+        left_component = float(left_value)
+        right_component = float(right_value)
+        if math.isnan(left_component) or math.isinf(left_component):
+            raise EmbeddingCacheSmokeConsistencyError(
+                f"{label} embedding vector contains non-finite value at index {index}"
+            )
+        if math.isnan(right_component) or math.isinf(right_component):
+            raise EmbeddingCacheSmokeConsistencyError(
+                f"repeated {label} embedding vector contains non-finite value at index {index}"
+            )
+
+    max_abs_diff = max_absolute_vector_difference(left, right)
+    if max_abs_diff > FLOAT8_ARRAY_STORAGE_ABS_TOL:
+        raise EmbeddingCacheSmokeConsistencyError(
+            f"repeated {label} embedding vector differs from first result "
+            f"beyond float8[] storage tolerance "
+            f"(max_abs_diff={max_abs_diff:.3e}, "
+            f"abs_tol={FLOAT8_ARRAY_STORAGE_ABS_TOL:.3e})"
+        )
+
+
 def _assert_repeated_results_consistent(
     *,
     first: Any,
@@ -482,18 +555,12 @@ def _assert_repeated_results_consistent(
     label: str,
     dimensions: int,
 ) -> None:
-    if len(first.embedding_vector) != dimensions:
-        raise EmbeddingCacheSmokeConsistencyError(
-            f"{label} embedding vector length does not match requested dimensions"
-        )
-    if len(repeated.embedding_vector) != dimensions:
-        raise EmbeddingCacheSmokeConsistencyError(
-            f"repeated {label} embedding vector length does not match requested dimensions"
-        )
-    if first.embedding_vector != repeated.embedding_vector:
-        raise EmbeddingCacheSmokeConsistencyError(
-            f"repeated {label} embedding vector differs from first result"
-        )
+    assert_vectors_equivalent_within_float8_round_trip(
+        left=first.embedding_vector,
+        right=repeated.embedding_vector,
+        label=label,
+        dimensions=dimensions,
+    )
     if first.provider_response_hash != repeated.provider_response_hash:
         raise EmbeddingCacheSmokeConsistencyError(
             f"repeated {label} provider_response_hash differs from first result"
