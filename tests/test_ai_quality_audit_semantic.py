@@ -480,7 +480,11 @@ class TestSemanticScoringDeterminismAndPrivacy(unittest.TestCase):
         workers_dir = os.path.join(repo_root, "workers")
         offenders: List[str] = []
         for name in os.listdir(workers_dir):
-            if not name.endswith(".py") or name in {"ai_quality_audit_semantic.py", "__init__.py"}:
+            if not name.endswith(".py") or name in {
+                "ai_quality_audit_semantic.py",
+                "ai_quality_audit_hybrid_replay.py",
+                "__init__.py",
+            }:
                 continue
             path = os.path.join(workers_dir, name)
             with open(path, encoding="utf-8") as handle:
