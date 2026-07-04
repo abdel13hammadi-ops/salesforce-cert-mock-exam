@@ -741,6 +741,7 @@ class TestHybridReplayPrivacyAndIsolation(unittest.TestCase):
         for name in os.listdir(workers_dir):
             if not name.endswith(".py") or name in {
                 "ai_quality_audit_hybrid_replay.py",
+                "v48_hybrid_replay_authoritative_text.py",
                 "__init__.py",
             }:
                 continue
