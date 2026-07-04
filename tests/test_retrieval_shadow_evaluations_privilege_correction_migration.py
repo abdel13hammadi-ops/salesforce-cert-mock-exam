@@ -214,28 +214,36 @@ class TestPrivilegeCorrectionMigration(unittest.TestCase):
         self.assertGreater(int(correction_ts), int(foundation_ts))
 
     def test_only_intended_files_changed_in_working_tree(self):
-        # No runtime worker file and no other migration should be touched by
-        # this corrective slice.
+        # No runtime worker file may be modified, and this corrective
+        # migration itself must never be modified or deleted relative to
+        # HEAD. This intentionally uses `git diff` (tracked-file changes),
+        # not `git status` (which also lists untracked files): later,
+        # unrelated additive migrations may legitimately appear as new
+        # untracked files over time and are not a violation of this
+        # corrective slice's own scope.
         result = subprocess.run(
-            ["git", "status", "--porcelain", "supabase/migrations", "workers"],
+            [
+                "git",
+                "diff",
+                "--name-status",
+                "HEAD",
+                "--",
+                str(CORRECTION_MIGRATION_PATH),
+                "workers",
+            ],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
             check=False,
         )
-        changed_paths = [
-            line[3:].strip()
-            for line in result.stdout.splitlines()
-            if line.strip()
-        ]
-        for path in changed_paths:
-            with self.subTest(path=path):
-                self.assertNotIn("workers/", path)
-                if "supabase/migrations" in path or "supabase\\migrations" in path:
-                    self.assertIn(
-                        "20260703200000_v48_retrieval_shadow_evaluations_privilege_correction.sql",
-                        path,
-                    )
+        self.assertEqual(
+            result.stdout.strip(),
+            "",
+            msg=(
+                "expected no tracked-file diff for the corrective migration or "
+                f"workers/, got: {result.stdout!r}"
+            ),
+        )
 
 
 if __name__ == "__main__":
