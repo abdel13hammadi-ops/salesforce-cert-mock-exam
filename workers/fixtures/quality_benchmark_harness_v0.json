@@ -1,0 +1,657 @@
+{
+  "benchmark_version": "harness-v0",
+  "ruleset_version": "1.0.0",
+  "prompt_version": "benchmark-v0",
+  "model_name": "mock-model",
+  "fixture_metadata": {
+    "evidence_note": "Synthetic harness fixture only. These chunks are fabricated for benchmark harness tests and are not official Salesforce source excerpts.",
+    "purpose": "Self-test fixture for V58-QUALITY-03A dual-engine benchmark harness. Not the official pilot benchmark."
+  },
+  "cases": [
+    {
+      "case_id": "harness-001-known-good",
+      "benchmark_version": "harness-v0",
+      "certification": "Administrator",
+      "domain": "Configuration",
+      "defect_category": "none",
+      "known_good": true,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": [],
+      "expected_materiality": null,
+      "reviewer_label": {
+        "known_good": true,
+        "expected_finding_codes": []
+      },
+      "question": {
+        "question_text": "What is the primary responsibility of a Salesforce Administrator?",
+        "explanation": "Salesforce Administrators configure and maintain the platform, manage users, maintain data quality, and support business processes.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Configure and maintain the Salesforce platform",
+            "is_correct": true,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Develop all Apex integrations for external systems",
+            "is_correct": false,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Design and execute all marketing campaigns",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Approve every sales opportunity in the pipeline",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "bbbbbbbb-0001-0001-0001-000000000001",
+            "chunk_index": 0,
+            "chunk_text": "Salesforce Administrators configure and maintain the platform, manage users, maintain data quality, and support business processes."
+          }
+        ]
+      },
+      "legacy_mock": {
+        "llm_findings": []
+      },
+      "v48_mock": {
+        "pass_b": {
+          "selected_option_labels": ["A"],
+          "proposed_findings": []
+        }
+      }
+    },
+    {
+      "case_id": "harness-002-wrong-answer-key",
+      "benchmark_version": "harness-v0",
+      "certification": "Administrator",
+      "domain": "Security",
+      "defect_category": "correctness",
+      "known_good": false,
+      "expected_correct_option_labels": ["B"],
+      "expected_finding_codes": ["WRONG_ANSWER_KEY"],
+      "expected_materiality": "blocking",
+      "reviewer_label": {
+        "known_good": false,
+        "expected_finding_codes": ["WRONG_ANSWER_KEY"]
+      },
+      "question": {
+        "question_text": "Which feature lets an admin grant additional permissions without changing a user's profile?",
+        "explanation": "Permission sets grant additional permissions without changing the assigned profile.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Permission set",
+            "is_correct": false,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Profile update",
+            "is_correct": true,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Role hierarchy",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Sharing rule",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "bbbbbbbb-0002-0002-0002-000000000002",
+            "chunk_index": 0,
+            "chunk_text": "Permission sets are the standard way to grant additional permissions without changing a user's assigned profile."
+          }
+        ]
+      },
+      "legacy_mock": {
+        "llm_findings": [
+          {
+            "finding_code": "EXP_001",
+            "finding_type": "correctness",
+            "severity": "high",
+            "title": "Incorrect answer key",
+            "description": "The marked correct option contradicts the calibration evidence.",
+            "evidence": []
+          }
+        ]
+      },
+      "v48_mock": {
+        "pass_b": {
+          "selected_option_labels": ["B"],
+          "proposed_findings": [
+            {
+              "finding_ref": "f1",
+              "finding_code": "WRONG_ANSWER_KEY",
+              "finding_type": "correctness",
+              "severity": "high",
+              "materiality": "blocking",
+              "title": "Incorrect answer key",
+              "description": "Option A is marked correct but evidence supports option B.",
+              "evidence_chunk_ids": ["bbbbbbbb-0002-0002-0002-000000000002"],
+              "metadata": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "harness-003-unsupported-answer",
+      "benchmark_version": "harness-v0",
+      "certification": "Administrator",
+      "domain": "Data Management",
+      "defect_category": "correctness",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["UNSUPPORTED_ANSWER"],
+      "expected_materiality": "blocking",
+      "reviewer_label": {
+        "known_good": false,
+        "expected_finding_codes": ["UNSUPPORTED_ANSWER"]
+      },
+      "question": {
+        "question_text": "What is the recommended way to deduplicate Account records in Salesforce?",
+        "explanation": "Duplicate management rules and matching rules help identify and merge duplicate account records.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Use duplicate rules and matching rules",
+            "is_correct": false,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Delete all duplicate records manually every week",
+            "is_correct": true,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Disable validation rules",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Export to spreadsheet and reimport",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "bbbbbbbb-0003-0003-0003-000000000003",
+            "chunk_index": 0,
+            "chunk_text": "Duplicate rules and matching rules are the supported Salesforce mechanisms for identifying and handling duplicate records."
+          }
+        ]
+      },
+      "legacy_mock": {
+        "llm_findings": [
+          {
+            "finding_code": "UNSUPPORTED_ANSWER",
+            "finding_type": "correctness",
+            "severity": "high",
+            "title": "Unsupported answer",
+            "description": "The keyed answer is unsupported by the supplied evidence.",
+            "evidence": []
+          }
+        ]
+      },
+      "v48_mock": {
+        "pass_b": {
+          "selected_option_labels": ["A"],
+          "proposed_findings": [
+            {
+              "finding_ref": "f1",
+              "finding_code": "UNSUPPORTED_ANSWER",
+              "finding_type": "correctness",
+              "severity": "high",
+              "materiality": "blocking",
+              "title": "Unsupported answer",
+              "description": "The keyed answer cannot be supported by the frozen evidence chunks.",
+              "evidence_chunk_ids": ["bbbbbbbb-0003-0003-0003-000000000003"],
+              "metadata": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "harness-004-ambiguous",
+      "benchmark_version": "harness-v0",
+      "certification": "Administrator",
+      "domain": "Security",
+      "defect_category": "ambiguity",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["AMBIGUOUS_QUESTION"],
+      "expected_materiality": "warning",
+      "reviewer_label": {
+        "known_good": false,
+        "expected_finding_codes": ["AMBIGUOUS_QUESTION"]
+      },
+      "question": {
+        "question_text": "What is the best way to improve a user's Salesforce access?",
+        "explanation": "Access changes depend on whether the user needs permissions beyond their current profile.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Assign a permission set",
+            "is_correct": true,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Update the user's profile",
+            "is_correct": false,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Create a new role",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Enable login hours",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "bbbbbbbb-0004-0004-0004-000000000004",
+            "chunk_index": 0,
+            "chunk_text": "Both permission sets and profile updates can change user access depending on business context."
+          }
+        ]
+      },
+      "legacy_mock": {
+        "llm_findings": [
+          {
+            "finding_code": "AMBIGUOUS_QUESTION",
+            "finding_type": "ambiguity",
+            "severity": "medium",
+            "title": "Ambiguous wording",
+            "description": "The stem lacks the business context needed to choose one access approach.",
+            "evidence": []
+          }
+        ]
+      },
+      "v48_mock": {
+        "pass_b": {
+          "selected_option_labels": ["A"],
+          "proposed_findings": [
+            {
+              "finding_ref": "f1",
+              "finding_code": "AMBIGUOUS_QUESTION",
+              "finding_type": "ambiguity",
+              "severity": "medium",
+              "materiality": "warning",
+              "title": "Ambiguous wording",
+              "description": "The stem does not specify enough context to rule out profile updates.",
+              "evidence_chunk_ids": ["bbbbbbbb-0004-0004-0004-000000000004"],
+              "metadata": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "harness-005-weak-distractors",
+      "benchmark_version": "harness-v0",
+      "certification": "Administrator",
+      "domain": "Security",
+      "defect_category": "answer_quality",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["WEAK_DISTRACTORS"],
+      "expected_materiality": "warning",
+      "reviewer_label": {
+        "known_good": false,
+        "expected_finding_codes": ["WEAK_DISTRACTORS"]
+      },
+      "question": {
+        "question_text": "Which Salesforce feature grants additional permissions without changing a user's profile?",
+        "explanation": "Permission sets are designed for additive permissions.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Permission set",
+            "is_correct": true,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Report chart color",
+            "is_correct": false,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Email template footer",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Lightning page background",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "bbbbbbbb-0005-0005-0005-000000000005",
+            "chunk_index": 0,
+            "chunk_text": "Permission sets grant additional permissions without changing a user's assigned profile."
+          }
+        ]
+      },
+      "legacy_mock": {
+        "llm_findings": [
+          {
+            "finding_code": "WEAK_DISTRACTORS_001",
+            "finding_type": "answer_quality",
+            "severity": "medium",
+            "title": "Weak distractors",
+            "description": "Several distractors are unrealistic or trivially dismissible.",
+            "evidence": []
+          }
+        ]
+      },
+      "v48_mock": {
+        "pass_b": {
+          "selected_option_labels": ["A"],
+          "proposed_findings": [
+            {
+              "finding_ref": "f1",
+              "finding_code": "WEAK_DISTRACTORS",
+              "finding_type": "answer_quality",
+              "severity": "medium",
+              "materiality": "warning",
+              "title": "Weak distractors",
+              "description": "Multiple distractors are unrelated UI elements rather than plausible access mechanisms.",
+              "evidence_chunk_ids": ["bbbbbbbb-0005-0005-0005-000000000005"],
+              "metadata": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "harness-006-explanation-defect",
+      "benchmark_version": "harness-v0",
+      "certification": "Administrator",
+      "domain": "Configuration",
+      "defect_category": "explanation_quality",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["EXPLANATION_MISSING"],
+      "expected_materiality": "blocking",
+      "reviewer_label": {
+        "known_good": false,
+        "expected_finding_codes": ["EXPLANATION_MISSING"]
+      },
+      "question": {
+        "question_text": "What does a Salesforce Administrator primarily do?",
+        "explanation": "",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Configure and maintain the Salesforce platform",
+            "is_correct": true,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Design all marketing campaigns",
+            "is_correct": false,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Write every Apex trigger in the org",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Approve all customer contracts",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "bbbbbbbb-0006-0006-0006-000000000006",
+            "chunk_index": 0,
+            "chunk_text": "Administrators configure the platform, manage users, and maintain business processes."
+          }
+        ]
+      },
+      "legacy_mock": {
+        "llm_findings": []
+      },
+      "v48_mock": {
+        "pass_b": {
+          "selected_option_labels": ["A"],
+          "proposed_findings": [
+            {
+              "finding_ref": "f1",
+              "finding_code": "EXPLANATION_MISSING",
+              "finding_type": "explanation_quality",
+              "severity": "high",
+              "materiality": "blocking",
+              "title": "Missing explanation",
+              "description": "The question has no explanation text.",
+              "evidence_chunk_ids": ["bbbbbbbb-0006-0006-0006-000000000006"],
+              "metadata": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "harness-007-reviewer-agree",
+      "benchmark_version": "harness-v0",
+      "certification": "Administrator",
+      "domain": "Configuration",
+      "defect_category": "none",
+      "known_good": true,
+      "expected_correct_option_labels": ["C"],
+      "expected_finding_codes": [],
+      "expected_materiality": null,
+      "reviewer_label": {
+        "known_good": true,
+        "expected_finding_codes": []
+      },
+      "second_reviewer_label": {
+        "known_good": true,
+        "expected_finding_codes": []
+      },
+      "question": {
+        "question_text": "Which object stores standard user records in Salesforce?",
+        "explanation": "The User object stores standard user records.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Account",
+            "is_correct": false,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Contact",
+            "is_correct": false,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "User",
+            "is_correct": true,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Lead",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "bbbbbbbb-0007-0007-0007-000000000007",
+            "chunk_index": 0,
+            "chunk_text": "Standard user records are stored on the User object."
+          }
+        ]
+      },
+      "legacy_mock": {
+        "llm_findings": []
+      },
+      "v48_mock": {
+        "pass_b": {
+          "selected_option_labels": ["C"],
+          "proposed_findings": []
+        }
+      }
+    },
+    {
+      "case_id": "harness-008-reviewer-disagree",
+      "benchmark_version": "harness-v0",
+      "certification": "Administrator",
+      "domain": "Security",
+      "defect_category": "ambiguity",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["AMBIGUOUS_QUESTION"],
+      "expected_materiality": "warning",
+      "reviewer_label": {
+        "known_good": false,
+        "expected_finding_codes": ["AMBIGUOUS_QUESTION"]
+      },
+      "second_reviewer_label": {
+        "known_good": false,
+        "expected_finding_codes": ["MULTIPLE_DEFENSIBLE_ANSWERS"]
+      },
+      "question": {
+        "question_text": "How should an admin adjust access for a user who needs one extra permission?",
+        "explanation": "Use the least-privilege approach supported by the business requirement.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {
+            "option_label": "A",
+            "option_text": "Assign a permission set",
+            "is_correct": true,
+            "display_order": 1
+          },
+          {
+            "option_label": "B",
+            "option_text": "Clone and modify the profile",
+            "is_correct": false,
+            "display_order": 2
+          },
+          {
+            "option_label": "C",
+            "option_text": "Create a new role",
+            "is_correct": false,
+            "display_order": 3
+          },
+          {
+            "option_label": "D",
+            "option_text": "Enable delegated administration",
+            "is_correct": false,
+            "display_order": 4
+          }
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "bbbbbbbb-0008-0008-0008-000000000008",
+            "chunk_index": 0,
+            "chunk_text": "Permission sets and profile changes can both satisfy additive permission needs depending on org policy."
+          }
+        ]
+      },
+      "legacy_mock": {
+        "llm_findings": [
+          {
+            "finding_code": "AMBIGUOUS_QUESTION",
+            "finding_type": "ambiguity",
+            "severity": "medium",
+            "title": "Ambiguous access scenario",
+            "description": "The stem does not specify whether profile cloning is acceptable.",
+            "evidence": []
+          }
+        ]
+      },
+      "v48_mock": {
+        "pass_b": {
+          "selected_option_labels": ["A"],
+          "proposed_findings": [
+            {
+              "finding_ref": "f1",
+              "finding_code": "AMBIGUOUS_QUESTION",
+              "finding_type": "ambiguity",
+              "severity": "medium",
+              "materiality": "warning",
+              "title": "Ambiguous access scenario",
+              "description": "The stem does not specify whether profile cloning is acceptable.",
+              "evidence_chunk_ids": ["bbbbbbbb-0008-0008-0008-000000000008"],
+              "metadata": {}
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
