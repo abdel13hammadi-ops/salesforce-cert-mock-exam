@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from workers.audit_orchestration import orchestrate_audit
-from workers.deterministic_audit import run_deterministic_checks
+from workers.deterministic_audit import DETECTOR_NAME, DETECTOR_VERSION, run_deterministic_checks
 from workers.finding_merge import merge_findings
 from workers.finding_policy import normalize_llm_finding
 from workers.llm_audit import validate_llm_response
@@ -228,8 +228,8 @@ class TestOrchestrationMaterialityPayload(unittest.TestCase):
             "field_path": "explanation",
             "evidence": [],
             "metadata": {"ruleset_version": "1.0.0"},
-            "detector_name": "certbound-det",
-            "detector_version": "1.0.0",
+            "detector_name": DETECTOR_NAME,
+            "detector_version": DETECTOR_VERSION,
         }
         llm = {
             "finding_code": "EXPLANATION_MISSING",

@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from workers.deterministic_audit import DETECTOR_NAME, DETECTOR_VERSION
 from workers.finding_merge import merge_findings, _pick_severity, _pick_confidence
 from workers.job_handlers import (
     build_handler_registry,
@@ -230,8 +231,8 @@ def _det_finding(
         "confidence":       confidence,
         "evidence":         evidence or [],
         "metadata":         metadata if metadata is not None else {"ruleset_version": "1.0.0"},
-        "detector_name":    "certbound-det",
-        "detector_version": "1.0.0",
+        "detector_name":    DETECTOR_NAME,
+        "detector_version": DETECTOR_VERSION,
     }
 
 
@@ -394,7 +395,7 @@ class TestFindingMerge(unittest.TestCase):
         f = result[0]
         self.assertEqual(f["finding_code"],     "X001")
         self.assertEqual(f["title"],            "[DET] X001")
-        self.assertEqual(f["detector_name"],    "certbound-det")
+        self.assertEqual(f["detector_name"],    DETECTOR_NAME)
         self.assertEqual(f["detector_version"], "1.0.0")
 
     def test_different_field_path_not_deduped(self):
@@ -446,8 +447,8 @@ class TestFindingMerge(unittest.TestCase):
                 "ruleset_version": "1.0.0",
                 "original_finding_code": "MISSING_EXPLANATION",
             },
-            "detector_name": "certbound-det",
-            "detector_version": "1.0.0",
+            "detector_name": DETECTOR_NAME,
+            "detector_version": DETECTOR_VERSION,
         }
         llm1 = {
             "finding_code": "EXPLANATION_MISSING",
@@ -516,8 +517,8 @@ class TestFindingMerge(unittest.TestCase):
             "field_path": "explanation",
             "evidence": [],
             "metadata": {},
-            "detector_name": "certbound-det",
-            "detector_version": "1.0.0",
+            "detector_name": DETECTOR_NAME,
+            "detector_version": DETECTOR_VERSION,
         }
         weak = {
             "finding_code": "WEAK_DISTRACTORS",
@@ -546,8 +547,8 @@ class TestFindingMerge(unittest.TestCase):
             "field_path": "question.explanation",
             "evidence": [],
             "metadata": {"original_finding_code": "MISSING_EXPLANATION"},
-            "detector_name": "certbound-det",
-            "detector_version": "1.0.0",
+            "detector_name": DETECTOR_NAME,
+            "detector_version": DETECTOR_VERSION,
         }
         llm = {
             "finding_code": "EXPLANATION_MISSING",
@@ -578,8 +579,8 @@ class TestFindingMerge(unittest.TestCase):
             "field_path": "question.explanation",
             "evidence": [],
             "metadata": {},
-            "detector_name": "certbound-det",
-            "detector_version": "1.0.0",
+            "detector_name": DETECTOR_NAME,
+            "detector_version": DETECTOR_VERSION,
         }
         llm = {
             "finding_code": "EXPLANATION_MISSING",
@@ -600,6 +601,41 @@ class TestFindingMerge(unittest.TestCase):
         self.assertEqual(result[0]["severity"], "critical")
         self.assertEqual(result[0]["materiality"], "blocking")
         self.assertAlmostEqual(result[0]["confidence"], 0.95)
+
+    def test_relaxed_dedup_preserves_deterministic_metadata_with_real_detector_name(self):
+        det = {
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "medium",
+            "materiality": "blocking",
+            "title": "Det title",
+            "description": "Shared description",
+            "field_path": "question.explanation",
+            "evidence": [],
+            "metadata": {"ruleset_version": "1.0.0"},
+            "detector_name": DETECTOR_NAME,
+            "detector_version": DETECTOR_VERSION,
+        }
+        llm = {
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "medium",
+            "materiality": "blocking",
+            "title": "LLM title",
+            "description": "Shared description",
+            "field_path": "explanation",
+            "evidence": [],
+            "metadata": {"ruleset_version": "9.9.9"},
+            "detector_name": "gpt-4o-auditor",
+            "detector_version": "v1",
+        }
+
+        result = merge_findings([det], [llm])
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["detector_name"], DETECTOR_NAME)
+        self.assertEqual(result[0]["title"], "Det title")
+        self.assertEqual(result[0]["metadata"]["ruleset_version"], "1.0.0")
 
     def test_normalisation_whitespace_stripped(self):
         d = _det_finding("X001", "  trimmed  ")

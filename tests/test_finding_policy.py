@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from workers.audit_calibration import run_calibration_case
+from workers.deterministic_audit import DETECTOR_NAME, DETECTOR_VERSION
 from workers.finding_merge import merge_findings
 from workers.finding_policy import (
     CANONICAL_FINDING_CODES,
@@ -163,8 +164,8 @@ class TestMergeMaterialityEscalation(unittest.TestCase):
             "field_path": "explanation",
             "evidence": [],
             "metadata": {},
-            "detector_name": "certbound-det",
-            "detector_version": "1.0.0",
+            "detector_name": DETECTOR_NAME,
+            "detector_version": DETECTOR_VERSION,
         }
         llm = {
             "finding_code": "EXPLANATION_MISSING",

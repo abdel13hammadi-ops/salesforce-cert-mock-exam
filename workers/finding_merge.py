@@ -48,6 +48,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Set, Tuple
 
+from workers.deterministic_audit import DETECTOR_NAME
 from workers.finding_policy import MATERIALITY_RANK
 
 # Severity from lowest to highest.
@@ -61,7 +62,6 @@ SEVERITY_RANK: Dict[str, int] = {
 
 _RELAXED_DEDUP_CODES = frozenset({"explanation_missing"})
 _EXPLANATION_LOGICAL_FIELD = "explanation"
-_DETERMINISTIC_DETECTOR = "certbound-det"
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@ def _merge_meta(
 
 
 def _is_deterministic_finding(finding: dict) -> bool:
-    return finding.get("detector_name") == _DETERMINISTIC_DETECTOR
+    return finding.get("detector_name") == DETECTOR_NAME
 
 
 def _logical_field_path(finding: dict) -> str:
