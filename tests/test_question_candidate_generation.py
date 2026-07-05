@@ -12,14 +12,19 @@ Run:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import unittest
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from workers.llm_providers import LlmResponse
+from workers.anthropic_provider import AnthropicAuditProvider, AnthropicProviderConfig
+from workers.llm_audit import LlmAuditValidationError
+from workers.llm_providers import LlmResponse, SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY
 from workers.question_candidate_generation import (
     AuditInitiationError,
     AuditRetryContext,
@@ -28,6 +33,7 @@ from workers.question_candidate_generation import (
     CandidateValidationError,
     GenerationRequest,
     QuestionCandidateRepository,
+    GENERATION_RESPONSE_SCHEMA,
     build_generation_prompt,
     build_llm_audit_prompt,
     compute_candidate_content_hash,
@@ -977,6 +983,102 @@ class TestPromptBuilders(unittest.TestCase):
         system_prompt, user_prompt = build_llm_audit_prompt(snapshot, request)
         self.assertIn("auditor", system_prompt.lower())
         self.assertIn(request.certification_exam_name, user_prompt)
+
+
+def _make_anthropic_provider_config(**overrides) -> AnthropicProviderConfig:
+    base = dict(
+        api_key="test-key-not-logged",
+        model="claude-sonnet-4-6",
+        timeout=30.0,
+        max_output_tokens=1024,
+        max_retries=0,
+        input_cost_per_mtok=3.0,
+        output_cost_per_mtok=15.0,
+    )
+    base.update(overrides)
+    return AnthropicProviderConfig(**base)
+
+
+def _make_anthropic_message(*, text: str):
+    return SimpleNamespace(
+        id="msg_generation_test_001",
+        content=[SimpleNamespace(type="text", text=text)],
+        usage=SimpleNamespace(input_tokens=120, output_tokens=80),
+    )
+
+
+def _make_anthropic_client(*messages):
+    client = MagicMock()
+    client.messages.create = MagicMock(side_effect=list(messages))
+    return client
+
+
+class TestGenerateAndPersistCandidateAnthropicProvider(unittest.TestCase):
+    def setUp(self):
+        self._patches = [
+            patch("workers.anthropic_provider._is_transient_error", lambda _exc: False),
+            patch("workers.anthropic_provider._is_auth_error", lambda _exc: False),
+            patch("workers.anthropic_provider.time.sleep"),
+        ]
+        for patcher in self._patches:
+            patcher.start()
+
+    def tearDown(self):
+        for patcher in reversed(self._patches):
+            patcher.stop()
+
+    def test_anthropic_provider_rejects_generation_payload_without_skip_flag(self):
+        request = _make_request()
+        payload = json.dumps(_valid_raw_payload())
+        client = _make_anthropic_client(_make_anthropic_message(text=payload))
+        provider = AnthropicAuditProvider(_make_anthropic_provider_config(), client=client)
+
+        with self.assertRaises(LlmAuditValidationError):
+            provider(
+                model_name=request.model_name,
+                system_prompt="Generate one question.",
+                user_prompt="Certification context.",
+                response_schema=GENERATION_RESPONSE_SCHEMA,
+                metadata={
+                    "certification_exam_name": request.certification_exam_name,
+                    "domain": request.domain,
+                    "prompt_template_id": request.prompt_template_id,
+                    "generation_request_id": request.generation_request_id,
+                },
+            )
+
+    def test_generate_and_persist_candidate_passes_skip_flag_to_anthropic_provider(self):
+        request = _make_request()
+        fake = FakeSupabase()
+        _seed_domain(fake, request)
+        payload = json.dumps(_valid_raw_payload())
+        client = _make_anthropic_client(_make_anthropic_message(text=payload))
+        provider = AnthropicAuditProvider(_make_anthropic_provider_config(), client=client)
+
+        result = generate_and_persist_candidate(
+            fake,
+            provider,
+            request,
+            initiate_audits=False,
+        )
+
+        self.assertFalse(result.deduplicated)
+        self.assertEqual(len(fake.tables["question_candidates"]), 1)
+        self.assertEqual(
+            fake.tables["question_candidates"][0]["question_text"],
+            _valid_raw_payload()["question_text"],
+        )
+
+    def test_generation_provider_call_includes_skip_legacy_validation_flag(self):
+        request = _make_request()
+        fake = FakeSupabase()
+        _seed_domain(fake, request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        generate_and_persist_candidate(fake, provider, request, initiate_audits=False)
+
+        metadata = provider.calls[0]["metadata"]
+        self.assertTrue(metadata.get(SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY))
 
 
 if __name__ == "__main__":

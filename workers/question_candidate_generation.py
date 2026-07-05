@@ -74,6 +74,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from workers.llm_providers import SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY
+
 logger = logging.getLogger(__name__)
 
 
@@ -1162,6 +1164,7 @@ def generate_and_persist_candidate(
             "domain": request.domain,
             "prompt_template_id": request.prompt_template_id,
             "generation_request_id": request.generation_request_id,
+            SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY: True,
         },
     )
 
