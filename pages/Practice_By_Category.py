@@ -168,6 +168,7 @@ def initialize_practice_session(
     session_state["practice_answers"] = {}
     session_state["practice_feedback_shown"] = False
     session_state["practice_saved"] = False
+    session_state["practice_exam_attempt_id"] = None
     session_state["practice_question_time_spent"] = {}
     session_state["practice_question_entered_at"] = time.time()
     session_state["practice_timing_index"] = int(session_state.get("practice_current_index") or 0)
@@ -391,6 +392,7 @@ def reset_practice():
     keys = [
         "practice_started", "practice_submitted", "practice_current_index", "practice_questions",
         "practice_answers", "practice_feedback_shown", "practice_saved", "practice_category",
+        "practice_exam_attempt_id",
         "practice_count", "practice_exam_name", "practice_language_code", "practice_mode_label",
         "practice_option_orders", "practice_started_at",
         "practice_question_time_spent", "practice_question_entered_at", "practice_timing_index",
@@ -484,13 +486,6 @@ def build_question_attempt_rows(exam_attempt_id, user_email, questions, answers)
     return rows
 
 
-def save_question_attempt_rows(supabase, rows):
-    if not rows:
-        return
-    for start in range(0, len(rows), 100):
-        supabase.table("question_attempts").insert(rows[start:start + 100]).execute()
-
-
 def build_breakdown(questions, answers, field):
     stats = defaultdict(lambda: {"correct": 0, "total": 0})
     for i, q in enumerate(questions):
@@ -502,9 +497,23 @@ def build_breakdown(questions, answers, field):
 
 
 def save_practice_attempt(score, correct, total, category, domain_breakdown, difficulty_breakdown, exam_name, language_code):
+    """Persist one practice attempt (parent row + child question rows).
+
+    Retry-safe: reuses the exam_attempt_id already stored in session state
+    (set immediately after a successful parent insert, before any child
+    persistence) instead of inserting a new parent on every call, and upserts
+    child rows on the (exam_attempt_id, question_id) unique key. Mirrors the
+    paid-mock exam pattern in app.py / utils.question_selection. Raises on
+    failure so the existing caller's try/except + warning behavior is
+    unchanged.
+    """
+    from utils.question_selection import persist_question_attempts, resolve_or_create_exam_attempt_id
+
     user_email = get_current_user_email()
     if not user_email:
         raise ValueError("No account email saved. Open Account first.")
+    supabase = get_supabase_client()
+
     payload = {
         "user_email": user_email,
         "mode": st.session_state.get("practice_mode_label", "Practice by Category"),
@@ -518,18 +527,37 @@ def save_practice_attempt(score, correct, total, category, domain_breakdown, dif
         "exam_name": exam_name,
         "language_code": language_code,
     }
-    supabase = get_supabase_client()
-    result = supabase.table("exam_attempts").insert(payload).execute()
-    inserted_rows = getattr(result, "data", None) or []
-    exam_attempt_id = inserted_rows[0].get("id") if inserted_rows else None
-    if exam_attempt_id:
-        question_rows = build_question_attempt_rows(
-            exam_attempt_id=exam_attempt_id,
-            user_email=user_email,
-            questions=st.session_state.get("practice_questions", []),
-            answers=st.session_state.get("practice_answers", {}),
-        )
-        save_question_attempt_rows(supabase, question_rows)
+    exam_attempt_id = resolve_or_create_exam_attempt_id(
+        supabase,
+        payload,
+        existing_attempt_id=st.session_state.get("practice_exam_attempt_id"),
+        expected_user_email=user_email,
+        expected_mode=payload["mode"],
+        expected_exam_name=exam_name,
+        expected_language_code=language_code,
+    )
+    if exam_attempt_id is None:
+        raise RuntimeError("Practice attempt could not be saved: no attempt id returned.")
+
+    # Store immediately, before child persistence, so a retry after a
+    # child-write failure reuses this exact parent instead of inserting
+    # another one.
+    st.session_state.practice_exam_attempt_id = exam_attempt_id
+
+    question_rows = build_question_attempt_rows(
+        exam_attempt_id=exam_attempt_id,
+        user_email=user_email,
+        questions=st.session_state.get("practice_questions", []),
+        answers=st.session_state.get("practice_answers", {}),
+    )
+    ok, error = persist_question_attempts(
+        supabase,
+        question_rows,
+        exam_attempt_id=exam_attempt_id,
+        expected_count=int(total),
+    )
+    if not ok:
+        raise RuntimeError(error or "Could not save detailed practice results.")
 
 
 def render_locked_practice_preview(user_email, language_code):

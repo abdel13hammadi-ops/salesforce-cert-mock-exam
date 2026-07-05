@@ -520,6 +520,93 @@ def resolve_exam_attempt_id(insert_result, recover_fn=None):
     return None
 
 
+def _normalized(value) -> str:
+    return str(value or "").strip().lower()
+
+
+def _exam_attempt_row_matches_expected(
+    row,
+    *,
+    expected_user_email=None,
+    expected_mode=None,
+    expected_exam_name=None,
+    expected_language_code=None,
+) -> bool:
+    """True only if every identity field on ``row`` matches the expected value.
+
+    Comparisons are case-insensitive/whitespace-trimmed (matching how
+    user_email is already normalized elsewhere) but otherwise exact -- no
+    partial or heuristic matching.
+    """
+    return (
+        _normalized(row.get("user_email")) == _normalized(expected_user_email)
+        and _normalized(row.get("mode")) == _normalized(expected_mode)
+        and _normalized(row.get("exam_name")) == _normalized(expected_exam_name)
+        and _normalized(row.get("language_code")) == _normalized(expected_language_code)
+    )
+
+
+def resolve_or_create_exam_attempt_id(
+    supabase,
+    payload,
+    *,
+    existing_attempt_id=None,
+    expected_user_email=None,
+    expected_mode=None,
+    expected_exam_name=None,
+    expected_language_code=None,
+):
+    """Reuse an already-known parent exam_attempts id, or insert one and resolve it.
+
+    Pure with respect to session/UI state: the caller decides what
+    ``existing_attempt_id`` is (typically a value already stored in session
+    state) and is responsible for storing the returned id immediately, before
+    any child persistence, so a later retry reuses it instead of inserting a
+    second parent row.
+
+    A stored id is never trusted blindly. When ``existing_attempt_id`` is
+    given, exactly that row is looked up and its ``user_email``, ``mode``,
+    ``exam_name``, and ``language_code`` must match the ``expected_*``
+    arguments. This guards against a stale id left in session state (for
+    example after a same-tab account switch, or one that belonged to a
+    different workflow) being reused to attach child rows to the wrong
+    parent. If the row is missing or any expected field mismatches, the id is
+    treated as absent -- a new parent is inserted instead, and the
+    mismatched row is never updated or deleted.
+
+    If the verification query itself raises, the exception propagates
+    unchanged: an unknown database failure must never be silently treated as
+    "no existing row" and turned into a second parent insert.
+
+    Intentionally has no heuristic recent-match fallback: callers that need
+    that (the paid mock exam path) call ``resolve_exam_attempt_id`` directly
+    with an explicit ``recover_fn``. Reusing a heuristic here would risk
+    matching the wrong practice session by score/timestamp/category alone.
+    """
+    if existing_attempt_id is not None:
+        result = (
+            supabase.table("exam_attempts")
+            .select("id,user_email,mode,exam_name,language_code")
+            .eq("id", existing_attempt_id)
+            .execute()
+        )
+        rows = getattr(result, "data", None) or []
+        row = rows[0] if rows else None
+        if row is not None and _exam_attempt_row_matches_expected(
+            row,
+            expected_user_email=expected_user_email,
+            expected_mode=expected_mode,
+            expected_exam_name=expected_exam_name,
+            expected_language_code=expected_language_code,
+        ):
+            return existing_attempt_id
+        # Missing or mismatched: do not reuse, do not touch the row. Fall
+        # through to the normal insert-and-resolve path below.
+
+    insert_result = supabase.table("exam_attempts").insert(payload).execute()
+    return resolve_exam_attempt_id(insert_result)
+
+
 def count_question_attempts(supabase, exam_attempt_id) -> int:
     """Return the number of question_attempts rows for an attempt.
 
