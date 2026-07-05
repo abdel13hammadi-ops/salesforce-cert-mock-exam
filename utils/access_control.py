@@ -489,14 +489,16 @@ def clear_login_state() -> None:
         "last_activity_at",
         "_last_activity_stamp_at",
         "_session_restoration_pending",
-        # Practice/weak-areas retry-safety ids must not survive a logout or
-        # session timeout: a stored id left behind could otherwise be
-        # re-verified against a *different* user who logs into the same
-        # browser tab afterward. (Verification in resolve_or_create_exam_attempt_id
+        # Practice/weak-areas/paid-mock retry-safety ids must not survive a
+        # logout or session timeout: a stored id left behind could otherwise
+        # be re-verified against a *different* user who logs into the same
+        # browser tab afterward. (Ownership verification in
+        # resolve_or_create_exam_attempt_id / verify_exam_attempt_ownership
         # already rejects a mismatched owner, but clearing here removes the
         # stale id at its source instead of relying solely on that guard.)
         "practice_exam_attempt_id",
         "weak_exam_attempt_id",
+        "current_exam_attempt_id",
     ]:
         st.session_state.pop(key, None)
     clear_persisted_login()

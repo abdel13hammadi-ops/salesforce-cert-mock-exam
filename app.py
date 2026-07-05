@@ -980,7 +980,9 @@ def ensure_exam_generated(exam_access_type, exam_name, language_code, category_c
         st.session_state.attempt_save_error = None
         st.session_state.save_retry_requested = False
 
-    restored_questions = apply_pending_exam_state_if_valid(bank, exam_key)
+    restored_questions = apply_pending_exam_state_if_valid(
+        bank, exam_key, exam_name=exam_name, language_code=language_code,
+    )
     if restored_questions:
         return restored_questions
 
@@ -1199,7 +1201,7 @@ def _restore_choice_orders(state, questions):
     return choice_orders
 
 
-def apply_pending_exam_state_if_valid(bank, exam_key):
+def apply_pending_exam_state_if_valid(bank, exam_key, *, exam_name, language_code):
     state = st.session_state.get("_pending_exam_state")
     if not state or state.get("exam_key") != exam_key:
         return None
@@ -1226,9 +1228,34 @@ def apply_pending_exam_state_if_valid(bank, exam_key):
     st.session_state.all_questions = restored_questions
     # Restore the persistence state machine + parent id so a refresh after
     # submission reuses the same parent and never re-inserts a duplicate.
+    #
+    # The attempt id travels through the unsigned exam_state URL query
+    # parameter, so it is never trusted as-is here: it must be re-verified
+    # against this exam_attempts row's user_email/mode/exam_name/language_code
+    # before it is written into current_exam_attempt_id. A tampered,
+    # mismatched, or unverifiable (query failure) id is discarded -- fails
+    # closed -- rather than accepted; the rest of the restoration (questions,
+    # answers, timing, save_state) still proceeds normally either way.
     restored_attempt_id = state.get("attempt_id")
     if restored_attempt_id is not None:
-        st.session_state.current_exam_attempt_id = restored_attempt_id
+        from utils.question_selection import verify_exam_attempt_ownership
+        verified_attempt_id = None
+        restoring_user_email = get_current_user_email()
+        if restoring_user_email:
+            try:
+                verified_attempt_id = verify_exam_attempt_ownership(
+                    get_supabase_client(), restored_attempt_id,
+                    expected_user_email=restoring_user_email,
+                    expected_mode="Paid Mock Exam",
+                    expected_exam_name=exam_name,
+                    expected_language_code=language_code,
+                )
+            except Exception:
+                verified_attempt_id = None  # fail closed: discard, never raise mid-restore
+        if verified_attempt_id is not None:
+            st.session_state.current_exam_attempt_id = verified_attempt_id
+        # else: discarded silently. A fresh parent is created on next save
+        # if one is still needed; it never reaches child persistence.
     restored_save_state = state.get("save_state")
     if restored_save_state in {"idle", "saving", "saved", "failed"}:
         st.session_state.submission_save_state = restored_save_state
@@ -1571,13 +1598,34 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
     # If this submission already created a parent (any prior rerun/retry), reuse
     # that exact id and retry ONLY child persistence. This never depends on the
     # 45-second window, so a delayed retry still repairs the same parent.
+    #
+    # The stored id is not trusted blindly: it can arrive either from
+    # same-session Streamlit session_state or from the unsigned exam_state URL
+    # query parameter (see apply_pending_exam_state_if_valid), which a user can
+    # edit directly. It is re-verified here against this exam_attempts row's
+    # user_email/mode/exam_name/language_code every time. A verification-query
+    # failure propagates unchanged (fails closed) rather than falling through
+    # to the heuristic or a new insert below.
     if is_paid:
         reused_id = st.session_state.get("current_exam_attempt_id")
         if reused_id is not None:
-            log_parent_id_reused(attempt_id=reused_id)
-            return _persist_children_and_report(
-                supabase, reused_id, user_email, completed_at, questions, answers, total_questions
+            from utils.question_selection import verify_exam_attempt_ownership
+            verified_id = verify_exam_attempt_ownership(
+                supabase, reused_id,
+                expected_user_email=user_email,
+                expected_mode=mode,
+                expected_exam_name=SELECTED_EXAM_NAME,
+                expected_language_code=SELECTED_LANGUAGE_CODE,
             )
+            if verified_id is not None:
+                log_parent_id_reused(attempt_id=verified_id)
+                return _persist_children_and_report(
+                    supabase, verified_id, user_email, completed_at, questions, answers, total_questions
+                )
+            # Stale or mismatched id (e.g. tampered URL state, or a same-tab
+            # account switch): discard it and fall through to the existing
+            # 45-second heuristic / insert path below, unchanged.
+            st.session_state.current_exam_attempt_id = None
 
     # 2) DUPLICATE GUARD (fallback) — recent-match lookup for the case where the
     # stored id was lost. Still avoids a second parent within the window.

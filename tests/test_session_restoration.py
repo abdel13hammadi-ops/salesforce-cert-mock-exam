@@ -137,6 +137,15 @@ class TestBootstrapBehavior(unittest.TestCase):
         clear_login_state()
         self.assertNotIn("weak_exam_attempt_id", self.session_state)
 
+    def test_logout_clears_current_exam_attempt_id(self):
+        """A stale paid-mock attempt id must not survive a logout/timeout: a
+        different user logging into the same browser tab afterward must not
+        find a leftover id in session state (V56-PAID-MOCK-IDEMPOTENCY-02)."""
+        self.session_state["user_email"] = "learner@example.com"
+        self.session_state["current_exam_attempt_id"] = 503
+        clear_login_state()
+        self.assertNotIn("current_exam_attempt_id", self.session_state)
+
     def test_expired_session_flag_blocks_restore(self):
         token = self._token_for()
         self.session_state["user_session_expired"] = True

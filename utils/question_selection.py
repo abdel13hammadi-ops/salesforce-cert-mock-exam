@@ -546,6 +546,59 @@ def _exam_attempt_row_matches_expected(
     )
 
 
+def verify_exam_attempt_ownership(
+    supabase,
+    attempt_id,
+    *,
+    expected_user_email=None,
+    expected_mode=None,
+    expected_exam_name=None,
+    expected_language_code=None,
+):
+    """Look up exactly one exam_attempts row and verify it matches expectations.
+
+    Shared identity-validation primitive used by every call site that must
+    decide whether a *stored* attempt id (from Streamlit session state, an
+    unsigned URL query parameter, or any other untrusted source) may be
+    reused. Returns ``attempt_id`` unchanged if the row exists and its
+    ``user_email``, ``mode``, ``exam_name``, and ``language_code`` all match
+    the ``expected_*`` arguments; returns ``None`` if the row is missing or
+    any field mismatches. The row itself is never updated or deleted either
+    way.
+
+    Comparisons are case-insensitive/whitespace-trimmed (matching how
+    user_email is already normalized elsewhere) but otherwise exact --
+    never score, totals, timestamps, or category.
+
+    If the verification query itself raises, the exception propagates
+    unchanged: an unknown database failure must never be silently treated as
+    "no match" by this function. Callers that need fail-closed (discard
+    instead of raising) behavior -- e.g. mid-render URL-state restoration,
+    where raising would be far more disruptive than simply not trusting the
+    id -- must catch the exception themselves; this function does not decide
+    that policy.
+    """
+    if attempt_id is None:
+        return None
+    result = (
+        supabase.table("exam_attempts")
+        .select("id,user_email,mode,exam_name,language_code")
+        .eq("id", attempt_id)
+        .execute()
+    )
+    rows = getattr(result, "data", None) or []
+    row = rows[0] if rows else None
+    if row is not None and _exam_attempt_row_matches_expected(
+        row,
+        expected_user_email=expected_user_email,
+        expected_mode=expected_mode,
+        expected_exam_name=expected_exam_name,
+        expected_language_code=expected_language_code,
+    ):
+        return attempt_id
+    return None
+
+
 def resolve_or_create_exam_attempt_id(
     supabase,
     payload,
@@ -564,15 +617,13 @@ def resolve_or_create_exam_attempt_id(
     any child persistence, so a later retry reuses it instead of inserting a
     second parent row.
 
-    A stored id is never trusted blindly. When ``existing_attempt_id`` is
-    given, exactly that row is looked up and its ``user_email``, ``mode``,
-    ``exam_name``, and ``language_code`` must match the ``expected_*``
-    arguments. This guards against a stale id left in session state (for
-    example after a same-tab account switch, or one that belonged to a
-    different workflow) being reused to attach child rows to the wrong
-    parent. If the row is missing or any expected field mismatches, the id is
-    treated as absent -- a new parent is inserted instead, and the
-    mismatched row is never updated or deleted.
+    A stored id is never trusted blindly: it is passed through
+    ``verify_exam_attempt_ownership`` first. This guards against a stale id
+    left in session state (for example after a same-tab account switch, or
+    one that belonged to a different workflow) being reused to attach child
+    rows to the wrong parent. If the row is missing or any expected field
+    mismatches, the id is treated as absent -- a new parent is inserted
+    instead, and the mismatched row is never updated or deleted.
 
     If the verification query itself raises, the exception propagates
     unchanged: an unknown database failure must never be silently treated as
@@ -584,22 +635,15 @@ def resolve_or_create_exam_attempt_id(
     matching the wrong practice session by score/timestamp/category alone.
     """
     if existing_attempt_id is not None:
-        result = (
-            supabase.table("exam_attempts")
-            .select("id,user_email,mode,exam_name,language_code")
-            .eq("id", existing_attempt_id)
-            .execute()
-        )
-        rows = getattr(result, "data", None) or []
-        row = rows[0] if rows else None
-        if row is not None and _exam_attempt_row_matches_expected(
-            row,
+        verified_id = verify_exam_attempt_ownership(
+            supabase, existing_attempt_id,
             expected_user_email=expected_user_email,
             expected_mode=expected_mode,
             expected_exam_name=expected_exam_name,
             expected_language_code=expected_language_code,
-        ):
-            return existing_attempt_id
+        )
+        if verified_id is not None:
+            return verified_id
         # Missing or mismatched: do not reuse, do not touch the row. Fall
         # through to the normal insert-and-resolve path below.
 
