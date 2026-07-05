@@ -1,6 +1,7 @@
 """
-Focused validation tests for the V58-QUALITY-03B-R1 pilot benchmark draft
-(cases 1-20 of the planned 40-case benchmark).
+Focused validation tests for the V58-QUALITY-03C pilot benchmark
+(all 40 of the planned 40 cases, completed across V58-QUALITY-03B-R1
+[cases 1-20] and V58-QUALITY-03C [cases 21-40]).
 
 These tests validate structural and evidence-provenance integrity only. They
 do not assert the AI-drafted labels are correct ground truth; that requires
@@ -53,7 +54,7 @@ class TestFixtureLoadsUnderHarnessSchema(unittest.TestCase):
     def test_fixture_passes_benchmark_harness_validator(self):
         fixture = load_benchmark_fixture(_FIXTURE_PATH)
         self.assertEqual(fixture["benchmark_version"], "v1-pilot-draft")
-        self.assertEqual(len(fixture["cases"]), 20)
+        self.assertEqual(len(fixture["cases"]), 40)
 
 
 class TestCaseCountAndDistribution(unittest.TestCase):
@@ -62,14 +63,14 @@ class TestCaseCountAndDistribution(unittest.TestCase):
         self.raw = _load_raw_fixture()
         self.cases = self.raw["cases"]
 
-    def test_exactly_twenty_cases(self):
-        self.assertEqual(len(self.cases), 20)
+    def test_exactly_forty_cases(self):
+        self.assertEqual(len(self.cases), 40)
 
-    def test_exactly_five_known_good_and_fifteen_defective(self):
+    def test_exactly_ten_known_good_and_thirty_defective(self):
         known_good = [c for c in self.cases if c["known_good"] is True]
         defective = [c for c in self.cases if c["known_good"] is False]
-        self.assertEqual(len(known_good), 5)
-        self.assertEqual(len(defective), 15)
+        self.assertEqual(len(known_good), 10)
+        self.assertEqual(len(defective), 30)
 
     def test_unique_case_ids(self):
         ids = [c["case_id"] for c in self.cases]
@@ -94,8 +95,8 @@ class TestCertificationAndDomainCoverage(unittest.TestCase):
     def test_certifications_approximately_balanced(self):
         adm_count = sum(1 for c in self.cases if c["certification"] == _ADM_CERT)
         ba_count = sum(1 for c in self.cases if c["certification"] == _BA_CERT)
-        self.assertEqual(adm_count, 10)
-        self.assertEqual(ba_count, 10)
+        self.assertEqual(adm_count, 20)
+        self.assertEqual(ba_count, 20)
 
     def test_at_least_four_domains_represented(self):
         domains = {c["domain"] for c in self.cases}
@@ -122,17 +123,22 @@ class TestFindingCodesAreCanonical(unittest.TestCase):
         for case in self.cases:
             for code in case["expected_finding_codes"]:
                 code_counts[code] = code_counts.get(code, 0) + 1
-        self.assertEqual(code_counts.get("WRONG_ANSWER_KEY"), 3)
-        self.assertEqual(code_counts.get("UNSUPPORTED_ANSWER"), 3)
-        self.assertEqual(code_counts.get("MULTIPLE_DEFENSIBLE_ANSWERS"), 2)
-        self.assertEqual(code_counts.get("AMBIGUOUS_QUESTION"), 2)
-        self.assertEqual(code_counts.get("WEAK_DISTRACTORS"), 2)
+        self.assertEqual(code_counts.get("WRONG_ANSWER_KEY"), 5)
+        self.assertEqual(code_counts.get("UNSUPPORTED_ANSWER"), 5)
+        self.assertEqual(code_counts.get("MULTIPLE_DEFENSIBLE_ANSWERS"), 4)
+        self.assertEqual(code_counts.get("AMBIGUOUS_QUESTION"), 4)
+        self.assertEqual(code_counts.get("WEAK_DISTRACTORS"), 4)
         self.assertEqual(
             code_counts.get("EXPLANATION_MISSING", 0)
             + code_counts.get("EXPLANATION_INCOMPLETE", 0),
-            2,
+            4,
         )
-        self.assertEqual(code_counts.get("SOURCE_SUPPORT_WEAK"), 1)
+        self.assertEqual(code_counts.get("SOURCE_SUPPORT_WEAK"), 4)
+        self.assertEqual(
+            sum(code_counts.values()),
+            30,
+            msg="every defective case must carry exactly one expected finding code",
+        )
 
     def test_known_good_cases_have_no_expected_finding_codes(self):
         for case in self.cases:
@@ -244,12 +250,12 @@ class TestHumanReviewStatusDisclosure(unittest.TestCase):
     def test_not_for_launch_decision_flag_is_true(self):
         self.assertIs(self.raw["not_for_launch_decision"], True)
 
-    def test_status_marks_draft_part_1(self):
-        self.assertEqual(self.raw["status"], "draft_part_1")
+    def test_status_marks_complete(self):
+        self.assertEqual(self.raw["status"], "complete")
 
     def test_intended_pilot_size_and_current_count_disclosed(self):
         self.assertEqual(self.raw["intended_pilot_size"], 40)
-        self.assertEqual(self.raw["current_case_count"], 20)
+        self.assertEqual(self.raw["current_case_count"], 40)
 
     def test_evidence_fixture_reference_disclosed(self):
         self.assertEqual(self.raw["evidence_fixture"], "official_evidence_seed_v1")

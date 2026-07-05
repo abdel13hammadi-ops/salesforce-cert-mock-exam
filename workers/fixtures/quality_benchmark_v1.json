@@ -1,10 +1,10 @@
 {
   "benchmark_version": "v1-pilot-draft",
-  "status": "draft_part_1",
+  "status": "complete",
   "authored_by": "Sonnet High",
   "human_review_status": "pending",
   "intended_pilot_size": 40,
-  "current_case_count": 20,
+  "current_case_count": 40,
   "evidence_fixture": "official_evidence_seed_v1",
   "not_for_launch_decision": true,
   "no_synthetic_evidence": true,
@@ -13,10 +13,11 @@
   "model_name": "not_yet_executed",
   "fixture_metadata": {
     "ground_truth_status": "AI-drafted",
-    "review_disclaimer": "These 20 cases were drafted by an AI model (Sonnet High) from verified official evidence. They are pending qualified Salesforce SME review, are not approved for production accuracy claims, and are not approved for launch-threshold decisions.",
+    "review_disclaimer": "These 40 cases were drafted by an AI model (Sonnet High) from verified official evidence. They are pending qualified Salesforce SME review, are not approved for production accuracy claims, and are not approved for launch-threshold decisions.",
     "evidence_source": "workers/fixtures/official_evidence_seed_v1.json",
-    "evidence_reuse_note": "A small number of content-bearing chunks (RACI/RASCI, Project Scope Management scope-planning paragraph, Recycle Bin admin-capabilities paragraph, Object Relationships conversion-rules paragraph, user-story example) each support 2-3 cases testing distinct judgments (concept vs enumeration vs model-choice, or stated-fact vs unstated-extrapolation) because the verified evidence seed's substantive (non-title-only) excerpts are limited. This is disclosed for SME review.",
-    "part": "1 of 2 (cases 1-20 of planned 40)"
+    "evidence_reuse_note": "A number of content-bearing chunks (RACI/RASCI, Project Scope Management scope-planning paragraph, Recycle Bin admin-capabilities paragraph, Object Relationships conversion-rules paragraph, multilevel master-detail relationships paragraph, user-story example, user-story-mistakes intro, Data and Analytics Management exam-guide bullets, and several title-only chunks) each support 2 or more cases testing distinct judgments (concept vs enumeration vs model-choice, stated-fact vs unstated-extrapolation, or title-match vs confirmed-body-content) because the verified evidence seed's substantive (non-title-only) excerpts are limited. This is disclosed for SME review.",
+    "part": "2 of 2 (complete: all 40 of 40 planned cases)",
+    "part_1_note": "Cases qbv1-001 through qbv1-020 were drafted in V58-QUALITY-03B-R1. Cases qbv1-021 through qbv1-040 were added in V58-QUALITY-03C, drawing on evidence chunks left unused by part 1 plus additional disclosed reuse of part-1 chunks for new, distinct judgments."
   },
   "cases": [
     {
@@ -837,6 +838,828 @@
             "publisher": "Salesforce",
             "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/review-requirements",
             "resource_title": "Business Analyst Requirements & Topics"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-021",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Platform Administrator",
+      "domain": "Automation — Flow Notifications",
+      "defect_category": "none",
+      "known_good": true,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": [],
+      "expected_materiality": null,
+      "reviewer_label": {"known_good": true, "expected_finding_codes": []},
+      "reviewer_rationale": "Evidence chunk 7eea3703 states: 'For Condition Requirements, select All Conditions Are Met (AND).' Option A restates this exactly; distractors describe settings not present in the evidence.",
+      "question": {
+        "question_text": "When configuring a Get Records element to look up a custom notification type by name in a flow, which Condition Requirements setting does Salesforce's documentation specify?",
+        "explanation": "Per Salesforce documentation, the Get Records element's Condition Requirements should be set to All Conditions Are Met (AND) when filtering by the notification type's Name field.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "All Conditions Are Met (AND)", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "Any Condition Is Met (OR)", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "No conditions; return all Custom Notification Type records", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Custom condition logic with a formula that evaluates to true", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "7eea3703-55c1-4496-9966-657f48ebd07d",
+            "chunk_index": 2,
+            "chunk_text": "Add a Get Records element.\nClick Add element plus icon, and select Get Records.\nThe Get Records panel opens.\nFor Label, enter a descriptive name. For example, Get Custom Notification Type.\nThe API name auto-fills.\nFor Description, enter a description of what this element does. For example, Gets the ID of the custom notification type to use to send the notification.\nFor Object, select Custom Notification Type.\nFor Condition Requirements, select All Conditions Are Met (AND).\nAdd a condition to filter by the notification type you created.\nFor Field, select Name . There are two Name fields. Use the one with the DeveloperName API name. To see the API name of the Name field, hover on the Name field and then hover on the information icon for that field.\nFor Operator, select Equals.\nFor Value, enter the name of the custom notification type you created. For example, Notify_Owner_New_Opportunity.\nUse default values for the remaining fields.\nGet Records element getting the custom notification type ID\nConfigure the Send Custom Notification Action\nCreate a text template for the notification body. Then configure the Send Custom Notification action with recipients, content, and a target to navigate the user to when they click the notification.",
+            "official_resource_id": "069ec1b3-798a-4bc2-85c4-21056e9d87c5",
+            "resource_version_id": "bb180217-de07-4d8b-bcab-3fa9f950812f",
+            "content_hash": "f12816c42f0f51469d96ca98d33f7a714228856a630f688f8b4c632cc47775f5",
+            "publisher": "Salesforce",
+            "canonical_url": "https://help.salesforce.com/s/articleView?id=platform.automate_flow_build_example_send_custom_notification.htm&language=en_US&type=5",
+            "resource_title": "Send a Custom Notification with a Flow"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-022",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Platform Administrator",
+      "domain": "Automation — Record-Triggered Flows",
+      "defect_category": "none",
+      "known_good": true,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": [],
+      "expected_materiality": null,
+      "reviewer_label": {"known_good": true, "expected_finding_codes": []},
+      "reviewer_rationale": "Evidence chunk a4e61000 states the $Record resource 'is available in every element in the flow' and represents 'the record whose creation, update, or deletion starts the flow.' Option A restates this; distractors describe behaviors not supported by the evidence.",
+      "question": {
+        "question_text": "In a record-triggered flow, what does the $Record global variable represent, according to Salesforce documentation?",
+        "explanation": "The $Record variable represents the triggering record — the record whose creation, update, or deletion started the flow — and is available in every element of the flow.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "The triggering record, available in every element of the flow", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "A static snapshot of the record taken before the flow was activated", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "The record most recently updated by any user in the org", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "A collection variable that stores all records processed by the flow", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "a4e61000-01cd-4627-b97c-ba27f2e31313",
+            "chunk_index": 2,
+            "chunk_text": "How to Work with the Triggering Record\nIn record-triggered flows, the triggering record is the record whose creation, update, or deletion starts the flow. You work with this record throughout the flow by using the Triggering {Record} ($Record) resource, which is available in every element in the flow. This variable's API name is $Record, and the label is Triggering {Record}, where {Record} is the object of the record. For example, Triggering Contact.",
+            "official_resource_id": "677ea18d-d407-4c5e-99d1-3d5c08025e1d",
+            "resource_version_id": "ffecd265-f0bf-4cb2-b68e-9ecc6e42d109",
+            "content_hash": "956b9d1fc6d415aef40b0466ae5c7d91b19a265d892e50946a5b5ad032b47acf",
+            "publisher": "Salesforce",
+            "canonical_url": "https://help.salesforce.com/s/articleView?id=platform.automate_flow_build_get_started_record_triggered_flows.htm&language=en_US&type=5",
+            "resource_title": "Getting Started with Record-Triggered Flows"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-023",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Platform Administrator",
+      "domain": "Object Manager — Object Relationships",
+      "defect_category": "correctness",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["WRONG_ANSWER_KEY"],
+      "expected_materiality": "blocking",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["WRONG_ANSWER_KEY"]},
+      "reviewer_rationale": "Evidence chunk a3413d56 states: 'You can't create a master-detail relationship if the custom object already contains data. You can, however, create the relationship as a lookup and then convert it to master-detail if the lookup field in all records contains a value.' The stored key marks option B (automatic conversion of existing data) as correct, which directly contradicts this quoted restriction.",
+      "question": {
+        "question_text": "According to Salesforce documentation on object relationships, can an administrator directly create a new master-detail relationship on a custom object that already contains records?",
+        "explanation": "Salesforce automatically converts existing records into the required parent-child hierarchy when a master-detail relationship is created.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "No — but it can first be created as a lookup relationship and then converted to master-detail once the lookup field contains a value in all records", "is_correct": false, "display_order": 1},
+          {"option_label": "B", "option_text": "Yes — Salesforce automatically converts existing data into the required parent-child hierarchy", "is_correct": true, "display_order": 2},
+          {"option_label": "C", "option_text": "Yes, but only during a sandbox refresh window", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "No, and there is no supported path to create this relationship afterward", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "a3413d56-40a8-42df-b730-6c326740d6d4",
+            "chunk_index": 2,
+            "chunk_text": "time in multilevel master-detail relationships. For example, a subdetail object in one multilevel master-detail relationship can’t also be the owner of the master object in another multilevel master-detail relationship. A subdetail object can’t also be the master object of the subdetail object’s detail object.\nMultilevel master-detail relationships don’t support division transfers.\nYou can’t create a master-detail relationship if the custom object already contains data. You can, however, create the relationship as a lookup and then convert it to master-detail if the lookup field in all records contains a value.\nConverting relationships from lookup to master-detail, or from master-detail to lookup, behaves the same as for two-object master-detail relationships. That is, the two linked objects in the detail-subdetail1 or subdetail1-subdetail2 relationship have the same conversion limits as the master-detail relationship.\nRoll-up summary fields work as in two-object master-detail relationships. A master can roll up fields on detail records; however, it can’t directly roll up fields on subdetail records. The detail record must have a roll-up summary field for the field on the subdetail record, allowing the master to roll up from the detail’s roll-up summary field.\nYou can use multilevel master-detail relationships in custom report types. The Allow Reports checkbox must be selected when you create the custom object. Custom report types created for multilevel master-detail",
+            "official_resource_id": "67dcaaf3-b7dc-4c93-b122-133c8a51ca36",
+            "resource_version_id": "e075bfbf-12cc-4010-b213-5d1c4b348e6c",
+            "content_hash": "f2e74f42c290c0231ab93042c4e4dfd9775832c6fd80b194d5104b8d59d28c65",
+            "publisher": "Salesforce",
+            "canonical_url": "https://help.salesforce.com/s/articleView?id=platform.relationships_considerations.htm&language=en_US&type=5",
+            "resource_title": "Considerations for Object Relationships"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-024",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Platform Administrator",
+      "domain": "Object Manager — Object Relationships",
+      "defect_category": "correctness",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["UNSUPPORTED_ANSWER"],
+      "expected_materiality": "blocking",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["UNSUPPORTED_ANSWER"]},
+      "reviewer_rationale": "Evidence chunk a3413d56 explains that a master rolls up detail-record fields, and reaching a subdetail record requires an intermediate roll-up summary field on the detail object, but it states no recalculation schedule anywhere in the excerpt. The stored key (option B) invents a specific 24-hour nightly batch schedule that is not present in the source text.",
+      "question": {
+        "question_text": "According to Salesforce documentation, how often are roll-up summary values recalculated in a multilevel master-detail relationship?",
+        "explanation": "Salesforce recalculates multilevel roll-up summaries every 24 hours via a scheduled nightly batch job.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "The documentation does not specify a recalculation schedule; it only describes how values roll up through an intermediate detail-level roll-up field", "is_correct": false, "display_order": 1},
+          {"option_label": "B", "option_text": "Every 24 hours, via a scheduled nightly batch job", "is_correct": true, "display_order": 2},
+          {"option_label": "C", "option_text": "Only when a user manually clicks 'Recalculate rollups' in Setup", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Once per week, during the org's scheduled maintenance window", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "a3413d56-40a8-42df-b730-6c326740d6d4",
+            "chunk_index": 2,
+            "chunk_text": "time in multilevel master-detail relationships. For example, a subdetail object in one multilevel master-detail relationship can’t also be the owner of the master object in another multilevel master-detail relationship. A subdetail object can’t also be the master object of the subdetail object’s detail object.\nMultilevel master-detail relationships don’t support division transfers.\nYou can’t create a master-detail relationship if the custom object already contains data. You can, however, create the relationship as a lookup and then convert it to master-detail if the lookup field in all records contains a value.\nConverting relationships from lookup to master-detail, or from master-detail to lookup, behaves the same as for two-object master-detail relationships. That is, the two linked objects in the detail-subdetail1 or subdetail1-subdetail2 relationship have the same conversion limits as the master-detail relationship.\nRoll-up summary fields work as in two-object master-detail relationships. A master can roll up fields on detail records; however, it can’t directly roll up fields on subdetail records. The detail record must have a roll-up summary field for the field on the subdetail record, allowing the master to roll up from the detail’s roll-up summary field.\nYou can use multilevel master-detail relationships in custom report types. The Allow Reports checkbox must be selected when you create the custom object. Custom report types created for multilevel master-detail",
+            "official_resource_id": "67dcaaf3-b7dc-4c93-b122-133c8a51ca36",
+            "resource_version_id": "e075bfbf-12cc-4010-b213-5d1c4b348e6c",
+            "content_hash": "f2e74f42c290c0231ab93042c4e4dfd9775832c6fd80b194d5104b8d59d28c65",
+            "publisher": "Salesforce",
+            "canonical_url": "https://help.salesforce.com/s/articleView?id=platform.relationships_considerations.htm&language=en_US&type=5",
+            "resource_title": "Considerations for Object Relationships"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-025",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Platform Administrator",
+      "domain": "Data and Analytics Management — Reports",
+      "defect_category": "ambiguity",
+      "known_good": false,
+      "expected_correct_option_labels": ["A", "B"],
+      "expected_finding_codes": ["MULTIPLE_DEFENSIBLE_ANSWERS"],
+      "expected_materiality": "blocking",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["MULTIPLE_DEFENSIBLE_ANSWERS"]},
+      "reviewer_rationale": "Both 'the capabilities and implications of data validation tools' and 'the impact of the sharing model on reports' are directly quoted bullets from the same Data and Analytics Management domain list in evidence chunk d59cd6dc. The question's 'which... is explicitly listed' framing does not exclude either bullet, so a single-select key naming only option A ignores that option B is equally and explicitly listed in the same source passage.",
+      "question": {
+        "question_text": "Which of the following is explicitly listed under the Data and Analytics Management domain in the Salesforce Platform Administrator exam guide?",
+        "explanation": "The capabilities and implications of data validation tools, such as duplicate and matching rules, are listed under this domain.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "The capabilities and implications of data validation tools, such as duplicate and matching rules", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "The impact of the sharing model on reports, including folder structure and sharing fields", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "Configuring Salesforce CPQ discount schedules", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Writing Apex triggers for asynchronous data processing", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "d59cd6dc-a3fd-47f1-90f0-54cfb086800c",
+            "chunk_index": 2,
+            "chunk_text": "Data and Analytics Management: 17%\nDescribe the considerations when importing, updating, transferring, mass deleting, exporting, and backing up data (Archival, Apex data loader, Import Wizard).\nDescribe the capabilities and implications of data validation tools (duplicate and matching rules, validation rules).\nDescribe the options available when creating or customizing a report or report type (join objects together, with or without records, renaming the fields, formulas, bucket, join reports, chart settings, hide details, grouping totals, troubleshooting fields at a high level).\nDescribe the impact of the sharing model on reports (visibility, understand folder structure, sharing fields).\nDescribe the options available when creating and modifying dashboards (for example: dashboard widgets, data sources, chart types/settings, subscribing, dynamic dashboard, org licensing limits, view dashboard as, schedule refresh, filters).",
+            "official_resource_id": "b1d79404-4ed9-4f38-9a65-8906afabbe6b",
+            "resource_version_id": "81cebc30-6931-46f3-b4fc-ca665f9859a2",
+            "content_hash": "9c991b797881854aeb766b82fa286905756655001baf5e6f35ea9a99efa8dd3e",
+            "publisher": "Salesforce",
+            "canonical_url": "https://help.salesforce.com/s/articleView?id=005298966&language=en_US&type=1",
+            "resource_title": "Salesforce Certified Platform Administrator Exam Guide"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-026",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Platform Administrator",
+      "domain": "Automation — Flow Notifications",
+      "defect_category": "ambiguity",
+      "known_good": false,
+      "expected_correct_option_labels": ["A", "B", "C"],
+      "expected_finding_codes": ["AMBIGUOUS_QUESTION"],
+      "expected_materiality": "warning",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["AMBIGUOUS_QUESTION"]},
+      "reviewer_rationale": "Evidence chunk 111d12d5 presents two parallel navigation paths for creating a record-triggered flow — 'From the Automation app, click New | Triggered Automations | Record-Triggered Flow' and 'From Setup, click New Flow | Triggered Automations | Record-Triggered Flow' — without indicating either is preferred or more authoritative. A single-select key naming only one path as 'THE way' is not defensible; only the context-neutral option (C) fully accounts for both being presented as equivalent.",
+      "question": {
+        "question_text": "According to Salesforce's flow documentation, what is THE way an administrator creates a record-triggered flow?",
+        "explanation": "From the Automation app, click New, then Triggered Automations, then Record-Triggered Flow.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "From the Automation app, click New | Triggered Automations | Record-Triggered Flow", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "From Setup, click New Flow | Triggered Automations | Record-Triggered Flow", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "Either path, since the documentation presents both as equivalent methods", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Only by cloning an existing record-triggered flow", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "111d12d5-c8e7-4573-a548-fd998ac46214",
+            "chunk_index": 1,
+            "chunk_text": "Open the Flows list view.\nFrom Setup, in the Quick Find box, enter Flows, and then select Flows.\nFrom the Automation app, select the Flows tab.\nFrom the Flows tab in any Lightning app, click the actions menu and select Open Flow.\nCreate a flow. For example, create a record-triggered flow.\nFrom the Automation app, click New | Triggered Automations | Record-Triggered Flow.\nFrom Setup, click New Flow | Triggered Automations | Record-Triggered Flow.\nThe flow opens in Flow Builder. If your flow has a Start element panel, the Configure Start panel opens.\nIf your flow has a Start element panel, configure the Start element. For example, configure the Start of a record-triggered flow that triggers when a contact record is created\nFor Object, select the object that triggers the flow. For example, select Contact.\nFor Trigger the Flow When, select when the flow runs. For example, A record is created.\nConfigure any entry conditions or other settings as needed.\nDefine Your Recipients\nCreate a text collection variable to store recipient IDs, then use an assignment element to add IDs to the collection.",
+            "official_resource_id": "069ec1b3-798a-4bc2-85c4-21056e9d87c5",
+            "resource_version_id": "bb180217-de07-4d8b-bcab-3fa9f950812f",
+            "content_hash": "7e66b923eabf9e7d3e607040ef58df007232fa21e0f4929f656fbcae50eea419",
+            "publisher": "Salesforce",
+            "canonical_url": "https://help.salesforce.com/s/articleView?id=platform.automate_flow_build_example_send_custom_notification.htm&language=en_US&type=5",
+            "resource_title": "Send a Custom Notification with a Flow"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-027",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Platform Administrator",
+      "domain": "Automation — Record-Triggered Flows",
+      "defect_category": "answer_quality",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["WEAK_DISTRACTORS"],
+      "expected_materiality": "warning",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["WEAK_DISTRACTORS"]},
+      "reviewer_rationale": "The correct answer (A) is directly quoted from the record-triggered flow capabilities list in evidence chunk d40e2286. Distractors B, C, and D describe capabilities from unrelated product areas (partner license provisioning, Apex governor-limit configuration, Experience Cloud site deployment) that a moderately prepared candidate would recognize as out of scope for this specific bullet list, making them non-competitive.",
+      "question": {
+        "question_text": "Which action does Salesforce's record-triggered flow documentation list as an example of something a flow can do after it's triggered?",
+        "explanation": "The flow can generate confirmation codes, reference numbers, or other auto-calculated values.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "Generate confirmation codes, reference numbers, or other auto-calculated values", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "Provision new Salesforce licenses for external partner users", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "Modify org-wide Apex governor limits for the current transaction", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Deploy a new Experience Cloud site template", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "d40e2286-d9f6-4946-a792-ec05c3bcc054",
+            "chunk_index": 1,
+            "chunk_text": "Update fields on a record before it's saved, such as calculating a discount or setting a status.\nAfter you save a record, create a related record, such as a task or case.\nSend email notifications when important changes happen, such as alerting a manager about a high-value opportunity.\nPrevent bad data from being saved by validating records and showing error messages.\nGenerate confirmation codes, reference numbers, or other auto-calculated values.\nThe Two Types of Record-Triggered Flows\nRecord-triggered flows come in two flavors, and understanding the difference helps you choose the right one for your needs:",
+            "official_resource_id": "677ea18d-d407-4c5e-99d1-3d5c08025e1d",
+            "resource_version_id": "ffecd265-f0bf-4cb2-b68e-9ecc6e42d109",
+            "content_hash": "644a4edd4d1505a308f00bd10eb8b1699e6a690cb384c8631cd88bfd07f1f48f",
+            "publisher": "Salesforce",
+            "canonical_url": "https://help.salesforce.com/s/articleView?id=platform.automate_flow_build_get_started_record_triggered_flows.htm&language=en_US&type=5",
+            "resource_title": "Getting Started with Record-Triggered Flows"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-028",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Platform Administrator",
+      "domain": "Object Manager — Object Relationships",
+      "defect_category": "explanation_quality",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["EXPLANATION_MISSING"],
+      "expected_materiality": "blocking",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["EXPLANATION_MISSING"]},
+      "reviewer_rationale": "Evidence chunk 61218884 states plainly: 'A lookup relationship can't be changed to a master-detail relationship if the organization-wide default of the child object access level in the relationship is Controlled by Parent.' Option A is correctly keyed and directly supported. The sole defect is that the explanation field is empty, giving no justification for the answer.",
+      "question": {
+        "question_text": "Under which organization-wide default setting is a lookup-to-master-detail conversion blocked, according to Salesforce documentation?",
+        "explanation": "",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "Controlled by Parent", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "Public Read/Write", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "Private", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Public Read Only", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "61218884-a4f3-4ced-a019-dbea6d64708b",
+            "chunk_index": 1,
+            "chunk_text": "Relationship Limits\nEach custom object can have up to 2 master-detail relationships and many lookup relationships. Each relationship is included in the maximum number of custom fields allowed.\nConverting Relationships\nYou can convert a master-detail relationship to a lookup relationship as long as no roll-up summary fields exist on the master object.\nConverting a master-detail relationship to a lookup for a custom object on the “detail” side, changes the organization-wide default for the object to public read/write.\nYou can convert a lookup relationship to a master-detail relationship if the lookup field in all the records contains a value.\nA lookup relationship can’t be changed to a master-detail relationship if the organization-wide default of the child object access level in the relationship is Controlled by Parent.\nConverting a lookup to a master-detail-relationship changes the organization-wide default to Controlled by Parent and the sharing model is updated to public read/write.\nSelf-Relationships\nYou can create a relationship from an object to itself, but it must be a lookup relationship, and a single record can’t be linked to itself. However, a record can indirectly relate to itself. For example, the Holiday Promotion campaign can select the Direct Mail campaign in the lookup relationship, and the Direct Mail campaign can select the Holiday Promotion campaign in the lookup relationship.\nYou can’t create a many-to-many self-relationship, that is, the two",
+            "official_resource_id": "67dcaaf3-b7dc-4c93-b122-133c8a51ca36",
+            "resource_version_id": "e075bfbf-12cc-4010-b213-5d1c4b348e6c",
+            "content_hash": "b9a217ed4a716ba8660eeaa7cdbbd5898ff8ab7b37aeb713513bd370ad0b20ba",
+            "publisher": "Salesforce",
+            "canonical_url": "https://help.salesforce.com/s/articleView?id=platform.relationships_considerations.htm&language=en_US&type=5",
+            "resource_title": "Considerations for Object Relationships"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-029",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Platform Administrator",
+      "domain": "Object Manager — Object Relationships",
+      "defect_category": "source_support",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["SOURCE_SUPPORT_WEAK"],
+      "expected_materiality": "warning",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["SOURCE_SUPPORT_WEAK"]},
+      "reviewer_rationale": "Evidence chunk f72ef892 matches this resource's title and topic area, but the only exported content for this resource in this case is its heading and a single generic lead-in sentence ('Review these considerations before creating relationships between objects') with no enumerated considerations text. The answer is plausible by title and topic match alone, not by any specific enumerated content actually present in the evidence.",
+      "question": {
+        "question_text": "Which Salesforce Trailhead/help resource specifically enumerates the detailed considerations administrators should review before creating relationships between objects?",
+        "explanation": "This resource's title and lead-in sentence match the topic of relationship considerations.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "Considerations for Object Relationships", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "Filter Across Objects with Cross Filters", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "Manage the Recycle Bin in Lightning Experience", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Getting Started with Record-Triggered Flows", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "f72ef892-4fb7-43f1-bab6-5be55a5cf670",
+            "chunk_index": 0,
+            "chunk_text": "Considerations for Object Relationships\nReview these considerations before creating relationships between objects.",
+            "official_resource_id": "67dcaaf3-b7dc-4c93-b122-133c8a51ca36",
+            "resource_version_id": "e075bfbf-12cc-4010-b213-5d1c4b348e6c",
+            "content_hash": "408f35ceda03638d81ae631707634c71ca56a6a74f5cbea311dcfee9d5d5a94d",
+            "publisher": "Salesforce",
+            "canonical_url": "https://help.salesforce.com/s/articleView?id=platform.relationships_considerations.htm&language=en_US&type=5",
+            "resource_title": "Considerations for Object Relationships"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-030",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Platform Administrator",
+      "domain": "General — Exam Guide",
+      "defect_category": "source_support",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["SOURCE_SUPPORT_WEAK"],
+      "expected_materiality": "warning",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["SOURCE_SUPPORT_WEAK"]},
+      "reviewer_rationale": "The only exported evidence chunk for the ADM exam guide in this case is its bare title ('Salesforce Certified Platform Administrator Exam Guide'), with no domain-weighting body content attached. While 17% may be the figure candidates encounter elsewhere, it is not confirmable from the specific excerpt referenced by this case, making the source support weak.",
+      "question": {
+        "question_text": "Based on the exported excerpt of the Salesforce Certified Platform Administrator Exam Guide referenced in this case, what weighting percentage is assigned to the Data and Analytics Management domain?",
+        "explanation": "The Data and Analytics Management domain is weighted at 17%.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "17%", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "25%", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "10%", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "5%", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "fa7a2ea7-0ead-466b-985e-fa2061b7f1c8",
+            "chunk_index": 0,
+            "chunk_text": "Salesforce Certified Platform Administrator Exam Guide",
+            "official_resource_id": "b1d79404-4ed9-4f38-9a65-8906afabbe6b",
+            "resource_version_id": "81cebc30-6931-46f3-b4fc-ca665f9859a2",
+            "content_hash": "d83b074723c60faf0e6c586fb26b2d412f8e17bbcc132abbdb7e0b88f257330e",
+            "publisher": "Salesforce",
+            "canonical_url": "https://help.salesforce.com/s/articleView?id=005298966&language=en_US&type=1",
+            "resource_title": "Salesforce Certified Platform Administrator Exam Guide"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-031",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Business Analyst",
+      "domain": "User Stories — Structure and Components",
+      "defect_category": "none",
+      "known_good": true,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": [],
+      "expected_materiality": null,
+      "reviewer_label": {"known_good": true, "expected_finding_codes": []},
+      "reviewer_rationale": "Evidence chunk cd20b482 quotes the example user story verbatim: 'I want to be able to take ownership of new cases and communicate with customers.' Option A restates the full stated want; distractors describe actions or benefits not present in this clause.",
+      "question": {
+        "question_text": "In Salesforce's example user story — \"As a customer care representative, I want to be able to take ownership of new cases and communicate with customers so that I can provide high-touch customer experiences\" — which option correctly captures the stated WANT (the \"I want\" clause)?",
+        "explanation": "The stated want is to take ownership of new cases and communicate with customers.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "To take ownership of new cases and communicate with customers", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "To provide high-touch customer experiences", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "To close cases within a fixed SLA window", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "To escalate every case to a supervisor", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "cd20b482-dd28-44d2-93d5-86ab12439db8",
+            "chunk_index": 1,
+            "chunk_text": "User Story Example: As a customer care representative, I want to be able to take ownership of new cases and communicate with customers so that I can provide high-touch customer experiences.",
+            "official_resource_id": "ed589a9f-59b1-4d4e-a1e5-a5ee5f13aca4",
+            "resource_version_id": "c3f4c2fa-980c-4cf9-9328-8459a7c206ec",
+            "content_hash": "fca1a246ad76bf5362e2ca2f7bdbe2376b2132f964d367ba865da442eecd861e",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/user-story-creation/construct-a-user-story",
+            "resource_title": "User Story Creation Tips & Techniques"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-032",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Business Analyst",
+      "domain": "Project Scope Management",
+      "defect_category": "none",
+      "known_good": true,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": [],
+      "expected_materiality": null,
+      "reviewer_label": {"known_good": true, "expected_finding_codes": []},
+      "reviewer_rationale": "Evidence chunk 883e067b states requirements 'must also be sufficiently detailed so there's no misunderstanding about what the project will deliver.' Option A restates this exactly; distractors assert outcomes contrary to or unrelated to the stated purpose.",
+      "question": {
+        "question_text": "According to Salesforce's project scope management guidance, why must the documented requirements be sufficiently detailed during scope planning?",
+        "explanation": "So there's no misunderstanding about what the project will deliver.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "So there's no misunderstanding about what the project will deliver", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "So the project can be completed ahead of schedule", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "So stakeholders can be excluded from future discussions", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "So the budget can be finalized without executive approval", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "883e067b-315f-49fa-bb69-307487240424",
+            "chunk_index": 1,
+            "chunk_text": "Scope planning is a collaborative effort between the project team and key stakeholders. They meet to define, discuss, and document the requirements for the project. In the end, they must reach consensus on the requirements. The requirements must also be sufficiently detailed so there’s no misunderstanding about what the project will deliver.",
+            "official_resource_id": "e5e3e79c-c60e-43ae-b54f-10ee8264a0db",
+            "resource_version_id": "d693c06f-281e-4930-8c8d-6f036b817698",
+            "content_hash": "95b78a0243af9a06145307ee5cd945365fa1942a47e059c0c173d1fe5eeb2934",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/best-practices-for-project-management/gather-requirements",
+            "resource_title": "Project Scope Management"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-033",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Business Analyst",
+      "domain": "Business Process Mapping — Roles and Responsibilities",
+      "defect_category": "none",
+      "known_good": true,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": [],
+      "expected_materiality": null,
+      "reviewer_label": {"known_good": true, "expected_finding_codes": []},
+      "reviewer_rationale": "Evidence chunk b0d8a5df states resources are tagged with RACI, and 'some teams choose to indicate who is \"supporting\" the work using a RASCI model,' i.e., RASCI adds a supporting-role designation beyond RACI. Option A restates this; distractors invent role names not present in the evidence.",
+      "question": {
+        "question_text": "According to Salesforce's business process mapping guidance, what additional role does the RASCI model add beyond the base RACI model?",
+        "explanation": "RASCI adds a 'supporting' role to indicate who is supporting the work.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "A 'supporting' role, to indicate who is supporting the work", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "A 'reviewing' role", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "An 'escalation' role", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "A 'sponsor' role", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "b0d8a5df-f5ea-4124-b699-e7ba4acf397b",
+            "chunk_index": 1,
+            "chunk_text": "Resource: A resource in each activity box designates the who . Resources are tagged with RACI (responsible, accountable, consulted, and informed). Some teams choose to indicate who is “supporting” the work using a RASCI model.",
+            "official_resource_id": "beb2d622-e8e4-4917-9524-764f85bddf41",
+            "resource_version_id": "b440566e-1775-4257-b380-a1ff1c715c22",
+            "content_hash": "eb0c80a64d87c280bd9db41063252600c4495935b172d1af9668fbde691992b8",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/business-process-mapping/understand-universal-process-notation",
+            "resource_title": "Understanding Universal Process Notation in Detail"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-034",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Business Analyst",
+      "domain": "User Stories — Structure and Components",
+      "defect_category": "correctness",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["WRONG_ANSWER_KEY"],
+      "expected_materiality": "blocking",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["WRONG_ANSWER_KEY"]},
+      "reviewer_rationale": "Evidence chunk 010920b6 states 'user stories are adjustable, so there's always room to iterate.' The stored key (option B) asserts the opposite — that a user story becomes permanently fixed once written — which directly contradicts this quoted statement.",
+      "question": {
+        "question_text": "According to Salesforce's guidance on user story mistakes, are user stories meant to be fixed and unchangeable once written?",
+        "explanation": "Once written and approved, a user story becomes permanently fixed and cannot be revised.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "No — user stories are adjustable, and there's always room to iterate", "is_correct": false, "display_order": 1},
+          {"option_label": "B", "option_text": "Yes — once written and approved, a user story becomes permanently fixed", "is_correct": true, "display_order": 2},
+          {"option_label": "C", "option_text": "Yes, but only after the sprint in which it was written has closed", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "No, but only a project sponsor may revise it", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "010920b6-05a0-4146-9284-ecb1e1da8613",
+            "chunk_index": 2,
+            "chunk_text": "Much like any other process that involves multiple steps, mistakes can happen—and user stories are not exempt from such missteps. Thankfully, user stories are adjustable, so there’s always room to iterate. But why not do your best to avoid mistakes from the get-go? Here are a few common user story mistakes and tips for how a Salesforce business analyst can steer clear of them.",
+            "official_resource_id": "ed589a9f-59b1-4d4e-a1e5-a5ee5f13aca4",
+            "resource_version_id": "c3f4c2fa-980c-4cf9-9328-8459a7c206ec",
+            "content_hash": "98c62945b50d8606e570b8b61d84cd44c9e4a6358f83a01cfb02eb257ef41b79",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/user-story-creation/construct-a-user-story",
+            "resource_title": "User Story Creation Tips & Techniques"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-035",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Business Analyst",
+      "domain": "Business Process Mapping — Process Map Examples",
+      "defect_category": "correctness",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["UNSUPPORTED_ANSWER"],
+      "expected_materiality": "blocking",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["UNSUPPORTED_ANSWER"]},
+      "reviewer_rationale": "Evidence chunk aeb5e8b9 consists solely of the short example label 'An opportunity qualified by the sales team,' with no reference to any named sales methodology. The stored key (option B) invents a specific framework (MEDDIC) that does not appear anywhere in the source text.",
+      "question": {
+        "question_text": "In Salesforce's business process mapping example referencing 'An opportunity qualified by the sales team,' what specific sales methodology framework does Salesforce state this example follows?",
+        "explanation": "This example follows the MEDDIC sales qualification framework.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "The evidence excerpt does not name any specific sales methodology framework; it only shows a brief example label", "is_correct": false, "display_order": 1},
+          {"option_label": "B", "option_text": "The MEDDIC sales qualification framework", "is_correct": true, "display_order": 2},
+          {"option_label": "C", "option_text": "The BANT framework", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "The SPIN Selling framework", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "aeb5e8b9-b931-43b0-bbe7-e067b2f2b9c9",
+            "chunk_index": 1,
+            "chunk_text": "An opportunity qualified by the sales team",
+            "official_resource_id": "7fb444b4-c302-44d7-b953-a0d12baf9e73",
+            "resource_version_id": "b80b5290-92fa-4731-86fe-a89e9f629b4c",
+            "content_hash": "c47c6464b69cd9905af2d6d06ead8b0ab4b861d7297f103ea3b7292064d6a23f",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/business-process-mapping/create-a-business-process-map",
+            "resource_title": "Creating Effective Business Process Maps"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-036",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Business Analyst",
+      "domain": "User Stories — Structure and Components",
+      "defect_category": "ambiguity",
+      "known_good": false,
+      "expected_correct_option_labels": ["A", "B"],
+      "expected_finding_codes": ["MULTIPLE_DEFENSIBLE_ANSWERS"],
+      "expected_materiality": "blocking",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["MULTIPLE_DEFENSIBLE_ANSWERS"]},
+      "reviewer_rationale": "The user story's 'I want' clause in evidence chunk cd20b482 joins two actions with 'and' — 'take ownership of new cases and communicate with customers' — presented as a single combined want, with neither action subordinated to the other. Framing the question as requiring exactly ONE action forces a choice between two equally-quoted, co-equal actions, so both A and B are individually defensible, and the single-answer premise is not supported by the source.",
+      "question": {
+        "question_text": "In Salesforce's example user story, what is THE ONE action the customer care representative wants to perform?",
+        "explanation": "The representative wants to take ownership of new cases.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "Take ownership of new cases", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "Communicate with customers", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "Escalate cases to a manager", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Close cases within 24 hours", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "cd20b482-dd28-44d2-93d5-86ab12439db8",
+            "chunk_index": 1,
+            "chunk_text": "User Story Example: As a customer care representative, I want to be able to take ownership of new cases and communicate with customers so that I can provide high-touch customer experiences.",
+            "official_resource_id": "ed589a9f-59b1-4d4e-a1e5-a5ee5f13aca4",
+            "resource_version_id": "c3f4c2fa-980c-4cf9-9328-8459a7c206ec",
+            "content_hash": "fca1a246ad76bf5362e2ca2f7bdbe2376b2132f964d367ba865da442eecd861e",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/user-story-creation/construct-a-user-story",
+            "resource_title": "User Story Creation Tips & Techniques"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-037",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Business Analyst",
+      "domain": "User Stories — Structure and Components",
+      "defect_category": "ambiguity",
+      "known_good": false,
+      "expected_correct_option_labels": ["A", "B", "C"],
+      "expected_finding_codes": ["AMBIGUOUS_QUESTION"],
+      "expected_materiality": "warning",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["AMBIGUOUS_QUESTION"]},
+      "reviewer_rationale": "Both 'Enhance User Story Skills' and 'Effective User Story Writing for Analysts' are Trailhead resource titles that equally match the generic framing 'improve user story writing skills.' The exported evidence for both resources (chunks fdf99301 and b829c610) is title-only, with no body text to distinguish their specific scope, so the question's premise of a single best resource is not defensible from the available evidence; only the context-neutral option (C) accounts for both being equally plausible.",
+      "question": {
+        "question_text": "Based on Salesforce Trailhead resource titles, which single resource should a Business Analyst use to improve their user story writing skills?",
+        "explanation": "Enhance User Story Skills is the resource that improves user story writing skills.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "Enhance User Story Skills", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "Effective User Story Writing for Analysts", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "Either, since both resource titles equally address user-story skill improvement", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Neither; use only the Project Scope Management module", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "fdf99301-d534-4650-86a1-f5c9ef908688",
+            "chunk_index": 0,
+            "chunk_text": "Enhance User Story Skills",
+            "official_resource_id": "168d4cf2-5506-4816-b42c-038c7a53ab0b",
+            "resource_version_id": "088b9f0c-56d4-48bb-be1d-1c3366195fc1",
+            "content_hash": "d40350a9eddc31fc3cdcb99ad7eda3d49bd87dd6423af4bd7ea18fa8a3359330",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/refresh-your-user-story-skills",
+            "resource_title": "Enhance User Story Skills"
+          },
+          {
+            "resource_chunk_id": "b829c610-02e5-4f85-94f7-48cd67bacaed",
+            "chunk_index": 0,
+            "chunk_text": "Effective User Story Writing for Analysts",
+            "official_resource_id": "f6b46719-87f3-4778-a45d-fd7fb97419f3",
+            "resource_version_id": "9c0565a7-0304-4d8d-997d-cdfa644e1ae2",
+            "content_hash": "e98ebd08549958caee7dc287a4d07d7754e957fbf6d5222ecef1e35830a34549",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/user-story-creation/learn-about-user-stories",
+            "resource_title": "Effective User Story Writing for Analysts"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-038",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Business Analyst",
+      "domain": "User Stories — Structure and Components",
+      "defect_category": "answer_quality",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["WEAK_DISTRACTORS"],
+      "expected_materiality": "warning",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["WEAK_DISTRACTORS"]},
+      "reviewer_rationale": "The correct answer (A) matches evidence chunk 587a3209's resource title exactly. Distractors B, C, and D describe capabilities from entirely unrelated products (Marketing Cloud Journey Builder, Heroku Postgres, Apex REST APIs) that a moderately prepared Business Analyst candidate would immediately recognize as out of scope, making them non-competitive.",
+      "question": {
+        "question_text": "Which Salesforce Trailhead resource provides tips and techniques specifically for constructing user stories, based on its title?",
+        "explanation": "User Story Creation Tips & Techniques covers this topic.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "User Story Creation Tips & Techniques", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "Configuring Marketing Cloud Journey Builder workflows", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "Managing Heroku Postgres database connections", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Writing custom Apex REST APIs for external data synchronization", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "587a3209-3a94-41e9-b3b0-b2b24a28cfe2",
+            "chunk_index": 0,
+            "chunk_text": "User Story Creation Tips & Techniques",
+            "official_resource_id": "ed589a9f-59b1-4d4e-a1e5-a5ee5f13aca4",
+            "resource_version_id": "c3f4c2fa-980c-4cf9-9328-8459a7c206ec",
+            "content_hash": "be2ea5ed8df0d683c5699815a7a311980f01857646c2213237d7aedb0c67cb8c",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/user-story-creation/construct-a-user-story",
+            "resource_title": "User Story Creation Tips & Techniques"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-039",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Business Analyst",
+      "domain": "Business Process Mapping — Process Map Examples",
+      "defect_category": "explanation_quality",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["EXPLANATION_INCOMPLETE"],
+      "expected_materiality": "warning",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["EXPLANATION_INCOMPLETE"]},
+      "reviewer_rationale": "The correct answer (A) matches the unit title in evidence chunk 95164906 ('Prepare to Create Your First Process Map') within the 'Creating Effective Business Process Maps' module (chunk 75904151). The provided explanation is present but thin: it does not describe what the preparation step actually involves or why it matters, so it fails to justify the answer beyond restating the module's general subject.",
+      "question": {
+        "question_text": "Which topic area does the 'Creating Effective Business Process Maps' Trailhead module include, based on its unit titles?",
+        "explanation": "This topic is covered in the business process mapping module.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "Preparing to create your first process map", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "Configuring Salesforce CPQ pricing rules", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "Apex trigger governor-limit tuning", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Territory management assignment rules", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "75904151-63dc-4b83-bf63-7305a1a0a954",
+            "chunk_index": 0,
+            "chunk_text": "Creating Effective Business Process Maps",
+            "official_resource_id": "7fb444b4-c302-44d7-b953-a0d12baf9e73",
+            "resource_version_id": "b80b5290-92fa-4731-86fe-a89e9f629b4c",
+            "content_hash": "b71758379cc69d5ca8b76da297f5f2ec772154a4c06967249fb523bc1897ce25",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/business-process-mapping/create-a-business-process-map",
+            "resource_title": "Creating Effective Business Process Maps"
+          },
+          {
+            "resource_chunk_id": "95164906-1d83-4c5f-981c-c809d8a56e97",
+            "chunk_index": 2,
+            "chunk_text": "Prepare to Create Your First Process Map",
+            "official_resource_id": "7fb444b4-c302-44d7-b953-a0d12baf9e73",
+            "resource_version_id": "b80b5290-92fa-4731-86fe-a89e9f629b4c",
+            "content_hash": "648ee55cd601483ef6168857bd177cff92550131387a1ed9912c8db67930a242",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/business-process-mapping/create-a-business-process-map",
+            "resource_title": "Creating Effective Business Process Maps"
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "qbv1-040",
+      "benchmark_version": "v1-pilot-draft",
+      "certification": "Salesforce Certified Business Analyst",
+      "domain": "Business Process Mapping — Roles and Responsibilities",
+      "defect_category": "source_support",
+      "known_good": false,
+      "expected_correct_option_labels": ["A"],
+      "expected_finding_codes": ["SOURCE_SUPPORT_WEAK"],
+      "expected_materiality": "warning",
+      "reviewer_label": {"known_good": false, "expected_finding_codes": ["SOURCE_SUPPORT_WEAK"]},
+      "reviewer_rationale": "Option A matches this resource's title exactly, and the topic area (universal process notation) aligns with the question. However, the only exported evidence for this resource in this case is its bare title (chunk 8476fcc2), with no body text describing the specific notation symbols, so the answer is plausible by title match alone and not confirmed by substantive content actually present in the evidence.",
+      "question": {
+        "question_text": "Which Salesforce Trailhead resource provides a detailed explanation of universal process notation symbols used in business process maps?",
+        "explanation": "This resource's title matches the universal process notation topic.",
+        "question_type": "single",
+        "select_count": 1,
+        "options": [
+          {"option_label": "A", "option_text": "Understanding Universal Process Notation in Detail", "is_correct": true, "display_order": 1},
+          {"option_label": "B", "option_text": "Project Scope Management", "is_correct": false, "display_order": 2},
+          {"option_label": "C", "option_text": "Enhance User Story Skills", "is_correct": false, "display_order": 3},
+          {"option_label": "D", "option_text": "Documenting B2C Commerce Technical Requirements", "is_correct": false, "display_order": 4}
+        ]
+      },
+      "resource_snapshot": {
+        "chunks": [
+          {
+            "resource_chunk_id": "8476fcc2-3b3e-4eed-9d3d-325c502e19a1",
+            "chunk_index": 0,
+            "chunk_text": "Understanding Universal Process Notation in Detail",
+            "official_resource_id": "beb2d622-e8e4-4917-9524-764f85bddf41",
+            "resource_version_id": "b440566e-1775-4257-b380-a1ff1c715c22",
+            "content_hash": "941fdbc2902a96bb1b457b2ba6a959697c1efd782fc29fa11f90d3ec0a6fb51e",
+            "publisher": "Salesforce",
+            "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/business-process-mapping/understand-universal-process-notation",
+            "resource_title": "Understanding Universal Process Notation in Detail"
           }
         ]
       }
