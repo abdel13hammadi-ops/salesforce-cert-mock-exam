@@ -418,16 +418,51 @@ class LegacyEngineAdapter:
 
 
 class V48EngineAdapter:
-    """V48 grounded engine adapter — BLOCKED for real prediction generation.
+    """V48 grounded engine adapter.
 
-    See module docstring for the full architectural rationale. This class
-    exists so the CLI and tests have a uniform adapter surface, but
-    ``generate_prediction`` always raises ``EngineAdapterUnavailableError``
-    rather than fabricating a prediction or silently falling back to mock
-    data.
+    Safe by default: with no arguments, this behaves exactly as it did
+    before V58-QUALITY-04C — ``generate_prediction`` always raises
+    ``EngineAdapterUnavailableError`` (see ``UNAVAILABLE_REASON``/
+    ``FOLLOW_UP``) rather than fabricating a prediction or silently falling
+    back to mock data.
+
+    V58-QUALITY-04C adds one narrow, explicit-opt-in exception: when *all*
+    of ``allow_disposable_db=True``, a non-empty ``disposable_db_url``, and
+    an explicitly injected ``providers`` are supplied, ``generate_prediction``
+    instead runs the real, unmodified V48 worker/RPC pipeline against that
+    disposable database via
+    ``workers.quality_benchmark_v48_orchestration.generate_v48_prediction``
+    (imported lazily to avoid a module import cycle — mirrors the existing
+    lazy-import pattern already used for
+    ``workers.ai_quality_audit_worker`` in ``workers/job_handlers.py``).
+    Every disposable-database safety check (DSN validation, schema/RPC
+    compatibility, guaranteed-rollback transaction) lives entirely in that
+    module; nothing here duplicates it. No provider is ever constructed
+    implicitly from environment variables — callers (currently only
+    Docker-gated tests) must inject ``providers`` explicitly.
     """
 
     engine_id = ENGINE_V48
+
+    def __init__(
+        self,
+        *,
+        allow_disposable_db: bool = False,
+        disposable_db_url: Optional[str] = None,
+        providers: Optional[Any] = None,
+        worker_id: str = "v58-quality-04c-benchmark",
+    ) -> None:
+        self._allow_disposable_db = allow_disposable_db
+        self._disposable_db_url = disposable_db_url
+        self._providers = providers
+        self._worker_id = worker_id
+
+    def _is_opted_in(self) -> bool:
+        return bool(
+            self._allow_disposable_db
+            and self._disposable_db_url
+            and self._providers is not None
+        )
 
     UNAVAILABLE_REASON = (
         "The V48 grounded engine's only complete entry point, "
@@ -458,15 +493,41 @@ class V48EngineAdapter:
     )
 
     def describe_config(self) -> Dict[str, Any]:
+        if not self._is_opted_in():
+            return {
+                "engine_id": self.engine_id,
+                "status": "blocked",
+                "reason": self.UNAVAILABLE_REASON,
+                "follow_up": self.FOLLOW_UP,
+            }
+        # Deliberately never includes the DSN (may carry credentials) —
+        # only a boolean opt-in flag and the worker id are ever recorded in
+        # provenance/artifacts.
         return {
             "engine_id": self.engine_id,
-            "status": "blocked",
-            "reason": self.UNAVAILABLE_REASON,
-            "follow_up": self.FOLLOW_UP,
+            "engine_version": "v48-disposable-db-v1",
+            "status": "disposable_db_live",
+            "live": True,
+            "worker_id": self._worker_id,
         }
 
     def generate_prediction(self, case: Mapping[str, Any]) -> CasePrediction:
-        raise EngineAdapterUnavailableError(self.UNAVAILABLE_REASON, self.FOLLOW_UP)
+        if not self._is_opted_in():
+            raise EngineAdapterUnavailableError(self.UNAVAILABLE_REASON, self.FOLLOW_UP)
+        # Lazy import: workers.quality_benchmark_v48_orchestration imports
+        # CasePrediction/EngineAdapterUnavailableError from this module, so
+        # importing it eagerly at module scope here would be circular.
+        from workers.quality_benchmark_v48_orchestration import (  # noqa: PLC0415
+            generate_v48_prediction,
+        )
+
+        return generate_v48_prediction(
+            case,
+            dsn=self._disposable_db_url,
+            allow_disposable_v48_db=self._allow_disposable_db,
+            providers=self._providers,
+            worker_id=self._worker_id,
+        )
 
 
 ENGINE_ADAPTERS = {
