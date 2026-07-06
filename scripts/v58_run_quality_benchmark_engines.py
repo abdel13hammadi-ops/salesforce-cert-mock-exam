@@ -41,6 +41,36 @@ Safety posture
   rejected for scoring.
 * The disposable V48 DSN is never printed or embedded in any output,
   error, or artifact — only whether it was supplied.
+* ``score --benchmark-tier {pilot,launch}`` (V58-QUALITY-04E, hardened in
+  V58-QUALITY-04E-R1, bound to prediction-artifact identity in
+  V58-QUALITY-04E-R2) additionally runs the scorecard through the
+  precommitted acceptance policy
+  (``workers.quality_benchmark_policy.classify_scorecard``) and prints the
+  resulting PASS / CONDITIONAL PASS / FAIL / INVALID RUN classification.
+  ``--benchmark-tier launch`` additionally requires
+  ``--review-attestation-json`` (a small JSON file attesting double-review
+  coverage — see module help); this CLI refuses to attempt launch
+  classification without it rather than silently treating missing
+  attestation as "no double review happened".
+* Configuration identity (provider/model/prompt/ruleset/evidence, plus
+  engine id/version and the source-fixture hash) is recorded exclusively at
+  **prediction-generation** time by the engine adapter
+  (``workers.quality_benchmark_execution.generate_predictions``) and flows
+  unchanged through ``score`` into the scorecard. There is no
+  ``score``-time flag to supply, override, or relabel it (V58-QUALITY-04E-R2
+  removed ``--engine-configuration-json`` for exactly this reason — it was
+  a scoring-time relabeling loophole). ``score`` refuses to proceed (exit 1)
+  if the prediction artifact's identity is incomplete or internally
+  inconsistent.
+
+Classification exit codes (``score --benchmark-tier ...`` only)
+-----------------------------------------------------------------
+    0  PASS
+    4  CONDITIONAL PASS
+    5  FAIL
+    6  INVALID RUN
+(``score`` without ``--benchmark-tier`` keeps its original exit codes: 0
+success, 1 invalid input.)
 
 Usage
 -----
@@ -75,6 +105,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -100,9 +131,76 @@ from workers.quality_benchmark_execution import (  # noqa: E402
     write_scorecard,
 )
 from workers.quality_benchmark import BenchmarkFixtureError  # noqa: E402
+from workers.quality_benchmark_policy import (  # noqa: E402
+    PolicyInputError,
+    TIER_LAUNCH,
+    TIER_PILOT,
+    classify_scorecard,
+)
 
 _LIVE_FLAG = "CERTBOUND_ALLOW_LIVE_AI_TEST"
 _V48_DB_URL_ENV = "CERTBOUND_V48_DISPOSABLE_DB_URL"
+
+_CLASSIFICATION_EXIT_CODES = {
+    "PASS": 0,
+    "CONDITIONAL PASS": 4,
+    "FAIL": 5,
+    "INVALID RUN": 6,
+}
+
+
+def _build_fixture_metadata(fixture: dict, *, review_process: dict | None) -> dict:
+    """Assemble ``fixture_metadata`` for ``classify_scorecard`` from an
+    already finalized SME-reviewed fixture (see
+    ``load_finalized_sme_ground_truth_fixture`` — by the time this is
+    called, ``assert_finalized_sme_ground_truth`` has already accepted the
+    fixture). Recomputes the ground-truth/provenance fields directly from
+    the fixture anyway, rather than hardcoding them to "always true", so
+    ``classify_scorecard``'s independent fail-closed checks stay meaningful
+    if this function is ever called from a different, less-trusted path.
+
+    Carries no engine-configuration identity at all (V58-QUALITY-04E-R2):
+    ``classify_scorecard`` reads that exclusively from the scorecard's own
+    ``configuration_identity`` (copied from the prediction artifact by
+    ``score_predictions``), so there is nothing for this CLI to pass
+    through or default here.
+    """
+    summary = fixture.get("sme_review_summary") or {}
+    known_good_count = 0
+    blocking_count = 0
+    warning_count = 0
+    defective_count = 0
+    category_counts: dict[str, int] = {}
+    for case in fixture["cases"]:
+        if case.get("known_good"):
+            known_good_count += 1
+            continue
+        defective_count += 1
+        materiality = case.get("expected_materiality")
+        if materiality == "blocking":
+            blocking_count += 1
+        elif materiality == "warning":
+            warning_count += 1
+        category = str(case.get("defect_category") or "")
+        if category:
+            category_counts[category] = category_counts.get(category, 0) + 1
+
+    return {
+        "ground_truth_finalized": fixture.get("sme_reviewed") is True,
+        "is_ai_drafted": fixture.get("sme_reviewed") is not True,
+        "sme_review_status": fixture.get("sme_review_status"),
+        "rejected_case_ids": list(summary.get("rejected_case_ids") or []),
+        "unresolved_second_review_case_ids": list(summary.get("unresolved_second_review_case_ids") or []),
+        "source_fixture_sha256": fixture.get("source_fixture_sha256"),
+        "configuration_mixed": False,
+        "total_case_count": len(fixture["cases"]),
+        "known_good_case_count": known_good_count,
+        "defective_case_count": defective_count,
+        "blocking_case_count": blocking_count,
+        "warning_case_count": warning_count,
+        "category_case_counts": category_counts,
+        "review_process": review_process,
+    }
 
 
 def _running_under_pytest() -> bool:
@@ -226,7 +324,52 @@ def _cmd_score(args: argparse.Namespace) -> int:
     write_scorecard(args.output, scorecard, allow_overwrite=args.allow_overwrite)
     print(dumps_scorecard(scorecard))
     print(f"scorecard written to: {args.output}")
-    return 0
+
+    if not args.benchmark_tier:
+        return 0
+
+    review_process = None
+    if args.benchmark_tier == TIER_LAUNCH:
+        if not args.review_attestation_json:
+            print(
+                "Refusing launch classification: --review-attestation-json is required for "
+                "--benchmark-tier launch (double-review coverage cannot be inferred from case "
+                "count alone)."
+            )
+            return 6
+        try:
+            with open(args.review_attestation_json, "r", encoding="utf-8-sig") as handle:
+                review_process = json.load(handle)
+        except (OSError, ValueError) as exc:
+            print(f"Refusing launch classification: could not read --review-attestation-json: {exc}")
+            return 6
+        if not isinstance(review_process, dict):
+            print("Refusing launch classification: --review-attestation-json must contain a JSON object.")
+            return 6
+
+    fixture_metadata = _build_fixture_metadata(fixture, review_process=review_process)
+
+    try:
+        result = classify_scorecard(scorecard, args.benchmark_tier, fixture_metadata)
+    except PolicyInputError as exc:
+        print(f"Invalid classification input: {exc}")
+        return 1
+
+    print("")
+    print(f"benchmark_tier: {result['benchmark_tier']}")
+    print(f"policy_version: {result['policy_version']}")
+    print(f"classification: {result['classification']}")
+    print(f"classification_language: {result['classification_language']}")
+    print(f"reasons: {result['reasons']}")
+    print(f"limitations: {result['limitations']}")
+    print(f"configuration_identity: {result['configuration_identity']}")
+    if args.classification_output:
+        with open(args.classification_output, "w", encoding="utf-8") as handle:
+            json.dump(result, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        print(f"classification written to: {args.classification_output}")
+
+    return _CLASSIFICATION_EXIT_CODES.get(result["classification"], 1)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -279,6 +422,31 @@ def main(argv: list[str] | None = None) -> int:
     score_parser.add_argument("--predictions", required=True)
     score_parser.add_argument("--output", required=True, help="Path to write the scorecard artifact")
     score_parser.add_argument("--allow-overwrite", action="store_true")
+    score_parser.add_argument(
+        "--benchmark-tier",
+        choices=[TIER_PILOT, TIER_LAUNCH],
+        default=None,
+        help=(
+            "Optional (V58-QUALITY-04E): additionally classify the resulting scorecard under the "
+            "precommitted acceptance policy (PASS/CONDITIONAL PASS/FAIL/INVALID RUN). Omit to keep "
+            "the original score-only behavior."
+        ),
+    )
+    score_parser.add_argument(
+        "--review-attestation-json",
+        default=None,
+        help=(
+            "Required with --benchmark-tier launch: path to a JSON object with "
+            "blocking_cases_double_reviewed_count, blocking_cases_total_count, "
+            "non_blocking_cases_double_reviewed_count, non_blocking_cases_total_count, and "
+            "disagreements_adjudicated_or_excluded. Never inferred from case counts alone."
+        ),
+    )
+    score_parser.add_argument(
+        "--classification-output",
+        default=None,
+        help="Optional path to also write the full classify_scorecard() result as JSON.",
+    )
     score_parser.set_defaults(func=_cmd_score)
 
     args = parser.parse_args(argv)

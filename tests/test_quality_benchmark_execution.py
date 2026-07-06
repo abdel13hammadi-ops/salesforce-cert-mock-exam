@@ -40,6 +40,7 @@ from workers.quality_benchmark_execution import (
     GroundTruthNotFinalizedError,
     LegacyEngineAdapter,
     PredictionArtifactError,
+    QualityBenchmarkExecutionError,
     V48EngineAdapter,
     assert_finalized_sme_ground_truth,
     generate_predictions,
@@ -92,7 +93,15 @@ class _FakeAdapter:
         self._fail_case_id = fail_case_id
 
     def describe_config(self):
-        return {"engine_id": self.engine_id, "engine_version": "fake-v1"}
+        return {
+            "engine_id": self.engine_id,
+            "engine_version": "fake-v1",
+            "provider_id": "fake-provider",
+            "model_id": "fake-model",
+            "prompt_version": "fake-prompt-v1",
+            "ruleset_version": "fake-ruleset-v1",
+            "evidence_config_id": "fake-evidence-v1",
+        }
 
     def generate_prediction(self, case) -> CasePrediction:
         if case["case_id"] == self._fail_case_id:
@@ -107,6 +116,20 @@ class _FakeAdapter:
             approved=bool(case.get("known_good")),
             raw_output={"findings": findings},
         )
+
+
+def _clean_configuration_identity(*, engine_id: str, engine_version: str, source_fixture_sha256: str) -> dict:
+    """A complete, internally-consistent configuration identity (V58-QUALITY-04E-R2)."""
+    return {
+        "engine_id": engine_id,
+        "engine_version": engine_version,
+        "provider_id": "fake-provider",
+        "model_id": "fake-model",
+        "prompt_version": "fake-prompt-v1",
+        "ruleset_version": "fake-ruleset-v1",
+        "evidence_config_id": "fake-evidence-v1",
+        "source_fixture_sha256": source_fixture_sha256,
+    }
 
 
 def _perfect_predictions_artifact(fixture: dict, *, engine_id: str = "fake") -> dict:
@@ -127,14 +150,19 @@ def _perfect_predictions_artifact(fixture: dict, *, engine_id: str = "fake") -> 
                 "error": None,
             }
         )
+    engine_version = "fake-v1"
+    source_fixture_sha256 = fixture.get("source_fixture_sha256", "deadbeef")
     return {
         "schema_version": "quality-benchmark-prediction-v1",
         "engine_id": engine_id,
-        "engine_version": "fake-v1",
+        "engine_version": engine_version,
+        "configuration_identity": _clean_configuration_identity(
+            engine_id=engine_id, engine_version=engine_version, source_fixture_sha256=source_fixture_sha256
+        ),
         "provider_config": {},
         "generated_at_utc": "2026-07-05T20:00:00Z",
         "source_fixture_path": str(_AI_DRAFTED_FIXTURE_PATH),
-        "source_fixture_sha256": fixture.get("source_fixture_sha256", "deadbeef"),
+        "source_fixture_sha256": source_fixture_sha256,
         "case_count": len(fixture["cases"]),
         "predictions": predictions,
         "error_case_count": 0,
@@ -245,6 +273,17 @@ class TestLegacyEngineAdapterDefaultMode(unittest.TestCase):
         self.assertFalse(config["live"])
         self.assertEqual(config["engine_id"], ENGINE_LEGACY)
 
+    def test_describe_config_reports_explicit_deterministic_only_markers(self):
+        # V58-QUALITY-04E-R2 correction 6: these must be explicit, never
+        # inferred/omitted, and must be true statements about what actually
+        # ran (no provider/model/prompt was used).
+        config = self.adapter.describe_config()
+        self.assertEqual(config["provider_id"], "deterministic-only")
+        self.assertEqual(config["model_id"], "not-applicable")
+        self.assertEqual(config["prompt_version"], "not-applicable")
+        self.assertTrue(config["ruleset_version"])
+        self.assertTrue(config["evidence_config_id"])
+
 
 class TestLegacyEngineAdapterWithFakeProvider(unittest.TestCase):
     """A provider is injected (simulating live mode) but is a pure fake —
@@ -307,8 +346,15 @@ class TestLegacyEngineAdapterWithFakeProvider(unittest.TestCase):
         self.assertEqual(prediction.case_id, case["case_id"])
 
     def test_describe_config_reports_live_when_provider_injected(self):
-        adapter = LegacyEngineAdapter(llm_provider=self._fake_provider_returning([]))
+        adapter = LegacyEngineAdapter(
+            llm_provider=self._fake_provider_returning([]), provider_id="fake-live-provider"
+        )
         self.assertTrue(adapter.describe_config()["live"])
+
+    def test_describe_config_live_requires_explicit_provider_id(self):
+        adapter = LegacyEngineAdapter(llm_provider=self._fake_provider_returning([]))
+        with self.assertRaises(QualityBenchmarkExecutionError):
+            adapter.describe_config()
 
 
 class TestV48EngineAdapterBlocked(unittest.TestCase):
@@ -348,6 +394,47 @@ class TestGeneratePredictionsRoundTrip(unittest.TestCase):
         from workers.quality_benchmark_execution import _sha256_file  # local helper
 
         self.assertEqual(artifact["source_fixture_sha256"], _sha256_file(DEFAULT_FIXTURE_PATH))
+
+    def test_artifact_carries_complete_configuration_identity(self):
+        # V58-QUALITY-04E-R2: prediction artifact is authoritative — every
+        # required identity dimension must be present and non-blank.
+        adapter = _FakeAdapter()
+        artifact = generate_predictions(self.fixture, adapter, source_fixture_path=DEFAULT_FIXTURE_PATH)
+        identity = artifact["configuration_identity"]
+        for field in (
+            "engine_id",
+            "engine_version",
+            "provider_id",
+            "model_id",
+            "prompt_version",
+            "ruleset_version",
+            "evidence_config_id",
+            "source_fixture_sha256",
+        ):
+            self.assertTrue(identity.get(field), f"{field} must be non-blank")
+        self.assertEqual(identity["engine_id"], artifact["engine_id"])
+        self.assertEqual(identity["source_fixture_sha256"], artifact["source_fixture_sha256"])
+
+    def test_legacy_deterministic_artifact_carries_explicit_not_applicable_markers(self):
+        fixture = load_benchmark_fixture(DEFAULT_FIXTURE_PATH)
+        artifact = generate_predictions(fixture, LegacyEngineAdapter(), source_fixture_path=DEFAULT_FIXTURE_PATH)
+        identity = artifact["configuration_identity"]
+        self.assertEqual(identity["provider_id"], "deterministic-only")
+        self.assertEqual(identity["model_id"], "not-applicable")
+        self.assertEqual(identity["prompt_version"], "not-applicable")
+
+    def test_generation_refuses_incomplete_configuration_identity(self):
+        class _IncompleteAdapter:
+            engine_id = "incomplete"
+
+            def describe_config(self):
+                return {"engine_id": self.engine_id, "engine_version": "v1", "provider_id": ""}
+
+            def generate_prediction(self, case):
+                return CasePrediction(case_id=case["case_id"])
+
+        with self.assertRaises(PredictionArtifactError):
+            generate_predictions(self.fixture, _IncompleteAdapter(), source_fixture_path=DEFAULT_FIXTURE_PATH)
 
     def test_per_case_exception_is_isolated_not_fatal(self):
         failing_case_id = self.fixture["cases"][0]["case_id"]
@@ -428,6 +515,56 @@ class TestScorePredictions(unittest.TestCase):
         self.assertEqual(scorecard["defective_case_rejection_rate"], 1.0)
         if scorecard["metrics"]["blocking_category_total"] > 0:
             self.assertEqual(scorecard["metrics"]["blocking_category_recall"], 1.0)
+
+    def test_scorecard_identity_matches_prediction_artifact(self):
+        # V58-QUALITY-04E-R2 correction 2: identity is copied unchanged.
+        artifact = _perfect_predictions_artifact(self.reviewed)
+        scorecard = score_predictions(self.reviewed, artifact)
+        self.assertEqual(scorecard["configuration_identity"], artifact["configuration_identity"])
+
+    def test_scoring_rejects_missing_configuration_identity(self):
+        artifact = _perfect_predictions_artifact(self.reviewed)
+        del artifact["configuration_identity"]
+        with self.assertRaises(PredictionArtifactError):
+            score_predictions(self.reviewed, artifact)
+
+    def test_scoring_rejects_incomplete_configuration_identity(self):
+        artifact = _perfect_predictions_artifact(self.reviewed)
+        artifact["configuration_identity"]["model_id"] = ""
+        with self.assertRaises(PredictionArtifactError):
+            score_predictions(self.reviewed, artifact)
+
+    def test_scoring_rejects_engine_id_mismatch_between_identity_and_top_level(self):
+        # Simulates a hand-edited artifact where only one copy of engine_id
+        # was updated after generation.
+        artifact = _perfect_predictions_artifact(self.reviewed)
+        artifact["engine_id"] = "tampered-engine"
+        with self.assertRaises(PredictionArtifactError):
+            score_predictions(self.reviewed, artifact)
+
+    def test_scoring_rejects_altered_provider_or_model_inconsistent_with_provider_config(self):
+        artifact = _perfect_predictions_artifact(self.reviewed)
+        # provider_config independently records the same facts; a caller
+        # relabeling only configuration_identity is a detectable tamper.
+        artifact["provider_config"] = dict(artifact["configuration_identity"])
+        artifact["configuration_identity"]["model_id"] = "relabeled-model"
+        with self.assertRaises(PredictionArtifactError):
+            score_predictions(self.reviewed, artifact)
+
+    def test_scoring_rejects_altered_prompt_ruleset_or_evidence_identity(self):
+        artifact = _perfect_predictions_artifact(self.reviewed)
+        artifact["provider_config"] = dict(artifact["configuration_identity"])
+        for field in ("prompt_version", "ruleset_version", "evidence_config_id"):
+            tampered = copy.deepcopy(artifact)
+            tampered["configuration_identity"][field] = "relabeled-value"
+            with self.assertRaises(PredictionArtifactError):
+                score_predictions(self.reviewed, tampered)
+
+    def test_scoring_rejects_source_fixture_hash_mismatch_between_identity_and_top_level(self):
+        artifact = _perfect_predictions_artifact(self.reviewed)
+        artifact["source_fixture_sha256"] = "0" * 64
+        with self.assertRaises(PredictionArtifactError):
+            score_predictions(self.reviewed, artifact)
 
     def test_error_case_is_excluded_and_counted_as_unscored(self):
         artifact = _perfect_predictions_artifact(self.reviewed)
@@ -571,6 +708,47 @@ class TestCli(unittest.TestCase):
             ])
             self.assertEqual(code, 0)
             self.assertTrue(scorecard_path.exists())
+
+    def test_score_cli_rejects_unknown_engine_configuration_json_flag(self):
+        # V58-QUALITY-04E-R2 correction 4: --engine-configuration-json was
+        # removed entirely (not merely undocumented) - a scoring-time
+        # operator can no longer supply/override configuration identity.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("scripts.v58_run_quality_benchmark_engines._running_under_pytest", return_value=False):
+                with self.assertRaises(SystemExit):
+                    cli.main([
+                        "score",
+                        "--fixture", "unused.json",
+                        "--predictions", "unused.json",
+                        "--output", str(Path(tmpdir) / "scorecard.json"),
+                        "--engine-configuration-json", "unused.json",
+                    ])
+
+    def test_score_cli_classification_uses_artifact_identity_with_no_identity_flag(self):
+        # score --benchmark-tier classifies purely from the artifact's own
+        # configuration_identity; there is no flag to supply one.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reviewed_path = Path(tmpdir) / "reviewed.json"
+            reviewed_path.write_text(json.dumps(self.reviewed), encoding="utf-8")
+            predictions_path = Path(tmpdir) / "predictions.json"
+            artifact = _perfect_predictions_artifact(self.reviewed)
+            predictions_path.write_text(json.dumps(artifact), encoding="utf-8")
+            scorecard_path = Path(tmpdir) / "scorecard.json"
+
+            code, output = self._run([
+                "score",
+                "--fixture", str(reviewed_path),
+                "--predictions", str(predictions_path),
+                "--output", str(scorecard_path),
+                "--benchmark-tier", "pilot",
+            ])
+            # This fixture has 40 finalized cases, so it is pilot-eligible;
+            # the run should reach an actual classification (not a
+            # missing-flag refusal), proving identity came from the
+            # artifact alone.
+            self.assertIn("configuration_identity", output)
+            self.assertIn(artifact["configuration_identity"]["provider_id"], output)
+            self.assertNotIn("engine-configuration-json", output)
 
     def test_score_rejects_ai_drafted_fixture(self):
         with tempfile.TemporaryDirectory() as tmpdir:

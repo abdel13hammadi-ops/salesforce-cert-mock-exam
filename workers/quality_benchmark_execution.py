@@ -59,6 +59,22 @@ incompatibility and the smallest safe follow-up.
 
 No database writes, migrations, candidate publishing, or live AI calls
 occur anywhere in this module.
+
+Configuration identity is generated, not asserted (V58-QUALITY-04E-R2)
+------------------------------------------------------------------------
+Every prediction artifact produced by ``generate_predictions`` carries a
+``configuration_identity`` dict recording the *actual* engine/provider/
+model/prompt/ruleset/evidence configuration used to generate it, plus the
+source fixture's hash - all derived from the adapter's own
+``describe_config()`` at the moment predictions were generated, never
+supplied separately at scoring time. ``score_predictions`` re-validates
+this identity is complete and internally consistent (cross-checked against
+the artifact's independently-recorded top-level fields and raw
+``provider_config``) before copying it, unchanged, into the scorecard.
+There is no scoring-time mechanism (CLI flag or otherwise) to supply,
+override, or relabel this identity - the only way to change what a
+scorecard says was tested is to generate new predictions with a different
+engine/adapter configuration.
 """
 
 from __future__ import annotations
@@ -91,8 +107,34 @@ ENGINE_LEGACY = "legacy"
 ENGINE_V48 = "v48"
 
 DEFAULT_LEGACY_RULESET_VERSION = "1.0.0"
-DEFAULT_LEGACY_MODEL_NAME = "claude-sonnet-4-6"
+DEFAULT_LEGACY_MODEL_ID = "claude-sonnet-4-6"
 DEFAULT_LEGACY_SYSTEM_PROMPT = "You are a CertBound certification question auditor."
+DEFAULT_LEGACY_PROMPT_VERSION = "legacy-system-prompt-v1"
+DEFAULT_LEGACY_EVIDENCE_CONFIG_ID = "legacy-evidence-v1"
+
+# Explicit, non-inferred markers for a deterministic-only run (V58-QUALITY-
+# 04E-R2 correction 6): when no LLM provider is injected, these are facts
+# about what actually happened (no provider/model/prompt was used), not
+# guesses - the deterministic-only adapter code path always sets exactly
+# these values itself; nothing downstream ever invents them.
+DETERMINISTIC_ONLY_PROVIDER_ID = "deterministic-only"
+NOT_APPLICABLE_IDENTITY_VALUE = "not-applicable"
+
+# The complete set of dimensions that must be explicit, non-blank strings in
+# a prediction artifact's ``configuration_identity`` (and, downstream, a
+# scorecard's copy of it) before scoring/classification may proceed. A
+# genuinely not-applicable dimension must still be an explicit sentinel
+# string (e.g. NOT_APPLICABLE_IDENTITY_VALUE) - never null, never omitted.
+REQUIRED_CONFIGURATION_IDENTITY_FIELDS = (
+    "engine_id",
+    "engine_version",
+    "provider_id",
+    "model_id",
+    "prompt_version",
+    "ruleset_version",
+    "evidence_config_id",
+    "source_fixture_sha256",
+)
 
 
 # ===========================================================================
@@ -254,6 +296,27 @@ def _sha256_file(path: Path | str) -> str:
     return hashlib.sha256(file_path.read_bytes()).hexdigest()
 
 
+def _nonblank_str(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _assert_complete_configuration_identity(identity: Mapping[str, Any], *, context: str) -> None:
+    """Raise ``PredictionArtifactError`` unless every dimension in
+    ``REQUIRED_CONFIGURATION_IDENTITY_FIELDS`` is an explicit, non-blank
+    string. Never fills in a missing/blank dimension - a genuinely
+    not-applicable dimension must already be an explicit caller-supplied
+    sentinel (see ``NOT_APPLICABLE_IDENTITY_VALUE`` /
+    ``DETERMINISTIC_ONLY_PROVIDER_ID``).
+    """
+    missing = [field for field in REQUIRED_CONFIGURATION_IDENTITY_FIELDS if not _nonblank_str(identity.get(field))]
+    if missing:
+        raise PredictionArtifactError(
+            f"{context}: configuration identity is incomplete; missing or blank field(s): {missing} "
+            "(a not-applicable dimension must be an explicit sentinel such as "
+            f"{NOT_APPLICABLE_IDENTITY_VALUE!r} or {DETERMINISTIC_ONLY_PROVIDER_ID!r} - it is never inferred)"
+        )
+
+
 def _summarize_findings(findings: Sequence[Mapping[str, Any]]) -> tuple[List[str], Optional[str], bool]:
     """Return (finding_codes, overall_materiality, approved) for *findings*."""
     codes = [str(f.get("finding_code")) for f in findings if f.get("finding_code")]
@@ -333,21 +396,51 @@ class LegacyEngineAdapter:
         *,
         ruleset_version: str = DEFAULT_LEGACY_RULESET_VERSION,
         llm_provider: Optional[Callable[..., Any]] = None,
-        model_name: str = DEFAULT_LEGACY_MODEL_NAME,
+        model_id: str = DEFAULT_LEGACY_MODEL_ID,
         system_prompt: str = DEFAULT_LEGACY_SYSTEM_PROMPT,
+        prompt_version: str = DEFAULT_LEGACY_PROMPT_VERSION,
+        provider_id: Optional[str] = None,
+        evidence_config_id: str = DEFAULT_LEGACY_EVIDENCE_CONFIG_ID,
     ) -> None:
         self._ruleset_version = ruleset_version
         self._provider = llm_provider
-        self._model_name = model_name
+        self._model_id = model_id
         self._system_prompt = system_prompt
+        self._prompt_version = prompt_version
+        # Deliberately not defaulted when a provider IS injected (live mode)
+        # - see describe_config(): a live run's provider identity must be
+        # supplied explicitly by whoever wires the real provider, never
+        # guessed by this adapter.
+        self._provider_id = provider_id
+        self._evidence_config_id = evidence_config_id
 
     def describe_config(self) -> Dict[str, Any]:
+        live = self._provider is not None
+        if live:
+            if not _nonblank_str(self._provider_id):
+                raise QualityBenchmarkExecutionError(
+                    "LegacyEngineAdapter(llm_provider=...) requires an explicit non-blank provider_id "
+                    "for live execution - it is never inferred from the injected callable"
+                )
+            provider_id = self._provider_id
+            model_id = self._model_id
+            prompt_version = self._prompt_version
+        else:
+            # Deterministic-only posture: these are facts about what
+            # actually ran (no provider/model/prompt was used), not
+            # inferred placeholders.
+            provider_id = DETERMINISTIC_ONLY_PROVIDER_ID
+            model_id = NOT_APPLICABLE_IDENTITY_VALUE
+            prompt_version = NOT_APPLICABLE_IDENTITY_VALUE
         return {
             "engine_id": self.engine_id,
             "engine_version": "legacy-deterministic+llm-v1",
+            "provider_id": provider_id,
+            "model_id": model_id,
+            "prompt_version": prompt_version,
             "ruleset_version": self._ruleset_version,
-            "model_name": self._model_name,
-            "live": self._provider is not None,
+            "evidence_config_id": self._evidence_config_id,
+            "live": live,
         }
 
     def generate_prediction(self, case: Mapping[str, Any]) -> CasePrediction:
@@ -381,7 +474,7 @@ class LegacyEngineAdapter:
 
         try:
             response = self._provider(
-                model_name=case.get("model_name") or self._model_name,
+                model_name=case.get("model_name") or self._model_id,
                 system_prompt=case.get("system_prompt") or self._system_prompt,
                 user_prompt=user_prompt,
                 response_schema=AUDIT_RESPONSE_SCHEMA,
@@ -451,11 +544,25 @@ class V48EngineAdapter:
         disposable_db_url: Optional[str] = None,
         providers: Optional[Any] = None,
         worker_id: str = "v58-quality-04c-benchmark",
+        provider_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+        prompt_version: Optional[str] = None,
+        ruleset_version: Optional[str] = None,
+        evidence_config_id: Optional[str] = None,
     ) -> None:
         self._allow_disposable_db = allow_disposable_db
         self._disposable_db_url = disposable_db_url
         self._providers = providers
         self._worker_id = worker_id
+        # Required (non-blank) before an opted-in artifact can be built by
+        # generate_predictions() - see describe_config(). Never defaulted:
+        # the disposable-db path is real, injected-provider execution, so
+        # there is no "deterministic-only" fallback identity available.
+        self._provider_id = provider_id
+        self._model_id = model_id
+        self._prompt_version = prompt_version
+        self._ruleset_version = ruleset_version
+        self._evidence_config_id = evidence_config_id
 
     def _is_opted_in(self) -> bool:
         return bool(
@@ -500,6 +607,23 @@ class V48EngineAdapter:
                 "reason": self.UNAVAILABLE_REASON,
                 "follow_up": self.FOLLOW_UP,
             }
+        missing = [
+            name
+            for name, value in (
+                ("provider_id", self._provider_id),
+                ("model_id", self._model_id),
+                ("prompt_version", self._prompt_version),
+                ("ruleset_version", self._ruleset_version),
+                ("evidence_config_id", self._evidence_config_id),
+            )
+            if not _nonblank_str(value)
+        ]
+        if missing:
+            raise QualityBenchmarkExecutionError(
+                "V48EngineAdapter disposable-database execution requires explicit non-blank "
+                f"configuration identity for prediction-artifact generation; missing or blank: {missing} "
+                "(never inferred - pass these explicitly to the constructor)"
+            )
         # Deliberately never includes the DSN (may carry credentials) —
         # only a boolean opt-in flag and the worker id are ever recorded in
         # provenance/artifacts.
@@ -509,6 +633,11 @@ class V48EngineAdapter:
             "status": "disposable_db_live",
             "live": True,
             "worker_id": self._worker_id,
+            "provider_id": self._provider_id,
+            "model_id": self._model_id,
+            "prompt_version": self._prompt_version,
+            "ruleset_version": self._ruleset_version,
+            "evidence_config_id": self._evidence_config_id,
         }
 
     def generate_prediction(self, case: Mapping[str, Any]) -> CasePrediction:
@@ -552,6 +681,13 @@ def generate_predictions(
     immediately (the whole engine is unavailable, not just one case); any
     other per-case exception is caught and recorded as that case's
     ``error`` so no case is silently dropped.
+
+    Builds and validates ``configuration_identity`` (V58-QUALITY-04E-R2)
+    from ``adapter.describe_config()`` - the single, authoritative source
+    of what engine/provider/model/prompt/ruleset/evidence configuration was
+    actually used. Raises ``PredictionArtifactError`` if any required
+    identity dimension is missing or blank, so an incomplete-identity
+    artifact is never written to disk in the first place.
     """
     predictions: List[Dict[str, Any]] = []
     error_case_count = 0
@@ -573,14 +709,29 @@ def generate_predictions(
         if prediction.error:
             error_case_count += 1
 
+    config = adapter.describe_config()
+    source_fixture_sha256 = _sha256_file(source_fixture_path)
+    configuration_identity = {
+        "engine_id": config.get("engine_id"),
+        "engine_version": config.get("engine_version"),
+        "provider_id": config.get("provider_id"),
+        "model_id": config.get("model_id"),
+        "prompt_version": config.get("prompt_version"),
+        "ruleset_version": config.get("ruleset_version"),
+        "evidence_config_id": config.get("evidence_config_id"),
+        "source_fixture_sha256": source_fixture_sha256,
+    }
+    _assert_complete_configuration_identity(configuration_identity, context="prediction generation")
+
     return {
         "schema_version": PREDICTION_ARTIFACT_SCHEMA_VERSION,
-        "engine_id": adapter.engine_id,
-        "engine_version": adapter.describe_config().get("engine_version"),
-        "provider_config": adapter.describe_config(),
+        "engine_id": config.get("engine_id"),
+        "engine_version": config.get("engine_version"),
+        "configuration_identity": configuration_identity,
+        "provider_config": config,
         "generated_at_utc": _utc_now_iso8601(),
         "source_fixture_path": str(source_fixture_path),
-        "source_fixture_sha256": _sha256_file(source_fixture_path),
+        "source_fixture_sha256": source_fixture_sha256,
         "case_count": len(fixture["cases"]),
         "predictions": predictions,
         "error_case_count": error_case_count,
@@ -666,6 +817,62 @@ def validate_prediction_coverage(
     return {"expected_case_count": len(expected_ids), "predicted_case_count": len(seen)}
 
 
+def _extract_and_verify_configuration_identity(artifact: Mapping[str, Any]) -> Dict[str, str]:
+    """Return the prediction artifact's authoritative ``configuration_identity``,
+    after verifying it is complete and internally consistent.
+
+    This is the sole boundary where scoring accepts configuration identity
+    (V58-QUALITY-04E-R2): it is never accepted as a separate scoring-time
+    argument. Raises ``PredictionArtifactError`` if the identity is
+    incomplete, or if it disagrees with any of the other places the same
+    facts are independently recorded in the artifact (the legacy top-level
+    ``engine_id``/``engine_version``/``source_fixture_sha256`` fields, and
+    the raw ``provider_config`` the identity was derived from) - such a
+    disagreement means the artifact was hand-edited inconsistently after
+    generation and must not be trusted.
+    """
+    identity = artifact.get("configuration_identity")
+    if not isinstance(identity, Mapping):
+        raise PredictionArtifactError(
+            "prediction artifact is missing 'configuration_identity'; scoring refuses to proceed "
+            "without complete, explicit engine-configuration identity recorded at prediction-generation "
+            "time (see workers.quality_benchmark_execution.generate_predictions)"
+        )
+    normalized: Dict[str, str] = {
+        field: identity.get(field) for field in REQUIRED_CONFIGURATION_IDENTITY_FIELDS
+    }
+    _assert_complete_configuration_identity(normalized, context="scoring")
+
+    mismatches: List[str] = []
+    top_level_fields = {
+        "engine_id": artifact.get("engine_id"),
+        "engine_version": artifact.get("engine_version"),
+        "source_fixture_sha256": artifact.get("source_fixture_sha256"),
+    }
+    for field, top_level_value in top_level_fields.items():
+        if top_level_value != normalized[field]:
+            mismatches.append(
+                f"{field}: top-level={top_level_value!r} vs configuration_identity={normalized[field]!r}"
+            )
+
+    provider_config = artifact.get("provider_config")
+    if isinstance(provider_config, Mapping):
+        for field in REQUIRED_CONFIGURATION_IDENTITY_FIELDS:
+            if field in provider_config and provider_config[field] != normalized[field]:
+                mismatches.append(
+                    f"{field}: provider_config={provider_config[field]!r} vs "
+                    f"configuration_identity={normalized[field]!r}"
+                )
+
+    if mismatches:
+        raise PredictionArtifactError(
+            "prediction artifact configuration identity is internally inconsistent (possible "
+            f"post-generation tampering); mismatches: {mismatches}"
+        )
+
+    return normalized
+
+
 def _finding_category_metrics(
     cases: Sequence[Mapping[str, Any]],
     findings_by_case_id: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -675,7 +882,12 @@ def _finding_category_metrics(
     A "true positive" for code C is a defective case whose
     expected_finding_codes includes C and whose predicted findings also
     include C. A "false positive" is any case (known-good or defective)
-    where C was predicted but not expected.
+    where C was predicted but not expected. "false_negatives" is the
+    complement of true_positives within expected_total (cases that expected
+    C but did not get it); "n" is expected_total, i.e. the ground-truth
+    sample size this code's recall is computed over (V58-QUALITY-04E —
+    exposed so tier-aware acceptance policies can flag small-n codes as
+    diagnostic-only without recomputing anything).
     """
     all_codes: set = set()
     for case in cases:
@@ -711,8 +923,10 @@ def _finding_category_metrics(
         per_code[code] = {
             "true_positives": true_positives,
             "false_positives": false_positives,
+            "false_negatives": expected_total - true_positives,
             "expected_total": expected_total,
             "predicted_total": predicted_total,
+            "n": expected_total,
             "precision": precision,
             "recall": recall,
         }
@@ -727,16 +941,23 @@ def score_predictions(
 
     Fails closed: re-asserts ``assert_finalized_sme_ground_truth`` even if
     the caller already used ``load_finalized_sme_ground_truth_fixture``, so
-    this function is safe to call directly.
+    this function is safe to call directly. Also fails closed on
+    configuration identity (V58-QUALITY-04E-R2): the artifact's
+    ``configuration_identity`` must be complete and internally consistent
+    (see ``_extract_and_verify_configuration_identity``); it is copied,
+    unchanged, into the returned scorecard. There is no parameter on this
+    function through which a caller can supply or override identity.
     """
     assert_finalized_sme_ground_truth(fixture)
     coverage = validate_prediction_coverage(fixture, artifact)
+    configuration_identity = _extract_and_verify_configuration_identity(artifact)
 
     predictions_by_id = {str(p["case_id"]): p for p in artifact["predictions"]}
 
     scored_cases: List[Mapping[str, Any]] = []
     case_results = []
     unscored_case_ids: List[str] = []
+    unscored_blocking_case_ids: List[str] = []
     findings_by_case_id: Dict[str, Sequence[Mapping[str, Any]]] = {}
 
     for case in fixture["cases"]:
@@ -744,6 +965,13 @@ def score_predictions(
         prediction = predictions_by_id[case_id]
         if prediction.get("error"):
             unscored_case_ids.append(case_id)
+            # A blocking-labeled case that could not be scored is tracked
+            # separately (V58-QUALITY-04E): it must never silently vanish
+            # from the acceptance-policy denominator the way it vanishes
+            # from the rate-based metrics below (see
+            # docs/V58_BENCHMARK_ACCEPTANCE_POLICY.md).
+            if case.get("expected_materiality") == "blocking":
+                unscored_blocking_case_ids.append(case_id)
             continue
         findings = (prediction.get("raw_output") or {}).get("findings") or []
         findings_by_case_id[case_id] = findings
@@ -753,6 +981,10 @@ def score_predictions(
     metrics: BenchmarkMetrics = (
         compute_benchmark_metrics(scored_cases, case_results) if scored_cases else BenchmarkMetrics()
     )
+    metrics_dict = asdict(metrics)
+    for _category, _bucket in metrics_dict.get("recall_by_defect_category", {}).items():
+        _bucket["n"] = _bucket.get("total", 0)
+        _bucket["false_negatives"] = _bucket.get("total", 0) - _bucket.get("detected", 0)
 
     known_good_cases = metrics.known_good_cases
     defective_cases = metrics.defective_cases
@@ -767,6 +999,29 @@ def score_predictions(
         else None
     )
 
+    # Per-case identifiers required for mechanical acceptance-policy
+    # classification (V58-QUALITY-04E) — derived straight from the same
+    # case_results the aggregate metrics above are computed from, so these
+    # can never disagree with the counts in ``metrics``.
+    false_approval_case_ids = sorted(result.case_id for result in case_results if result.false_approval)
+    blocking_false_approval_case_ids = sorted(
+        result.case_id
+        for result in case_results
+        if result.false_approval and result.expected_materiality == "blocking"
+    )
+    false_rejection_case_ids = sorted(result.case_id for result in case_results if result.false_rejection)
+
+    warning_results = [
+        result
+        for result in case_results
+        if not result.known_good and result.expected_materiality == "warning"
+    ]
+    warning_recall_detected = sum(1 for result in warning_results if result.detection_success)
+    warning_recall_total = len(warning_results)
+    warning_recall = (
+        round(warning_recall_detected / warning_recall_total, 6) if warning_recall_total else None
+    )
+
     source_fixture_sha256_ground_truth = fixture.get("source_fixture_sha256")
     prediction_source_fixture_sha256 = artifact.get("source_fixture_sha256")
 
@@ -775,6 +1030,7 @@ def score_predictions(
         "generated_at_utc": _utc_now_iso8601(),
         "engine_id": artifact.get("engine_id"),
         "engine_version": artifact.get("engine_version"),
+        "configuration_identity": configuration_identity,
         "sme_reviewer_id": fixture.get("sme_reviewer_id"),
         "ground_truth_source_fixture_sha256": source_fixture_sha256_ground_truth,
         "prediction_source_fixture_sha256": prediction_source_fixture_sha256,
@@ -787,7 +1043,16 @@ def score_predictions(
         "scored_case_count": len(scored_cases),
         "unscored_case_count": len(unscored_case_ids),
         "unscored_case_ids": sorted(unscored_case_ids),
-        "metrics": asdict(metrics),
+        "unscored_blocking_case_ids": sorted(unscored_blocking_case_ids),
+        "false_approval_case_ids": false_approval_case_ids,
+        "blocking_false_approval_case_ids": blocking_false_approval_case_ids,
+        "false_rejection_case_ids": false_rejection_case_ids,
+        "warning_recall_detected": warning_recall_detected,
+        "warning_recall_total": warning_recall_total,
+        "warning_recall": warning_recall,
+        "overall_precision_numerator": metrics.finding_precision_true_positives,
+        "overall_precision_denominator": metrics.finding_precision_total_findings,
+        "metrics": metrics_dict,
         "finding_category_metrics": _finding_category_metrics(scored_cases, findings_by_case_id),
         "known_good_approval_rate": known_good_approval_rate,
         "defective_case_rejection_rate": defective_case_rejection_rate,
