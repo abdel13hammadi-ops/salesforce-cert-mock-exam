@@ -65,7 +65,7 @@ it's worth knowing them up front rather than discovering them later:
 |---|---|---|
 | `sme_decision` | `approve`, `correct_label`, `reject_case`, `needs_second_review` | Yes, for every case you consider reviewed |
 | `sme_correct_answer` | One or more option labels (`A`–`D`), separated by `\|` if more than one | Required for `correct_label` (together with, or instead of, `sme_finding_codes`); **must be blank for `approve`** |
-| `sme_finding_codes` | One or more codes from `workers/finding_policy.py`'s canonical list, separated by `\|` | Required for `correct_label` (together with, or instead of, `sme_correct_answer`); **must be blank for `approve`** |
+| `sme_finding_codes` | One or more canonical codes (see *sme_finding_codes values* below), separated by `\|`; or the reserved token `CLEAR` to remove all findings | Required for `correct_label` (together with, or instead of, `sme_correct_answer`); **must be blank for `approve`** |
 | `sme_notes` | Short free text | **Required** whenever `sme_decision` is `correct_label`, `reject_case`, or `needs_second_review`, and whenever `needs_second_review` is `true`. Optional only for a plain `approve` with `needs_second_review` blank/false. |
 | `confidence` | `high`, `medium`, `low` | **Required for every case with a non-blank `sme_decision`** — a decision without a confidence level is rejected |
 | `needs_second_review` | `true` or `false` (blank = false) | Set `true` when you want another qualified reviewer's opinion, independent of your `sme_decision`. Any case marked this way (or decided `needs_second_review`) is held out of the finalized reviewed fixture until it's resolved (re-reviewed with a different decision, or the flag cleared). |
@@ -79,6 +79,27 @@ additionally needs a real correction (`sme_correct_answer` and/or
 label(s) or finding code(s) from what the AI drafted — re-typing the same
 answer/codes the AI already had is treated as a no-op and rejected, not as
 a confirmation (use `approve` for that).
+
+### sme_finding_codes values
+
+The `sme_finding_codes` cell has exactly three meanings depending on what you enter:
+
+| Value | Meaning |
+|---|---|
+| *(blank)* | **Inherit** — keep the AI-drafted finding codes unchanged. |
+| One or more canonical codes from `workers/finding_policy.py`, separated by `\|` | **Replace** — use these codes instead of the AI-drafted ones. |
+| `CLEAR` | **Explicit clear** — replace the AI-drafted findings with an empty list, making the case effectively `known_good`. |
+
+`CLEAR` is a reserved control token, **not** a finding code. Rules:
+
+- `CLEAR` is valid **only** for `sme_decision=correct_label`.
+- `CLEAR` must appear **alone** — `CLEAR|WRONG_ANSWER_KEY` and `WEAK_DISTRACTORS|CLEAR` are both invalid.
+- `CLEAR` on a case where the AI-drafted findings are already empty, with no other field change, is a no-op and will be rejected.
+- `correct_label` rows using `CLEAR` still require `sme_notes` and `confidence`.
+- Lowercase `clear` or mixed-case `Clear` are **not** accepted — the token must be exactly `CLEAR`.
+- A blank `sme_finding_codes` field always means **inherit**, never clear to nothing.
+
+**When to use `CLEAR`:** when you are correcting `sme_correct_answer` to a different option *and* you believe the AI-drafted defect finding no longer applies to that corrected answer — so the corrected case has no defect at all. For example, if the AI labelled a case as `MULTIPLE_DEFENSIBLE_ANSWERS` with evidence-supported answer `A|B`, but you conclude only `A` is correct and the defect does not exist, set `sme_correct_answer=A` and `sme_finding_codes=CLEAR`. The finalized fixture will record `effective_answer=["A"]`, `effective_finding_codes=[]`, `known_good=true`.
 
 ## The review rubric (apply in this order)
 
@@ -202,14 +223,18 @@ truth" means once a case is finalized.
   materiality, and `known_good` status in the finalized fixture are exactly
   the AI-drafted values — nothing changes.
 - For `correct_label`, the finalized fixture's effective answer label(s)
-  and/or finding code(s) become **your** corrected value(s) (whichever
-  field you left blank inherits the AI-drafted value for that dimension
-  only — a blank correction field always means "inherit," never "clear
-  to nothing"). `known_good` and materiality are then *recalculated* from
-  the resulting finding codes: a case ends up effectively known-good only
-  if its resolved finding-code list is empty, and each remaining code's
-  materiality comes from the repository's canonical finding-code policy,
-  never from anything typed into the CSV.
+  and/or finding code(s) become **your** corrected value(s). Specifically:
+  - **`sme_correct_answer` blank** → inherits the AI-drafted answer labels.
+  - **`sme_correct_answer` filled** → replaces the AI-drafted answer labels.
+  - **`sme_finding_codes` blank** → inherits the AI-drafted finding codes ("inherit" only, never clear to nothing).
+  - **`sme_finding_codes` = one or more canonical codes** → replaces the AI-drafted finding codes with your list.
+  - **`sme_finding_codes` = `CLEAR`** → replaces the AI-drafted finding codes with an empty list (effective `known_good=true`).
+
+  `known_good` and materiality are then *recalculated* from the resulting
+  finding codes: a case ends up effectively known-good only if its
+  resolved finding-code list is empty (including when `CLEAR` was used),
+  and each remaining code's materiality comes from the repository's
+  canonical finding-code policy, never from anything typed into the CSV.
 - The finalized fixture keeps the original AI-drafted label too (in a
   separate, clearly-named field), so nothing is discarded — but the
   benchmark harness and its scoring only ever read the resolved,
