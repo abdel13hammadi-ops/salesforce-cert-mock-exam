@@ -305,7 +305,22 @@ def build_confirmed_findings_for_completion(
 ) -> List[Dict[str, Any]]:
     """Convert validated upstream proposals into complete-RPC finding rows."""
     if completion_shape == "NORMAL_NO_DISPUTE":
-        return []
+        # No dispute trigger fired, so Pass B proposed no blocking findings
+        # (any blocking proposal would have triggered BLOCKING_DEFECT_PROPOSED
+        # and routed the run through Pass C instead). Non-blocking findings
+        # were never reviewed by Pass C and must still be preserved rather
+        # than silently discarded. Defensively exclude any blocking-materiality
+        # proposal here as well: the completion RPC independently rejects
+        # blocking findings under NORMAL_NO_DISPUTE, so surfacing this locally
+        # avoids failing the whole completion call over a single bad entry.
+        pass_b_result = _load_pass_result_json(client, audit_run_id, "B")
+        proposed_findings = list((pass_b_result or {}).get("proposed_findings") or [])
+        non_blocking = [
+            item
+            for item in proposed_findings
+            if isinstance(item, dict) and item.get("materiality") != "blocking"
+        ]
+        return [_proposed_to_confirmed_finding(item) for item in non_blocking]
 
     pass_b_result = _load_pass_result_json(client, audit_run_id, "B")
     pass_c_result = _load_pass_result_json(client, audit_run_id, "C")

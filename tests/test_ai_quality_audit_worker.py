@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from workers.ai_quality_audit_worker import (
     AiQualityAuditProviders,
     AiQualityAuditWorkerError,
+    build_confirmed_findings_for_completion,
     process_ai_quality_audit_job,
     validate_job_payload,
 )
@@ -200,6 +201,38 @@ def _blocking_finding(**overrides) -> dict:
         "title": "Wrong answer key",
         "description": "Marked correct option is wrong.",
         "evidence_chunk_ids": [_CHUNK_1],
+        "metadata": {},
+    }
+    base.update(overrides)
+    return base
+
+
+def _warning_finding(**overrides) -> dict:
+    base = {
+        "finding_ref": "F1",
+        "finding_code": "WEAK_DISTRACTORS",
+        "finding_type": "answer_quality",
+        "severity": "low",
+        "materiality": "warning",
+        "title": "Weak distractors",
+        "description": "One distractor is obviously implausible.",
+        "evidence_chunk_ids": [_CHUNK_1],
+        "metadata": {"note": "distractor-quality"},
+    }
+    base.update(overrides)
+    return base
+
+
+def _informational_finding(**overrides) -> dict:
+    base = {
+        "finding_ref": "F2",
+        "finding_code": "OTHER_REVIEW_NEEDED",
+        "finding_type": "other",
+        "severity": "info",
+        "materiality": "informational",
+        "title": "Minor polish issue",
+        "description": "Cosmetic wording could be tightened.",
+        "evidence_chunk_ids": [_CHUNK_2],
         "metadata": {},
     }
     base.update(overrides)
@@ -1000,6 +1033,262 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
             call for call in client.record_calls if call["p_status"] == "failed"
         ]
         self.assertEqual(len(failed_records), 2)
+
+
+class TestNormalNoDisputeFindingPersistence(unittest.TestCase):
+    """Covers the warning-persistence fix: NORMAL_NO_DISPUTE must preserve
+    valid non-blocking Pass B proposals instead of discarding them, while
+    still refusing to persist any blocking-materiality proposal without
+    Pass C confirmation.
+    """
+
+    def test_single_warning_finding_persists_end_to_end(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("SKIP_PASS_C", "C"),
+            _claim("RUN_READY_TO_COMPLETE"),
+        )
+        client.set_table_response(
+            "audit_run_pass_results",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "A",
+                    "status": "completed",
+                    "result_json": _pass_a_result(),
+                },
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "B",
+                    "status": "completed",
+                    "result_json": _pass_b_result(findings=[_warning_finding()]),
+                },
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "C",
+                    "status": "skipped",
+                    "result_json": None,
+                },
+            ],
+        )
+        client.set_table_response("audit_run_dispute_triggers", [])
+        client.set_table_response("audit_findings", [{"id": "finding-1"}])
+        client.set_table_response("audit_finding_evidence", [{"id": "ev-1"}])
+
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(_pass_b_result(findings=[_warning_finding()])),
+            ]
+        )
+        dispute = _SequenceProvider([])
+
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+        )
+
+        self.assertEqual(result["run_status"], "completed")
+        self.assertEqual(result["completion_shape"], "NORMAL_NO_DISPUTE")
+        self.assertEqual(len(client.persist_trigger_calls), 0)
+        self.assertEqual(dispute.calls, [])
+        confirmed = client.complete_calls[0]["p_confirmed_findings"]
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["finding_ref"], "F1")
+        self.assertEqual(confirmed[0]["finding_code"], "WEAK_DISTRACTORS")
+        self.assertEqual(confirmed[0]["materiality"], "warning")
+
+    def test_multiple_non_blocking_findings_all_persist(self):
+        pass_b_result = _pass_b_result(
+            findings=[_warning_finding(), _informational_finding()]
+        )
+        client = OrchestrationFakeSupabase()
+        client.set_table_response(
+            "audit_run_pass_results",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "B",
+                    "status": "completed",
+                    "result_json": pass_b_result,
+                },
+            ],
+        )
+
+        confirmed = build_confirmed_findings_for_completion(
+            client,
+            audit_run_id=_RUN_ID,
+            completion_shape="NORMAL_NO_DISPUTE",
+        )
+
+        self.assertEqual(len(confirmed), 2)
+        refs = {item["finding_ref"] for item in confirmed}
+        self.assertEqual(refs, {"F1", "F2"})
+        materialities = {item["finding_ref"]: item["materiality"] for item in confirmed}
+        self.assertEqual(materialities["F1"], "warning")
+        self.assertEqual(materialities["F2"], "informational")
+
+    def test_no_proposed_findings_persists_none(self):
+        client = OrchestrationFakeSupabase()
+        client.set_table_response(
+            "audit_run_pass_results",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "B",
+                    "status": "completed",
+                    "result_json": _pass_b_result(findings=[]),
+                },
+            ],
+        )
+
+        confirmed = build_confirmed_findings_for_completion(
+            client,
+            audit_run_id=_RUN_ID,
+            completion_shape="NORMAL_NO_DISPUTE",
+        )
+
+        self.assertEqual(confirmed, [])
+
+    def test_blocking_finding_never_persists_through_normal_no_dispute(self):
+        # Defense-in-depth: even if a blocking-materiality proposal somehow
+        # reaches completion without a dispute trigger, it must be excluded
+        # rather than persisted. Mixed with a valid warning finding to prove
+        # the filter is selective, not all-or-nothing.
+        pass_b_result = _pass_b_result(
+            findings=[
+                _blocking_finding(finding_ref="F1"),
+                _warning_finding(finding_ref="F2"),
+            ]
+        )
+        client = OrchestrationFakeSupabase()
+        client.set_table_response(
+            "audit_run_pass_results",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "B",
+                    "status": "completed",
+                    "result_json": pass_b_result,
+                },
+            ],
+        )
+
+        confirmed = build_confirmed_findings_for_completion(
+            client,
+            audit_run_id=_RUN_ID,
+            completion_shape="NORMAL_NO_DISPUTE",
+        )
+
+        refs = {item["finding_ref"] for item in confirmed}
+        self.assertNotIn("F1", refs)
+        codes = {item["finding_code"] for item in confirmed}
+        self.assertNotIn("WRONG_ANSWER_KEY", codes)
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["finding_code"], "WEAK_DISTRACTORS")
+
+    def test_evidence_and_provenance_survive_conversion(self):
+        finding = _warning_finding(
+            evidence_chunk_ids=[_CHUNK_1, _CHUNK_2],
+            metadata={"source_support_context": {"attempted_retrieval": 1}},
+        )
+        client = OrchestrationFakeSupabase()
+        client.set_table_response(
+            "audit_run_pass_results",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "B",
+                    "status": "completed",
+                    "result_json": _pass_b_result(findings=[finding]),
+                },
+            ],
+        )
+
+        confirmed = build_confirmed_findings_for_completion(
+            client,
+            audit_run_id=_RUN_ID,
+            completion_shape="NORMAL_NO_DISPUTE",
+        )
+
+        self.assertEqual(len(confirmed), 1)
+        row = confirmed[0]
+        self.assertEqual(
+            row["evidence"],
+            [
+                {"resource_chunk_id": _CHUNK_1, "evidence_role": "supporting"},
+                {"resource_chunk_id": _CHUNK_2, "evidence_role": "supporting"},
+            ],
+        )
+        self.assertEqual(
+            row["metadata"],
+            {"source_support_context": {"attempted_retrieval": 1}},
+        )
+        self.assertEqual(row["finding_code"], "WEAK_DISTRACTORS")
+        self.assertEqual(row["title"], finding["title"])
+        self.assertEqual(row["description"], finding["description"])
+
+    def test_normal_dispute_shape_behavior_unchanged(self):
+        # NORMAL_DISPUTE must still only confirm Pass-C-confirmed refs; this
+        # path is untouched by the NORMAL_NO_DISPUTE fix.
+        finding = _blocking_finding()
+        client = OrchestrationFakeSupabase()
+        client.set_table_response(
+            "audit_run_pass_results",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "B",
+                    "status": "completed",
+                    "result_json": _pass_b_result(findings=[finding]),
+                },
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "C",
+                    "status": "completed",
+                    "result_json": _pass_c_normal_resolved(),
+                },
+            ],
+        )
+
+        confirmed = build_confirmed_findings_for_completion(
+            client,
+            audit_run_id=_RUN_ID,
+            completion_shape="NORMAL_DISPUTE",
+        )
+
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["finding_ref"], "F1")
+
+    def test_normal_dispute_with_no_confirmed_refs_persists_none(self):
+        client = OrchestrationFakeSupabase()
+        client.set_table_response(
+            "audit_run_pass_results",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "B",
+                    "status": "completed",
+                    "result_json": _pass_b_result(findings=[_blocking_finding()]),
+                },
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "C",
+                    "status": "completed",
+                    "result_json": _pass_c_unresolved(),
+                },
+            ],
+        )
+
+        confirmed = build_confirmed_findings_for_completion(
+            client,
+            audit_run_id=_RUN_ID,
+            completion_shape="NORMAL_DISPUTE",
+        )
+
+        self.assertEqual(confirmed, [])
 
 
 class TestAiQualityAuditSchemaRouting(unittest.TestCase):
