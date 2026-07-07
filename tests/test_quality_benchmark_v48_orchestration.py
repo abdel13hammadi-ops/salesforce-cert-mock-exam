@@ -428,7 +428,7 @@ class TestV48DisposableDbOrchestration(unittest.TestCase):
 
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT content_hash FROM public.resource_chunks WHERE id = ANY(%s)",
+                    "SELECT content_hash FROM public.resource_chunks WHERE id = ANY(%s::uuid[])",
                     (list(expected_chunk_ids),),
                 )
                 stored_hashes = {row[0] for row in cur.fetchall()}
