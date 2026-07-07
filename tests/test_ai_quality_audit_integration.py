@@ -685,6 +685,427 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
         self.assertGreaterEqual(wait_polls["count"], 1)
         self.assertIn("A", summary["passes_executed"])
 
+    # -------------------------------------------------------------------
+    # V58-DAY7-IMPROVE-06: Pass C UNRESOLVED must preserve the disputed
+    # Pass B blocking proposal instead of discarding it.
+    # -------------------------------------------------------------------
+
+    def _unresolved_single_blocking_providers(self):
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={
+                    "selected_option_labels": ["A"],
+                    "proposed_findings": [
+                        {
+                            "finding_ref": "F1",
+                            "finding_code": "WRONG_ANSWER_KEY",
+                            "finding_type": "correctness",
+                            "severity": "high",
+                            "materiality": "blocking",
+                            "title": "Wrong key",
+                            "description": "Stored answer appears wrong.",
+                            "evidence_chunk_ids": [self.fixture["chunk1"]],
+                            "metadata": {},
+                        }
+                    ],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "UNRESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": [],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        return AiQualityAuditProviders(primary=primary, dispute=dispute)
+
+    def test_unresolved_dispute_preserves_disputed_blocking_finding(self):
+        audit_run_id = self._create_run()
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            self._unresolved_single_blocking_providers(),
+            worker_id="v48-integration-worker",
+        )
+
+        self.assertEqual(summary["run_status"], "inconclusive")
+        self.assertIn("C", summary["passes_executed"])
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT run_status, completed_at FROM public.audit_runs WHERE id = %s",
+                (audit_run_id,),
+            )
+            run_row = cur.fetchone()
+            cur.execute(
+                """
+                SELECT finding_code, finding_type, severity, materiality,
+                       finding_status, title, description, metadata
+                FROM public.audit_findings
+                WHERE audit_run_id = %s
+                """,
+                (audit_run_id,),
+            )
+            finding_rows = cur.fetchall()
+
+        self.assertEqual(run_row["run_status"], "inconclusive")
+        self.assertIsNotNone(run_row["completed_at"])
+
+        self.assertEqual(len(finding_rows), 1)
+        finding = finding_rows[0]
+        self.assertEqual(finding["finding_code"], "WRONG_ANSWER_KEY")
+        self.assertEqual(finding["finding_type"], "correctness")
+        self.assertEqual(finding["materiality"], "blocking")
+        self.assertEqual(finding["finding_status"], "open")
+        self.assertNotIn(finding["finding_status"], ("accepted", "resolved", "overridden"))
+
+        metadata = finding["metadata"]
+        self.assertEqual(metadata["dispute_resolution_status"], "UNRESOLVED")
+        self.assertIs(metadata["pass_c_confirmed"], False)
+        self.assertIs(metadata["requires_human_review"], True)
+        self.assertEqual(metadata["source_pass_code"], "B")
+        self.assertEqual(metadata["finding_ref"], "F1")
+        self.assertEqual(metadata["completion_shape"], "NORMAL_DISPUTE")
+
+    def test_unresolved_dispute_preserves_evidence_and_provenance(self):
+        audit_run_id = self._create_run()
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            self._unresolved_single_blocking_providers(),
+            worker_id="v48-integration-worker",
+        )
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT af.detector_name, af.detector_version,
+                       afe.resource_chunk_id, afe.evidence_role
+                FROM public.audit_findings af
+                JOIN public.audit_finding_evidence afe ON afe.finding_id = af.id
+                WHERE af.audit_run_id = %s
+                """,
+                (audit_run_id,),
+            )
+            evidence_rows = cur.fetchall()
+
+        self.assertEqual(len(evidence_rows), 1)
+        self.assertEqual(evidence_rows[0]["detector_name"], "ai_quality_audit")
+        self.assertEqual(evidence_rows[0]["detector_version"], "NORMAL_DISPUTE")
+        self.assertEqual(
+            str(evidence_rows[0]["resource_chunk_id"]).lower(),
+            self.fixture["chunk1"].lower(),
+        )
+        self.assertEqual(evidence_rows[0]["evidence_role"], "supporting")
+
+    def test_unresolved_dispute_does_not_persist_unrelated_pass_b_findings(self):
+        audit_run_id = self._create_run()
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={
+                    "selected_option_labels": ["A"],
+                    "proposed_findings": [
+                        {
+                            "finding_ref": "F1",
+                            "finding_code": "WRONG_ANSWER_KEY",
+                            "finding_type": "correctness",
+                            "severity": "high",
+                            "materiality": "blocking",
+                            "title": "Wrong key",
+                            "description": "Stored answer appears wrong.",
+                            "evidence_chunk_ids": [self.fixture["chunk1"]],
+                            "metadata": {},
+                        },
+                        {
+                            "finding_ref": "F2",
+                            "finding_code": "WEAK_DISTRACTORS",
+                            "finding_type": "answer_quality",
+                            "severity": "low",
+                            "materiality": "warning",
+                            "title": "Weak distractor",
+                            "description": "Option B is not competitive.",
+                            "evidence_chunk_ids": [],
+                            "metadata": {},
+                        },
+                    ],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "UNRESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": [],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+            worker_id="v48-integration-worker",
+        )
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT finding_code, metadata FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["finding_code"], "WRONG_ANSWER_KEY")
+        self.assertEqual(rows[0]["metadata"]["finding_ref"], "F1")
+
+    def test_unresolved_dispute_blocks_publication(self):
+        audit_run_id = self._create_run()
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            self._unresolved_single_blocking_providers(),
+            worker_id="v48-integration-worker",
+        )
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT public.is_question_version_publishable_v1(%s)",
+                (self.fixture["question_version_id"],),
+            )
+            publishable = cur.fetchone()[0]
+            cur.execute(
+                "SELECT public.count_blocking_findings_for_question_version_v1(%s)",
+                (self.fixture["question_version_id"],),
+            )
+            blocking_count = cur.fetchone()[0]
+
+        self.assertFalse(publishable)
+        self.assertEqual(blocking_count, 1)
+
+    def test_repeated_completion_after_unresolved_does_not_duplicate_findings(self):
+        audit_run_id = self._create_run()
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            self._unresolved_single_blocking_providers(),
+            worker_id="v48-integration-worker",
+        )
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            count_before = cur.fetchone()[0]
+        self.assertEqual(count_before, 1)
+
+        with self.conn.cursor() as cur:
+            cur.execute("SAVEPOINT repeat_completion_attempt")
+
+        raised = False
+        try:
+            self.client.rpc(
+                "complete_ai_quality_audit_run_v1",
+                {
+                    "p_audit_run_id": audit_run_id,
+                    "p_confirmed_findings": [],
+                    "p_metadata": {},
+                },
+            ).execute()
+        except psycopg2.Error as exc:
+            raised = True
+            self.assertIn("inconclusive", str(exc).lower())
+        finally:
+            with self.conn.cursor() as cur:
+                cur.execute("ROLLBACK TO SAVEPOINT repeat_completion_attempt")
+
+        self.assertTrue(raised, "expected re-completing an inconclusive run to raise")
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            count_after = cur.fetchone()[0]
+        self.assertEqual(count_after, 1)
+
+    def test_normal_dispute_resolved_behavior_unchanged(self):
+        audit_run_id = self._create_run()
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={
+                    "selected_option_labels": ["A"],
+                    "proposed_findings": [
+                        {
+                            "finding_ref": "F1",
+                            "finding_code": "WRONG_ANSWER_KEY",
+                            "finding_type": "correctness",
+                            "severity": "high",
+                            "materiality": "blocking",
+                            "title": "Wrong key",
+                            "description": "Stored answer appears wrong.",
+                            "evidence_chunk_ids": [self.fixture["chunk1"]],
+                            "metadata": {},
+                        }
+                    ],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "RESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": ["F1"],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+            worker_id="v48-integration-worker",
+        )
+
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertEqual(summary["finding_count"], 1)
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT finding_status, materiality, metadata FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["materiality"], "blocking")
+        # RESOLVED-path findings must never carry the UNRESOLVED-only dispute
+        # markers this migration introduces.
+        self.assertNotIn("dispute_resolution_status", rows[0]["metadata"])
+        self.assertNotIn("pass_c_confirmed", rows[0]["metadata"])
+        self.assertNotIn("requires_human_review", rows[0]["metadata"])
+
+    def test_normal_no_dispute_warning_persistence_unchanged(self):
+        audit_run_id = self._create_run()
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={
+                    "selected_option_labels": ["A"],
+                    "proposed_findings": [
+                        {
+                            "finding_ref": "F1",
+                            "finding_code": "WEAK_DISTRACTORS",
+                            "finding_type": "answer_quality",
+                            "severity": "low",
+                            "materiality": "warning",
+                            "title": "Weak distractor",
+                            "description": "Option B is not competitive.",
+                            "evidence_chunk_ids": [],
+                            "metadata": {},
+                        }
+                    ],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            AiQualityAuditProviders(primary=primary, dispute=primary),
+            worker_id="v48-integration-worker",
+        )
+
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertEqual(summary["finding_count"], 1)
+        self.assertNotIn("C", summary["passes_executed"])
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT finding_code, materiality, finding_status FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["finding_code"], "WEAK_DISTRACTORS")
+        self.assertEqual(rows[0]["materiality"], "warning")
+        self.assertEqual(rows[0]["finding_status"], "open")
+
 
 if __name__ == "__main__":
     unittest.main()
