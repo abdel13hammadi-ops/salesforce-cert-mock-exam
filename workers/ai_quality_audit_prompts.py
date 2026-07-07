@@ -41,6 +41,110 @@ _PASS_C_SYSTEM = (
 
 _WARNING_ONLY_CODES = frozenset({"SOURCE_SUPPORT_WEAK", "DOMAIN_MISALIGNMENT"})
 
+_FINDING_CODE_DEFINITIONS: Dict[str, str] = {
+    "WRONG_ANSWER_KEY": (
+        "The stored answer key conflicts with the best-supported answer."
+    ),
+    "UNSUPPORTED_ANSWER": (
+        "The stored answer may be plausible, but the provided evidence does not "
+        "sufficiently support it."
+    ),
+    "MULTIPLE_DEFENSIBLE_ANSWERS": (
+        "More than the required number of options are reasonably defensible from "
+        "the question and evidence."
+    ),
+    "AMBIGUOUS_QUESTION": (
+        "The stem is unclear, underspecified, contradictory, or admits materially "
+        "different interpretations."
+    ),
+    "EXPLANATION_MISSING": (
+        "No meaningful explanation is provided."
+    ),
+    "EXPLANATION_INCOMPLETE": (
+        "An explanation exists but does not adequately justify the answer or "
+        "reject key distractors."
+    ),
+    "WEAK_DISTRACTORS": (
+        "One or more distractors are obviously implausible, irrelevant, malformed, "
+        "or noncompetitive."
+    ),
+    "SOURCE_SUPPORT_WEAK": (
+        "The available evidence is too weak, indirect, incomplete, or outdated to "
+        "substantiate the answer."
+    ),
+    "DOMAIN_MISALIGNMENT": (
+        "The question or answer content falls outside the stated certification "
+        "domain or exam scope."
+    ),
+    "LOW_COGNITIVE_LEVEL": (
+        "The question tests only recall or recognition without requiring "
+        "comprehension, application, or analysis appropriate to the exam level."
+    ),
+    "DIFFICULTY_MISMATCH": (
+        "The question's difficulty is substantially misaligned with the stated or "
+        "expected exam difficulty tier."
+    ),
+    "OUTDATED_CONTENT": (
+        "The question relies on content, terminology, or platform behavior that is "
+        "no longer current or accurate."
+    ),
+    "OTHER_REVIEW_NEEDED": (
+        "A substantive quality concern exists that does not fit a more specific "
+        "finding code."
+    ),
+    "EMPTY_QUESTION_TEXT": (
+        "The question stem is blank, placeholder-only, or lacks substantive content."
+    ),
+    "INVALID_SELECT_COUNT": (
+        "The number of correct options does not match the required selection count "
+        "for the question type."
+    ),
+    "TOO_FEW_OPTIONS": (
+        "The question provides fewer answer options than the minimum required for "
+        "a valid item of this type."
+    ),
+    "EMPTY_OPTION_TEXT": (
+        "One or more answer options are blank, placeholder-only, or lack substantive "
+        "content."
+    ),
+    "DUPLICATE_OPTION_LABELS": (
+        "Two or more options share the same option label identifier."
+    ),
+    "DUPLICATE_OPTION_TEXT": (
+        "Two or more options contain identical or near-identical answer text."
+    ),
+    "DUPLICATE_CORRECT_OPTIONS": (
+        "More than one option is marked correct when only one distinct correct "
+        "answer should exist."
+    ),
+    "CORRECT_COUNT_MISMATCH": (
+        "The number of options marked correct does not match the required selection "
+        "count stated by the question type."
+    ),
+    "SINGLE_SELECT_COUNT_MISMATCH": (
+        "A single-select question has more than one option marked correct."
+    ),
+    "STEM_COUNT_MISMATCH": (
+        "The question stem's stated selection count conflicts with the question "
+        "type or the number of correct options."
+    ),
+    "OPTION_DISPLAY_ORDER_ISSUES": (
+        "Answer options are ordered in a way that reveals the correct answer or "
+        "undermines item validity."
+    ),
+    "DUPLICATE_QUESTION_STEM_EXACT": (
+        "The question stem is an exact duplicate of another item in the corpus."
+    ),
+    "DUPLICATE_QUESTION_STEM_NEAR_EXACT": (
+        "The question stem is a near-exact duplicate of another item, differing "
+        "only in trivial wording."
+    ),
+    "SEMANTIC_CONCEPT_CLUSTER_OVERSIZE": (
+        "The question bundles too many distinct concepts for a single item of this "
+        "scope and difficulty."
+    ),
+}
+
 _SUBSTITUTION_BY_REASON = {
     "PASS_A_SCHEMA_INVALID": "PASS_A_SUBSTITUTION",
     "PASS_B_SCHEMA_INVALID": "PASS_B_SUBSTITUTION",
@@ -181,12 +285,32 @@ def build_pass_b_prompt(
             "Supported finding codes:",
             codes_block,
             "",
+            "Finding code selection procedure:",
+            "1. Solve the question independently from the stem, options, and frozen evidence.",
+            "2. Compare your independent answer with the stored answer key.",
+            "3. Choose the single most specific finding code that fully explains the defect.",
+            "4. Do not emit WRONG_ANSWER_KEY merely because evidence is weak; use "
+            "UNSUPPORTED_ANSWER when the stored answer is plausible but insufficiently "
+            "supported.",
+            "5. Do not emit MULTIPLE_DEFENSIBLE_ANSWERS unless multiple options "
+            "genuinely satisfy the stem and exceed the required selection count.",
+            "6. Do not add multiple codes when one code fully explains the defect.",
+            "7. Use materiality=blocking only when the defect can invalidate correctness "
+            "or make the question unsafe to publish.",
+            "8. Use materiality=warning for quality defects that do not invalidate the "
+            "stored answer.",
+            "",
+            "Materiality assignment:",
+            "- blocking: correctness is wrong, the stem cannot be answered reliably, "
+            "or the item is unsafe to publish as-is.",
+            "- warning: quality concerns (distractors, explanation depth, source support, "
+            "cognitive level) that do not invalidate the stored answer.",
+            "- informational: minor polish issues with no material impact on learning.",
+            "- SOURCE_SUPPORT_WEAK and DOMAIN_MISALIGNMENT are warning-only; never "
+            "assign materiality=blocking to them.",
+            "",
             "Rules:",
             "- Use only supported finding_code values.",
-            "- Assign materiality=blocking only for substantive defects that "
-            "would mislead candidates.",
-            "- SOURCE_SUPPORT_WEAK and DOMAIN_MISALIGNMENT are warning-only; "
-            "never assign materiality=blocking to them.",
             "- Do not invent unsupported blocking findings.",
             "- evidence_chunk_ids must reference frozen chunk_id values only.",
             "- Use unique finding_ref values (for example F1, F2).",
@@ -324,8 +448,13 @@ def _sorted_options(options: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
 def _format_finding_codes_block() -> str:
     lines = []
     for code in sorted(SUPPORTED_FINDING_CODES):
+        definition = _FINDING_CODE_DEFINITIONS.get(code)
+        if not definition:
+            raise ValueError(
+                f"Missing intrinsic definition for supported finding code: {code}"
+            )
         suffix = " (warning-only materiality)" if code in _WARNING_ONLY_CODES else ""
-        lines.append(f"- {code}{suffix}")
+        lines.append(f"- {code}{suffix}: {definition}")
     return "\n".join(lines)
 
 

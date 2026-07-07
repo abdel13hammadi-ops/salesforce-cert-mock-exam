@@ -4,17 +4,27 @@ Tests for V48 AI quality audit prompt builders.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from workers.ai_quality_audit_prompts import (
+    _FINDING_CODE_DEFINITIONS,
     build_pass_a_prompt,
     build_pass_b_prompt,
     build_pass_c_prompt,
 )
+from workers.ai_quality_audit_schemas import SUPPORTED_FINDING_CODES
+
+_HELD_OUT_FIXTURE = (
+    Path(__file__).resolve().parent / "fixtures" / "pass_b_taxonomy_held_out_scenarios.json"
+)
+_BENCHMARK_CASE_ID_PATTERN = re.compile(r"qbv1-\d{3}")
 
 _CHUNK_1 = "11111111-1111-1111-1111-111111111111"
 _CHUNK_2 = "22222222-2222-2222-2222-222222222222"
@@ -225,6 +235,66 @@ class TestPromptStability(unittest.TestCase):
         first_c = build_pass_c_prompt(comparison, pass_b_findings, dispute)
         second_c = build_pass_c_prompt(comparison, pass_b_findings, dispute)
         self.assertEqual(first_c, second_c)
+
+
+class TestPassBTaxonomyGuidance(unittest.TestCase):
+
+    def test_every_supported_code_has_non_empty_definition(self):
+        for code in sorted(SUPPORTED_FINDING_CODES):
+            with self.subTest(code=code):
+                self.assertIn(code, _FINDING_CODE_DEFINITIONS)
+                definition = _FINDING_CODE_DEFINITIONS[code].strip()
+                self.assertTrue(definition, f"{code} definition must not be empty")
+
+    def test_pass_b_prompt_contains_all_supported_codes_with_definitions(self):
+        _, user_prompt = build_pass_b_prompt(_comparison_context())
+
+        for code in sorted(SUPPORTED_FINDING_CODES):
+            with self.subTest(code=code):
+                self.assertIn(code, user_prompt)
+                self.assertIn(_FINDING_CODE_DEFINITIONS[code], user_prompt)
+
+    def test_pass_b_prompt_contains_decision_procedure(self):
+        _, user_prompt = build_pass_b_prompt(_comparison_context())
+
+        self.assertIn("Finding code selection procedure:", user_prompt)
+        self.assertIn("Solve the question independently", user_prompt)
+        self.assertIn("Compare your independent answer with the stored answer key", user_prompt)
+        self.assertIn("most specific finding code", user_prompt)
+        self.assertIn(
+            "Do not emit WRONG_ANSWER_KEY merely because evidence is weak",
+            user_prompt,
+        )
+        self.assertIn("UNSUPPORTED_ANSWER when the stored answer is plausible", user_prompt)
+        self.assertIn(
+            "Do not emit MULTIPLE_DEFENSIBLE_ANSWERS unless multiple options",
+            user_prompt,
+        )
+        self.assertIn("Do not add multiple codes when one code fully explains", user_prompt)
+
+    def test_pass_b_prompt_contains_materiality_guidance(self):
+        _, user_prompt = build_pass_b_prompt(_comparison_context())
+
+        self.assertIn("Materiality assignment:", user_prompt)
+        self.assertIn("materiality=blocking only when the defect can invalidate correctness", user_prompt)
+        self.assertIn("materiality=warning for quality defects that do not invalidate", user_prompt)
+        self.assertIn("SOURCE_SUPPORT_WEAK and DOMAIN_MISALIGNMENT are warning-only", user_prompt)
+
+    def test_pass_b_prompt_contains_no_benchmark_case_ids(self):
+        _, user_prompt = build_pass_b_prompt(_comparison_context())
+
+        self.assertIsNone(_BENCHMARK_CASE_ID_PATTERN.search(user_prompt))
+
+    def test_held_out_scenarios_have_distinguishing_prompt_guidance(self):
+        fixture = json.loads(_HELD_OUT_FIXTURE.read_text(encoding="utf-8"))
+        _, user_prompt = build_pass_b_prompt(_comparison_context())
+
+        for scenario in fixture["scenarios"]:
+            with self.subTest(scenario_id=scenario["id"]):
+                for code in scenario["codes"]:
+                    self.assertIn(code, user_prompt)
+                for phrase in scenario["required_prompt_phrases"]:
+                    self.assertIn(phrase, user_prompt)
 
 
 if __name__ == "__main__":

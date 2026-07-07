@@ -1,0 +1,41 @@
+{
+  "description": "Generic code-boundary scenarios for offline Pass B taxonomy prompt checks. Not derived from the 40-case quality benchmark.",
+  "scenarios": [
+    {
+      "id": "wrong_key_vs_unsupported",
+      "description": "Distinguish a stored key that conflicts with the best-supported answer from a plausible stored answer that evidence merely fails to substantiate.",
+      "codes": ["WRONG_ANSWER_KEY", "UNSUPPORTED_ANSWER"],
+      "required_prompt_phrases": [
+        "best-supported answer",
+        "does not sufficiently support"
+      ]
+    },
+    {
+      "id": "wrong_key_vs_multiple_defensible",
+      "description": "Distinguish a single incorrect stored key from a case where more than the required number of options are reasonably defensible.",
+      "codes": ["WRONG_ANSWER_KEY", "MULTIPLE_DEFENSIBLE_ANSWERS"],
+      "required_prompt_phrases": [
+        "best-supported answer",
+        "More than the required number of options are reasonably defensible"
+      ]
+    },
+    {
+      "id": "missing_vs_incomplete_explanation",
+      "description": "Distinguish absent explanation from an explanation that exists but does not justify the answer or reject distractors.",
+      "codes": ["EXPLANATION_MISSING", "EXPLANATION_INCOMPLETE"],
+      "required_prompt_phrases": [
+        "No meaningful explanation is provided",
+        "does not adequately justify the answer"
+      ]
+    },
+    {
+      "id": "weak_distractors_vs_correctness",
+      "description": "Distinguish distractor-quality defects from answer-key correctness defects.",
+      "codes": ["WEAK_DISTRACTORS", "WRONG_ANSWER_KEY"],
+      "required_prompt_phrases": [
+        "obviously implausible",
+        "best-supported answer"
+      ]
+    }
+  ]
+}
