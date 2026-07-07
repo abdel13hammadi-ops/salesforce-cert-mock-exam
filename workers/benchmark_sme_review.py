@@ -48,9 +48,19 @@ Two directions are supported:
    *recalculated* from the resolved finding codes via
    workers.finding_policy, never trusted from the CSV). The original
    AI-drafted label is preserved separately as ai_drafted_reviewer_label so
-   no provenance is lost. "approve" rows must carry no correction fields,
-   and "correct_label" rows must materially change at least one of the
-   answer label(s) or finding code(s) — a no-op "correction" is rejected.
+   no provenance is lost.    "approve" rows must carry no correction fields,
+    and "correct_label" rows must materially change at least one of the
+    answer label(s) or finding code(s) — a no-op "correction" is rejected.
+
+   sme_finding_codes supports three distinct raw-field values:
+     blank / ""     → inherit the AI-drafted finding codes unchanged
+     "CLEAR"        → explicitly replace the AI-drafted findings with []
+                      (making the case effectively known-good); valid only
+                      for correct_label, must not be combined with any
+                      canonical code, and must still constitute a material
+                      correction (rejected if AI-drafted findings are
+                      already empty and no other field changes)
+     "CODE1|CODE2"  → replace the AI-drafted findings with the listed codes
 """
 
 from __future__ import annotations
@@ -87,6 +97,22 @@ MULTI_VALUE_SEPARATOR = "|"
 SME_DECISIONS = frozenset({"approve", "correct_label", "reject_case", "needs_second_review"})
 CONFIDENCE_LEVELS = frozenset({"high", "medium", "low"})
 BOOLEAN_STRINGS = frozenset({"true", "false"})
+
+# Control token for sme_finding_codes: instructs the importer to replace the
+# AI-drafted finding-code list with an explicit empty list, making the case
+# effectively known-good.  Semantics of the three possible raw field values:
+#
+#   blank / ""     → inherit the AI-drafted finding codes unchanged
+#   "CLEAR"        → explicitly replace the AI-drafted findings with []
+#   "CODE1|CODE2"  → replace the AI-drafted findings with the listed codes
+#
+# CLEAR is a reserved control token, not a canonical finding code.  It is
+# valid only when sme_decision=correct_label and must appear alone (never
+# combined with a canonical code such as "CLEAR|WRONG_ANSWER_KEY").  A
+# correct_label row that uses CLEAR must still constitute a material
+# correction: if the AI-drafted findings are already empty and no other
+# field changes, CLEAR is a no-op and will be rejected.
+CLEAR_TOKEN = "CLEAR"
 
 _OPTION_LABELS = ("A", "B", "C", "D")
 
@@ -535,12 +561,27 @@ def validate_sme_review_rows(
                         f"case options are {sorted(option_labels)}"
                     )
         if sme_codes_raw:
-            for code in _split_multi(sme_codes_raw):
-                if code not in CANONICAL_FINDING_CODES:
+            _code_parts = _split_multi(sme_codes_raw)
+            _has_clear = any(p == CLEAR_TOKEN for p in _code_parts)
+            if _has_clear:
+                # CLEAR is a control token, not a canonical finding code.
+                if len(_code_parts) > 1:
                     report.errors.append(
-                        f"{row_label}: invalid sme_finding_codes value {code!r}; "
-                        "not a canonical finding code (workers.finding_policy)"
+                        f"{row_label}: CLEAR cannot be combined with other finding codes "
+                        f"(e.g. 'CLEAR{MULTI_VALUE_SEPARATOR}WRONG_ANSWER_KEY' is invalid)"
                     )
+                elif decision and decision != "correct_label":
+                    report.errors.append(
+                        f"{row_label}: CLEAR in sme_finding_codes is only valid for "
+                        f"sme_decision=correct_label (got sme_decision={decision!r})"
+                    )
+            else:
+                for code in _code_parts:
+                    if code not in CANONICAL_FINDING_CODES:
+                        report.errors.append(
+                            f"{row_label}: invalid sme_finding_codes value {code!r}; "
+                            "not a canonical finding code (workers.finding_policy)"
+                        )
 
         # A completed decision (whether or not it is itself valid) must carry
         # a confidence level. This is checked independently of the decision's
@@ -576,7 +617,13 @@ def validate_sme_review_rows(
                     str(code).strip() for code in case.get("expected_finding_codes", [])
                 }
                 sme_labels_set = set(_split_multi(sme_answer)) if sme_answer else None
-                sme_codes_set = set(_split_multi(sme_codes_raw)) if sme_codes_raw else None
+                # CLEAR resolves to an explicit empty set; blank inherits (None).
+                if sme_codes_raw == CLEAR_TOKEN:
+                    sme_codes_set: Optional[set] = set()
+                elif sme_codes_raw:
+                    sme_codes_set = set(_split_multi(sme_codes_raw))
+                else:
+                    sme_codes_set = None
                 resolved_labels_set = (
                     sme_labels_set if sme_labels_set is not None else ai_labels_set
                 )
@@ -685,10 +732,12 @@ def validate_sme_review_rows(
 
 
 def _reviewed_case_payload(row: Mapping[str, str]) -> Dict[str, Any]:
+    _raw_codes = _normalize(row.get("sme_finding_codes", ""))
+    finding_codes: List[str] = [] if _raw_codes == CLEAR_TOKEN else _split_multi(_raw_codes)
     return {
         "decision": _normalize(row.get("sme_decision")),
         "correct_answer_labels": _split_multi(row.get("sme_correct_answer", "")),
-        "finding_codes": _split_multi(row.get("sme_finding_codes", "")),
+        "finding_codes": finding_codes,
         "notes": _normalize(row.get("sme_notes")),
         "confidence": _normalize(row.get("confidence")) or None,
         "needs_second_review": _normalize(row.get("needs_second_review")).lower() == "true",
@@ -733,9 +782,16 @@ def _resolve_effective_case_label(
         resolved_codes = ai_codes
     elif decision == "correct_label":
         sme_labels = _split_multi(row.get("sme_correct_answer", ""))
-        sme_codes = _split_multi(row.get("sme_finding_codes", ""))
+        _sme_codes_raw = _normalize(row.get("sme_finding_codes", ""))
+        if _sme_codes_raw == CLEAR_TOKEN:
+            # CLEAR: explicitly replace AI-drafted findings with an empty list.
+            sme_codes: List[str] = []
+            _sme_codes_provided = True
+        else:
+            sme_codes = _split_multi(_sme_codes_raw)
+            _sme_codes_provided = bool(sme_codes)
         resolved_labels = sme_labels if sme_labels else ai_labels
-        resolved_codes = sme_codes if sme_codes else ai_codes
+        resolved_codes = sme_codes if _sme_codes_provided else ai_codes
     else:
         # Defense in depth: build_reviewed_fixture()'s gates should make this
         # unreachable (reject_case / needs_second_review always block first).

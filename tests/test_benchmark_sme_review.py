@@ -21,6 +21,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from workers.benchmark_sme_review import (
+    CLEAR_TOKEN,
     CSV_COLUMNS,
     IMMUTABLE_CONTEXT_COLUMNS,
     SME_EDITABLE_COLUMNS,
@@ -1219,6 +1220,331 @@ class TestImportCliSafetyGate(unittest.TestCase):
                 code = import_script.main(["--review", str(csv_path), "--output", str(out_path)])
             self.assertEqual(code, 1)
             self.assertFalse(out_path.exists())
+
+
+class TestClearToken(unittest.TestCase):
+    """V58-SME-IMPORT-01: CLEAR control token in sme_finding_codes.
+
+    Semantics:
+      blank / ""     → inherit AI-drafted findings (unchanged behaviour)
+      "CLEAR"        → replace AI-drafted findings with []
+      "CODE1|CODE2"  → replace AI-drafted findings with that list
+
+    qbv1-015 AI label: expected_correct_option_labels=["A","B"],
+                       expected_finding_codes=["MULTIPLE_DEFENSIBLE_ANSWERS"]
+    qbv1-017 AI label: expected_correct_option_labels=["A","B","C"],
+                       expected_finding_codes=["AMBIGUOUS_QUESTION"]
+    qbv1-001 AI label: expected_correct_option_labels=["A"],
+                       expected_finding_codes=[] (known_good=true)
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = load_source_fixture(_SOURCE_FIXTURE_PATH)
+        cls.rows = build_export_rows(cls.fixture, source_fixture_sha256=_SOURCE_HASH)
+        cls.case_ids = [case["case_id"] for case in cls.fixture["cases"]]
+        cls.cases_by_id = {case["case_id"]: case for case in cls.fixture["cases"]}
+
+    def _all_approved_rows(self):
+        return [_approve_row(_blank_row_for(cid, self.rows)) for cid in self.case_ids]
+
+    def _build_complete(self, rows):
+        report = validate_sme_review_rows(rows, self.fixture)
+        self.assertTrue(report.is_valid, report.errors)
+        self.assertTrue(report.is_finalizable)
+        return build_reviewed_fixture(
+            self.fixture, rows, report,
+            reviewer_id="sme-jdoe",
+            review_imported_at_utc="2026-07-05T20:00:00Z",
+        )
+
+    # ------------------------------------------------------------------
+    # Acceptance criterion 1: blank still inherits
+    # ------------------------------------------------------------------
+
+    def test_blank_sme_finding_codes_still_inherits_ai_findings(self):
+        row = _correct_label_row(
+            _blank_row_for("qbv1-015", self.rows), answer="A", codes="", notes="only A is correct"
+        )
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertTrue(report.is_valid)
+        rows = self._all_approved_rows()
+        idx = self.case_ids.index("qbv1-015")
+        rows[idx] = row
+        reviewed = self._build_complete(rows)
+        case = next(c for c in reviewed["cases"] if c["case_id"] == "qbv1-015")
+        # blank codes → inherits AI finding codes
+        self.assertEqual(
+            case["expected_finding_codes"],
+            self.cases_by_id["qbv1-015"]["expected_finding_codes"],
+        )
+        self.assertFalse(case["known_good"])
+
+    # ------------------------------------------------------------------
+    # Acceptance criterion 2: CLEAR resolves to []
+    # ------------------------------------------------------------------
+
+    def test_clear_resolves_effective_finding_codes_to_empty_list(self):
+        row = _correct_label_row(
+            _blank_row_for("qbv1-015", self.rows),
+            answer="A",
+            codes=CLEAR_TOKEN,
+            notes="only A is correct; no defect remains",
+        )
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertTrue(report.is_valid, report.errors)
+        rows = self._all_approved_rows()
+        idx = self.case_ids.index("qbv1-015")
+        rows[idx] = row
+        reviewed = self._build_complete(rows)
+        case = next(c for c in reviewed["cases"] if c["case_id"] == "qbv1-015")
+        self.assertEqual(case["expected_finding_codes"], [])
+        self.assertTrue(case["known_good"])
+        self.assertIsNone(case["expected_materiality"])
+
+    # ------------------------------------------------------------------
+    # Acceptance criterion 3: CLEAR rejected for approve
+    # ------------------------------------------------------------------
+
+    def test_clear_rejected_for_approve(self):
+        row = _approve_row(_blank_row_for(self.case_ids[0], self.rows))
+        row["sme_finding_codes"] = CLEAR_TOKEN
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertFalse(report.is_valid)
+        self.assertTrue(
+            any("approve must not include" in err for err in report.errors),
+            report.errors,
+        )
+
+    # ------------------------------------------------------------------
+    # Acceptance criterion 4: CLEAR rejected for reject_case
+    # ------------------------------------------------------------------
+
+    def test_clear_rejected_for_reject_case(self):
+        row = _reject_row(_blank_row_for(self.case_ids[0], self.rows))
+        row["sme_finding_codes"] = CLEAR_TOKEN
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertFalse(report.is_valid)
+        self.assertTrue(
+            any("CLEAR" in err and "correct_label" in err for err in report.errors),
+            report.errors,
+        )
+
+    # ------------------------------------------------------------------
+    # Acceptance criterion 5: CLEAR rejected for needs_second_review
+    # ------------------------------------------------------------------
+
+    def test_clear_rejected_for_needs_second_review(self):
+        row = _second_review_row(_blank_row_for(self.case_ids[0], self.rows))
+        row["sme_finding_codes"] = CLEAR_TOKEN
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertFalse(report.is_valid)
+        self.assertTrue(
+            any("CLEAR" in err and "correct_label" in err for err in report.errors),
+            report.errors,
+        )
+
+    # ------------------------------------------------------------------
+    # Acceptance criterion 6: CLEAR rejected when combined with a code
+    # ------------------------------------------------------------------
+
+    def test_clear_rejected_when_combined_with_finding_code(self):
+        row = _correct_label_row(
+            _blank_row_for("qbv1-015", self.rows),
+            answer="A",
+            codes="CLEAR|WRONG_ANSWER_KEY",
+            notes="testing invalid combination",
+        )
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertFalse(report.is_valid)
+        self.assertTrue(
+            any("CLEAR cannot be combined" in err for err in report.errors),
+            report.errors,
+        )
+
+    def test_clear_rejected_when_code_precedes_clear(self):
+        row = _correct_label_row(
+            _blank_row_for("qbv1-015", self.rows),
+            answer="A",
+            codes="WEAK_DISTRACTORS|CLEAR",
+            notes="testing invalid combination order",
+        )
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertFalse(report.is_valid)
+        self.assertTrue(
+            any("CLEAR cannot be combined" in err for err in report.errors),
+            report.errors,
+        )
+
+    # ------------------------------------------------------------------
+    # Acceptance criterion 7: CLEAR rejected as no-op
+    # ------------------------------------------------------------------
+
+    def test_clear_rejected_when_ai_findings_already_empty_and_no_other_change(self):
+        # qbv1-001 is known_good with expected_finding_codes=[].
+        # CLEAR with no answer change → resolved_codes=[] = ai_codes=[] → no-op.
+        self.assertEqual(self.cases_by_id["qbv1-001"]["expected_finding_codes"], [])
+        row = _correct_label_row(
+            _blank_row_for("qbv1-001", self.rows),
+            answer="",
+            codes=CLEAR_TOKEN,
+            notes="AI findings already empty",
+        )
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertFalse(report.is_valid)
+        self.assertTrue(
+            any("must materially differ" in err for err in report.errors),
+            report.errors,
+        )
+
+    def test_clear_accepted_when_answer_also_changes_on_known_good_case(self):
+        # Same case but with a different answer — CLEAR produces codes=[] (same
+        # as AI) but the answer change makes the correction material overall.
+        row = _correct_label_row(
+            _blank_row_for("qbv1-001", self.rows),
+            answer="B",
+            codes=CLEAR_TOKEN,
+            notes="answer correction; findings stay empty",
+        )
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertTrue(report.is_valid, report.errors)
+
+    # ------------------------------------------------------------------
+    # Acceptance criterion 8: existing canonical replacement unchanged
+    # ------------------------------------------------------------------
+
+    def test_canonical_code_replacement_unchanged_when_no_clear(self):
+        row = _correct_label_row(
+            _blank_row_for("qbv1-015", self.rows),
+            codes="WEAK_DISTRACTORS",
+            notes="only one defensible answer; distractors are weak",
+        )
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertTrue(report.is_valid, report.errors)
+        rows = self._all_approved_rows()
+        idx = self.case_ids.index("qbv1-015")
+        rows[idx] = row
+        reviewed = self._build_complete(rows)
+        case = next(c for c in reviewed["cases"] if c["case_id"] == "qbv1-015")
+        self.assertEqual(case["expected_finding_codes"], ["WEAK_DISTRACTORS"])
+        self.assertFalse(case["known_good"])
+        self.assertEqual(case["expected_materiality"], "warning")
+
+    # ------------------------------------------------------------------
+    # Acceptance criterion 10 (regression): qbv1-015 and qbv1-017
+    # ------------------------------------------------------------------
+
+    def test_qbv1_015_clear_regression(self):
+        """qbv1-015: SME corrects answer to A and clears all finding codes.
+
+        AI label: expected_correct_option_labels=["A","B"],
+                  expected_finding_codes=["MULTIPLE_DEFENSIBLE_ANSWERS"]
+        Expected effective result: answer=["A"], findings=[], known_good=true
+        """
+        row = _correct_label_row(
+            _blank_row_for("qbv1-015", self.rows),
+            answer="A",
+            codes=CLEAR_TOKEN,
+            notes=(
+                "A is the only defensible answer per the evidence. "
+                "The MULTIPLE_DEFENSIBLE_ANSWERS finding is incorrect; "
+                "no defect remains."
+            ),
+        )
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertTrue(report.is_valid, report.errors)
+
+        rows = self._all_approved_rows()
+        idx = self.case_ids.index("qbv1-015")
+        rows[idx] = row
+        reviewed = self._build_complete(rows)
+        case = next(c for c in reviewed["cases"] if c["case_id"] == "qbv1-015")
+
+        self.assertEqual(case["expected_correct_option_labels"], ["A"])
+        self.assertEqual(case["expected_finding_codes"], [])
+        self.assertTrue(case["known_good"])
+        self.assertIsNone(case["expected_materiality"])
+        self.assertEqual(case["reviewer_label"], {"known_good": True, "expected_finding_codes": []})
+        # AI-drafted label must be preserved for provenance.
+        self.assertEqual(
+            case["ai_drafted_reviewer_label"]["expected_finding_codes"],
+            ["MULTIPLE_DEFENSIBLE_ANSWERS"],
+        )
+        self.assertFalse(case["ai_drafted_reviewer_label"]["known_good"])
+
+    def test_qbv1_017_clear_regression(self):
+        """qbv1-017: SME corrects answer to A and clears all finding codes.
+
+        AI label: expected_correct_option_labels=["A","B","C"],
+                  expected_finding_codes=["AMBIGUOUS_QUESTION"]
+        Expected effective result: answer=["A"], findings=[], known_good=true
+        """
+        row = _correct_label_row(
+            _blank_row_for("qbv1-017", self.rows),
+            answer="A",
+            codes=CLEAR_TOKEN,
+            notes=(
+                "A is the sole evidence-supported answer. "
+                "The AMBIGUOUS_QUESTION finding is incorrect; "
+                "no defect remains."
+            ),
+        )
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertTrue(report.is_valid, report.errors)
+
+        rows = self._all_approved_rows()
+        idx = self.case_ids.index("qbv1-017")
+        rows[idx] = row
+        reviewed = self._build_complete(rows)
+        case = next(c for c in reviewed["cases"] if c["case_id"] == "qbv1-017")
+
+        self.assertEqual(case["expected_correct_option_labels"], ["A"])
+        self.assertEqual(case["expected_finding_codes"], [])
+        self.assertTrue(case["known_good"])
+        self.assertIsNone(case["expected_materiality"])
+        self.assertEqual(case["reviewer_label"], {"known_good": True, "expected_finding_codes": []})
+        # AI-drafted label must be preserved for provenance.
+        self.assertEqual(
+            case["ai_drafted_reviewer_label"]["expected_finding_codes"],
+            ["AMBIGUOUS_QUESTION"],
+        )
+        self.assertFalse(case["ai_drafted_reviewer_label"]["known_good"])
+
+    # ------------------------------------------------------------------
+    # Extra: lowercase CLEAR must be rejected (no normalisation of codes)
+    # ------------------------------------------------------------------
+
+    def test_lowercase_clear_rejected_as_invalid_code(self):
+        row = _correct_label_row(
+            _blank_row_for("qbv1-015", self.rows),
+            answer="A",
+            codes="clear",
+            notes="testing lowercase is not accepted",
+        )
+        report = validate_sme_review_rows([row], self.fixture)
+        self.assertFalse(report.is_valid)
+        self.assertTrue(
+            any("invalid sme_finding_codes" in err for err in report.errors),
+            report.errors,
+        )
+
+    # ------------------------------------------------------------------
+    # Extra: sme_review payload records finding_codes=[] for CLEAR
+    # ------------------------------------------------------------------
+
+    def test_sme_review_payload_records_empty_finding_codes_for_clear(self):
+        rows = self._all_approved_rows()
+        idx = self.case_ids.index("qbv1-015")
+        rows[idx] = _correct_label_row(
+            rows[idx],
+            answer="A",
+            codes=CLEAR_TOKEN,
+            notes="clearing findings",
+        )
+        reviewed = self._build_complete(rows)
+        case = next(c for c in reviewed["cases"] if c["case_id"] == "qbv1-015")
+        self.assertEqual(case["sme_review"]["finding_codes"], [])
+        self.assertEqual(case["sme_review"]["decision"], "correct_label")
 
 
 if __name__ == "__main__":
