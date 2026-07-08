@@ -15,7 +15,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from workers.ai_quality_audit_context import (
     load_blind_audit_context,
@@ -813,11 +813,26 @@ def _call_and_validate(
     )
 
 
+_PASS_B_BENCHMARK_SUB_CALLS: Tuple[Tuple[str, str], ...] = (
+    ("correctness_detector", "correctness_specialist"),
+    ("general_quality_judge", "general_judge"),
+)
+
+
+def _structured_output_from_outcome(outcome: _PassCallOutcome) -> Optional[Dict[str, Any]]:
+    """Return the validated specialist/judge payload or schema failure metadata."""
+    if outcome.validated is not None:
+        return dict(outcome.validated)
+    if outcome.schema_validation_errors is not None:
+        return dict(outcome.schema_validation_errors)
+    return None
+
+
 def _telemetry_from_outcome(outcome: _PassCallOutcome, *, label: str) -> Dict[str, Any]:
     """Sanitized sub-call telemetry record (V60) for embedding in Pass B's
     ``p_metadata`` -- provider/model, request id, duration, token counts,
-    status, and a sanitized error, for either the specialist or the general
-    judge sub-call.
+    status, structured output (when available), and a sanitized error, for
+    either the specialist or the general judge sub-call.
     """
     response = outcome.response
     record: Dict[str, Any] = {
@@ -831,11 +846,65 @@ def _telemetry_from_outcome(outcome: _PassCallOutcome, *, label: str) -> Dict[st
         "output_tokens": response.output_tokens if response else None,
         "actual_cost_usd": response.actual_cost_usd if response else None,
     }
+    structured_output = _structured_output_from_outcome(outcome)
+    if structured_output is not None:
+        record["structured_output"] = structured_output
     if outcome.last_error is not None:
         record["error"] = outcome.last_error
     elif outcome.errors:
         record["error"] = {"error_code": "SCHEMA_INVALID", "message": outcome.errors[0]}
     return record
+
+
+def build_pass_b_benchmark_telemetry(
+    pass_b_row: Optional[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Build additive benchmark-artifact Pass B telemetry from a persisted
+    Pass B row's ``metadata.pass_b_composite`` block.
+
+    Maps the internal composite sub-call keys to the stable benchmark
+    artifact shape::
+
+        pass_b.correctness_specialist.structured_output
+        pass_b.correctness_specialist.provider_call
+        pass_b.general_judge.structured_output
+        pass_b.general_judge.provider_call
+
+    Does not mutate audit outcomes; callers merge the returned dict into
+    ``CasePrediction.raw_output`` only.
+    """
+    if not isinstance(pass_b_row, dict):
+        return None
+    metadata = pass_b_row.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    composite = metadata.get("pass_b_composite")
+    if not isinstance(composite, dict):
+        return None
+
+    attempt_count = pass_b_row.get("attempt_count")
+    artifact: Dict[str, Any] = {}
+    for internal_key, artifact_key in _PASS_B_BENCHMARK_SUB_CALLS:
+        sub = composite.get(internal_key)
+        if not isinstance(sub, dict):
+            continue
+        provider_call = {
+            key: value
+            for key, value in sub.items()
+            if key not in ("structured_output", "call")
+        }
+        if attempt_count is not None:
+            provider_call["attempt_count"] = attempt_count
+        entry: Dict[str, Any] = {"provider_call": provider_call}
+        if "structured_output" in sub:
+            entry["structured_output"] = sub["structured_output"]
+        artifact[artifact_key] = entry
+
+    dropped = composite.get("dropped_general_findings")
+    if dropped:
+        artifact["dropped_general_findings"] = dropped
+
+    return artifact or None
 
 
 def _invoke_and_record_pass(

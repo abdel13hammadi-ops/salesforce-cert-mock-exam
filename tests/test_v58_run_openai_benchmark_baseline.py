@@ -1172,6 +1172,35 @@ class TestPassCallRecorder(unittest.TestCase):
         self.assertEqual(calls[0]["actual_cost_usd"], 0.002)
         self.assertEqual(calls[0]["provider_request_id"], "req_abc123")
 
+    def test_pass_b_sub_call_is_recorded_when_present(self):
+        recorder = baseline.PassCallRecorder()
+        recorder.set_case("case-1")
+
+        def fake_provider(*, model_name, system_prompt, user_prompt, response_schema, metadata=None):
+            return _FakeLlmResponse(
+                provider_name="openai",
+                model_name="gpt-5.5",
+                provider_request_id="req_specialist",
+                input_tokens=10,
+                output_tokens=5,
+                actual_cost_usd=0.001,
+            )
+
+        wrapped = recorder.wrap(fake_provider, role="primary")
+        wrapped(
+            model_name="gpt-5.5",
+            system_prompt="sys",
+            user_prompt="usr",
+            response_schema={},
+            metadata={
+                "pass_code": "B",
+                "pass_b_sub_call": "correctness_detector",
+            },
+        )
+        calls = recorder.pop_case_calls("case-1")
+        self.assertEqual(calls[0]["pass_b_sub_call"], "correctness_detector")
+        self.assertEqual(calls[0]["pass_code"], "B")
+
     def test_error_call_is_recorded_and_reraised_with_sanitized_message(self):
         recorder = baseline.PassCallRecorder()
         recorder.set_case("case-1")
@@ -1226,6 +1255,86 @@ class TestPassCallRecorder(unittest.TestCase):
             calls = recorder.pop_case_calls("case-1")
             serialized = json.dumps(calls)
             self.assertNotIn(fake_key, serialized)
+
+
+class TestPassBBenchmarkTelemetryExport(unittest.TestCase):
+    def test_build_pass_b_benchmark_telemetry_maps_sub_calls(self):
+        from workers.ai_quality_audit_worker import build_pass_b_benchmark_telemetry
+
+        pass_b_row = {
+            "attempt_count": 2,
+            "metadata": {
+                "pass_b_composite": {
+                    "correctness_detector": {
+                        "call": "correctness_detector",
+                        "status": "completed",
+                        "duration_ms": 1200,
+                        "provider_request_id": "req-correctness",
+                        "structured_output": {
+                            "option_judgments": [
+                                {
+                                    "option_label": "A",
+                                    "verdict": "INSUFFICIENT_EVIDENCE",
+                                    "citation_chunk_ids": [],
+                                    "evidence_rationale": "No direct support.",
+                                }
+                            ],
+                            "evidence_sufficient_for_decision": False,
+                            "abstention_reason": "Evidence gap.",
+                        },
+                    },
+                    "general_quality_judge": {
+                        "call": "general_quality_judge",
+                        "status": "completed",
+                        "duration_ms": 900,
+                        "provider_request_id": "req-general",
+                        "structured_output": {
+                            "selected_option_labels": ["A"],
+                            "proposed_findings": [],
+                        },
+                    },
+                }
+            },
+        }
+
+        artifact = build_pass_b_benchmark_telemetry(pass_b_row)
+        self.assertIn("correctness_specialist", artifact)
+        self.assertIn("general_judge", artifact)
+        self.assertEqual(
+            artifact["correctness_specialist"]["provider_call"]["attempt_count"],
+            2,
+        )
+        self.assertNotIn(
+            "call",
+            artifact["correctness_specialist"]["provider_call"],
+        )
+        self.assertEqual(
+            artifact["correctness_specialist"]["structured_output"]["abstention_reason"],
+            "Evidence gap.",
+        )
+
+    def test_build_pass_b_benchmark_telemetry_omits_secrets(self):
+        from workers.ai_quality_audit_worker import build_pass_b_benchmark_telemetry
+
+        fake_key = "sk-super-secret-test-key-should-never-appear"
+        pass_b_row = {
+            "attempt_count": 1,
+            "metadata": {
+                "pass_b_composite": {
+                    "correctness_detector": {
+                        "status": "failed",
+                        "error": {
+                            "error_code": "LLM_PROVIDER_ERROR",
+                            "message": "OpenAI authentication failed",
+                        },
+                    }
+                }
+            },
+        }
+        artifact = build_pass_b_benchmark_telemetry(pass_b_row)
+        serialized = json.dumps(artifact)
+        self.assertNotIn(fake_key, serialized)
+        self.assertNotIn("authorization", serialized.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -1603,6 +1712,9 @@ class TestBaselineModelWiring(EnvIsolatedTestCase):
         ), patch(
             "workers.quality_benchmark_v48_orchestration.process_ai_quality_audit_job",
             side_effect=fake_process,
+        ), patch(
+            "workers.quality_benchmark_v48_orchestration.read_v48_pass_b_row",
+            return_value=None,
         ):
             mock_tx.return_value.__enter__.return_value = (object(), object())
             mock_tx.return_value.__exit__.return_value = False

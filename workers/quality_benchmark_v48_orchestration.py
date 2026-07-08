@@ -68,6 +68,7 @@ from workers.ai_quality_audit_evidence import (
 )
 from workers.ai_quality_audit_worker import (
     AiQualityAuditProviders,
+    build_pass_b_benchmark_telemetry,
     process_ai_quality_audit_job,
 )
 from workers.quality_benchmark_execution import (
@@ -703,6 +704,29 @@ def create_v48_audit_run(
     return str(row.data[0]["audit_run_id"])
 
 
+def read_v48_pass_b_row(client: PsycopgV48Client, audit_run_id: str) -> Optional[Dict[str, Any]]:
+    """Read the persisted Pass B row for one audit run (metadata + attempt count).
+
+    Used after the real worker completes so benchmark artifacts can expose
+    the composite Pass B specialist/judge telemetry without re-running any
+    provider calls.
+    """
+    result = (
+        client.table("audit_run_pass_results")
+        .select("status, attempt_count, result_json, metadata")
+        .eq("audit_run_id", audit_run_id)
+        .eq("pass_code", "B")
+        .limit(1)
+        .execute()
+    )
+    if result.error:
+        raise V48DisposableDatabaseError(
+            f"failed to read audit_run_pass_results for pass B: {result.error}"
+        )
+    rows = list(result.data or [])
+    return rows[0] if rows else None
+
+
 def read_v48_findings(client: PsycopgV48Client, audit_run_id: str) -> List[Dict[str, Any]]:
     """Read back the real, RPC-persisted findings for an audit run.
 
@@ -847,17 +871,24 @@ def run_v48_benchmark_case(
         else:
             error = f"V48 run did not complete (run_status={run_status!r})"
 
+        raw_output_extra: Dict[str, Any] = {
+            "run_status": run_status,
+            "passes_executed": summary.get("passes_executed"),
+            "completion_shape": summary.get("completion_shape"),
+            "audit_run_id": audit_run_id,
+            "evidence_chunk_count": seeded.evidence_chunk_count,
+            "requires_human_review": requires_human_review,
+        }
+        pass_b_telemetry = build_pass_b_benchmark_telemetry(
+            read_v48_pass_b_row(client, audit_run_id)
+        )
+        if pass_b_telemetry is not None:
+            raw_output_extra["pass_b"] = pass_b_telemetry
+
         return _prediction_from_findings(
             case_id,
             findings,
-            raw_output_extra={
-                "run_status": run_status,
-                "passes_executed": summary.get("passes_executed"),
-                "completion_shape": summary.get("completion_shape"),
-                "audit_run_id": audit_run_id,
-                "evidence_chunk_count": seeded.evidence_chunk_count,
-                "requires_human_review": requires_human_review,
-            },
+            raw_output_extra=raw_output_extra,
             error=error,
         )
 
@@ -931,6 +962,7 @@ __all__ = [
     "SeededV48Case",
     "seed_benchmark_case",
     "create_v48_audit_run",
+    "read_v48_pass_b_row",
     "read_v48_findings",
     "run_v48_benchmark_case",
     "generate_v48_prediction",

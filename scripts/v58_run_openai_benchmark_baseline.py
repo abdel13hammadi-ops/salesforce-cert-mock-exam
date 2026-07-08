@@ -421,6 +421,7 @@ class PassCallRecorder:
             metadata: Optional[dict] = None,
         ):
             pass_code = (metadata or {}).get("pass_code")
+            pass_b_sub_call = (metadata or {}).get("pass_b_sub_call")
             started = time.monotonic()
             try:
                 response = provider(
@@ -438,30 +439,32 @@ class PassCallRecorder:
                 message = f"{type(exc).__name__}: {exc}"
                 if len(message) > 2000:
                     message = message[:2000] + "...[truncated]"
-                self._record(
-                    {
-                        "role": role,
-                        "pass_code": pass_code,
-                        "status": "error",
-                        "duration_seconds": round(time.monotonic() - started, 3),
-                        "error": message,
-                    }
-                )
-                raise
-            self._record(
-                {
+                error_record: Dict[str, Any] = {
                     "role": role,
                     "pass_code": pass_code,
-                    "status": "success",
+                    "status": "error",
                     "duration_seconds": round(time.monotonic() - started, 3),
-                    "provider_name": getattr(response, "provider_name", None),
-                    "model_name": getattr(response, "model_name", None),
-                    "provider_request_id": getattr(response, "provider_request_id", None),
-                    "input_tokens": getattr(response, "input_tokens", None),
-                    "output_tokens": getattr(response, "output_tokens", None),
-                    "actual_cost_usd": getattr(response, "actual_cost_usd", None),
+                    "error": message,
                 }
-            )
+                if pass_b_sub_call:
+                    error_record["pass_b_sub_call"] = pass_b_sub_call
+                self._record(error_record)
+                raise
+            success_record: Dict[str, Any] = {
+                "role": role,
+                "pass_code": pass_code,
+                "status": "success",
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "provider_name": getattr(response, "provider_name", None),
+                "model_name": getattr(response, "model_name", None),
+                "provider_request_id": getattr(response, "provider_request_id", None),
+                "input_tokens": getattr(response, "input_tokens", None),
+                "output_tokens": getattr(response, "output_tokens", None),
+                "actual_cost_usd": getattr(response, "actual_cost_usd", None),
+            }
+            if pass_b_sub_call:
+                success_record["pass_b_sub_call"] = pass_b_sub_call
+            self._record(success_record)
             return response
 
         return _wrapped

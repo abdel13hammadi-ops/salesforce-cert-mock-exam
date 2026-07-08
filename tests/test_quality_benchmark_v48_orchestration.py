@@ -716,6 +716,61 @@ class TestV48DisposableDbOrchestration(unittest.TestCase):
         self.assertTrue(prediction.approved)
         self.assertEqual(before, after)
 
+    def test_completed_run_exposes_pass_b_specialist_telemetry(self):
+        case = _one_real_case()
+        prediction = run_v48_benchmark_case(
+            case,
+            dsn=_dsn(),
+            allow_disposable_v48_db=True,
+            providers=_no_dispute_providers(),
+        )
+        pass_b = prediction.raw_output.get("pass_b") or {}
+        specialist = pass_b.get("correctness_specialist") or {}
+        structured = specialist.get("structured_output") or {}
+        self.assertIn("option_judgments", structured)
+        self.assertTrue(structured.get("evidence_sufficient_for_decision"))
+        judgments = structured["option_judgments"]
+        self.assertGreaterEqual(len(judgments), 1)
+        for judgment in judgments:
+            self.assertIn("option_label", judgment)
+            self.assertIn("verdict", judgment)
+            self.assertIn("citation_chunk_ids", judgment)
+        general = pass_b.get("general_judge") or {}
+        self.assertIn("structured_output", general)
+        self.assertIn("provider_call", general)
+
+    def test_inconclusive_run_preserves_completed_specialist_telemetry(self):
+        case = _one_real_case()
+        prediction = run_v48_benchmark_case(
+            case,
+            dsn=_dsn(),
+            allow_disposable_v48_db=True,
+            providers=_unresolved_blocking_dispute_providers(case),
+        )
+        pass_b = prediction.raw_output.get("pass_b") or {}
+        specialist = pass_b.get("correctness_specialist") or {}
+        structured = specialist.get("structured_output") or {}
+        self.assertIn("option_judgments", structured)
+        self.assertTrue(structured.get("evidence_sufficient_for_decision"))
+        self.assertEqual(prediction.raw_output.get("run_status"), "inconclusive")
+        self.assertFalse(prediction.approved)
+
+    def test_pass_b_telemetry_is_additive_to_prediction_outcomes(self):
+        case = _one_real_case()
+        prediction = run_v48_benchmark_case(
+            case,
+            dsn=_dsn(),
+            allow_disposable_v48_db=True,
+            providers=_no_dispute_providers(),
+        )
+        self.assertIsNone(prediction.error)
+        self.assertTrue(prediction.approved)
+        self.assertEqual(prediction.finding_codes, [])
+        self.assertIsNone(prediction.materiality)
+        self.assertIn("pass_b", prediction.raw_output)
+        self.assertIn("findings", prediction.raw_output)
+        self.assertIn("run_status", prediction.raw_output)
+
     # -- Evidence integrity (mandatory coverage item 8) ---------------------
 
     def test_evidence_hashes_and_provenance_remain_valid(self):

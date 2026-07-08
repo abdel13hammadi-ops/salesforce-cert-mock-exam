@@ -1958,6 +1958,123 @@ class TestPassBCompositeExecution(unittest.TestCase):
         self.assertEqual(pass_b_record["p_input_tokens"], 200)
         self.assertEqual(pass_b_record["p_output_tokens"], 80)
 
+    def test_pass_b_metadata_preserves_specialist_structured_output(self):
+        from workers.ai_quality_audit_worker import build_pass_b_benchmark_telemetry
+
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("SKIP_PASS_C", "C"),
+            _claim("RUN_READY_TO_COMPLETE"),
+        )
+        _wire_normal_no_dispute_tables(client)
+
+        correctness_payload = _correctness_result()
+        general_payload = _pass_b_result(findings=[_warning_finding()])
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(correctness_payload),
+                _llm_response(general_payload),
+            ]
+        )
+
+        _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
+
+        pass_b_record = next(
+            call for call in client.record_calls if call["p_pass_code"] == "B"
+        )
+        composite = pass_b_record["p_metadata"]["pass_b_composite"]
+        specialist_structured = composite["correctness_detector"]["structured_output"]
+        self.assertEqual(
+            specialist_structured["evidence_sufficient_for_decision"],
+            True,
+        )
+        self.assertEqual(len(specialist_structured["option_judgments"]), 2)
+        for judgment in specialist_structured["option_judgments"]:
+            self.assertIn(judgment["verdict"], {
+                "SUPPORTED_AS_CORRECT",
+                "NOT_SUPPORTED_AS_CORRECT",
+                "INSUFFICIENT_EVIDENCE",
+            })
+            self.assertIn("option_label", judgment)
+            self.assertIn("citation_chunk_ids", judgment)
+            self.assertIn("evidence_rationale", judgment)
+
+        general_structured = composite["general_quality_judge"]["structured_output"]
+        self.assertEqual(
+            general_structured["selected_option_labels"],
+            general_payload["selected_option_labels"],
+        )
+        self.assertEqual(
+            general_structured["proposed_findings"],
+            general_payload["proposed_findings"],
+        )
+
+        artifact = build_pass_b_benchmark_telemetry(
+            {
+                "attempt_count": 1,
+                "metadata": pass_b_record["p_metadata"],
+            }
+        )
+        self.assertIn("correctness_specialist", artifact)
+        self.assertIn("general_judge", artifact)
+        self.assertEqual(
+            artifact["correctness_specialist"]["structured_output"],
+            specialist_structured,
+        )
+        self.assertEqual(
+            artifact["general_judge"]["structured_output"],
+            general_structured,
+        )
+        self.assertEqual(
+            artifact["correctness_specialist"]["provider_call"]["attempt_count"],
+            1,
+        )
+
+    def test_specialist_structured_output_preserved_when_general_judge_fails(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("NEEDS_DISPUTE_TRIGGER_B"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        _wire_normal_no_dispute_tables(client)
+
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
+                _llm_response({"not_a_valid_field": True}),
+                _llm_response(_correctness_result()),
+                _llm_response({"not_a_valid_field": True}),
+            ]
+        )
+
+        _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
+
+        pass_b_records = [
+            call for call in client.record_calls if call["p_pass_code"] == "B"
+        ]
+        self.assertGreaterEqual(len(pass_b_records), 1)
+        composite = pass_b_records[0]["p_metadata"]["pass_b_composite"]
+        specialist = composite["correctness_detector"]
+        self.assertEqual(specialist["status"], "completed")
+        self.assertIn("structured_output", specialist)
+        self.assertIn("option_judgments", specialist["structured_output"])
+        general = composite["general_quality_judge"]
+        self.assertEqual(general["status"], "schema_invalid")
+        self.assertIn("errors", general["structured_output"])
+
     def test_specialist_blocking_finding_triggers_pass_c_routing(self):
         client = OrchestrationFakeSupabase()
         client.enqueue_claims(
