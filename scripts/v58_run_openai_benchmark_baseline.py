@@ -274,6 +274,67 @@ def load_and_validate_fixture(path: Path) -> Tuple[dict, str]:
     return fixture, fixture_sha256
 
 
+def parse_case_ids_csv(case_ids_raw: Optional[str]) -> Optional[List[str]]:
+    """Parse a comma-separated ``--case-ids`` value.
+
+    Returns ``None`` when *case_ids_raw* is omitted (full 40-case run).
+    Raises ``BaselineRunnerRefusal`` for empty input, blank entries, or
+    duplicate IDs.
+    """
+    if case_ids_raw is None:
+        return None
+    stripped = case_ids_raw.strip()
+    if not stripped:
+        raise BaselineRunnerRefusal("--case-ids must not be empty")
+    parts = [part.strip() for part in stripped.split(",")]
+    if any(not part for part in parts):
+        raise BaselineRunnerRefusal("--case-ids must not contain empty entries")
+    seen: set = set()
+    duplicates: List[str] = []
+    for part in parts:
+        if part in seen and part not in duplicates:
+            duplicates.append(part)
+        seen.add(part)
+    if duplicates:
+        raise BaselineRunnerRefusal(
+            f"--case-ids contains duplicate case ID(s): {', '.join(duplicates)}"
+        )
+    return parts
+
+
+def resolve_targeted_fixture(
+    fixture: Mapping[str, Any],
+    case_ids_raw: Optional[str],
+) -> Tuple[Optional[List[str]], Dict[str, Any]]:
+    """Return fixture-order selected case IDs and a filtered fixture view.
+
+    When *case_ids_raw* is omitted, returns ``(None, full_fixture)`` so
+    existing 40-case behavior is unchanged. When provided, rejects unknown
+    IDs and returns only the requested cases in original fixture order.
+    """
+    requested = parse_case_ids_csv(case_ids_raw)
+    if requested is None:
+        return None, dict(fixture)
+
+    fixture_cases = list(fixture.get("cases") or [])
+    fixture_ids = [str(case["case_id"]) for case in fixture_cases]
+    fixture_id_set = set(fixture_ids)
+
+    unknown = [case_id for case_id in requested if case_id not in fixture_id_set]
+    if unknown:
+        raise BaselineRunnerRefusal(
+            f"--case-ids contains unknown case ID(s): {', '.join(unknown)}"
+        )
+
+    requested_set = set(requested)
+    ordered_selected = [case_id for case_id in fixture_ids if case_id in requested_set]
+    filtered_fixture = dict(fixture)
+    filtered_fixture["cases"] = [
+        case for case in fixture_cases if str(case["case_id"]) in requested_set
+    ]
+    return ordered_selected, filtered_fixture
+
+
 # ---------------------------------------------------------------------------
 # Gate 3: disposable-database DSN safety (fully reused, not re-implemented)
 # ---------------------------------------------------------------------------
@@ -616,6 +677,7 @@ def compute_config_fingerprint(
     openai_max_retries: int,
     openai_max_output_tokens: int,
     pass_b_sub_call_timeout_seconds_effective: float,
+    selected_case_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Configuration fingerprint used to gate ``--resume`` compatibility.
 
@@ -643,8 +705,13 @@ def compute_config_fingerprint(
     (produced before the answer-correctness specialist existed)
     unresumable by post-V60 code: those defaults were bumped specifically
     for this reason in V60-IMPL-03.
+
+    ``selected_case_ids`` is included only for targeted (``--case-ids``)
+    runs so filtered and full runs cannot be resumed interchangeably.
+    Full 40-case runs omit this key for backward compatibility with
+    checkpoints written before targeted selection existed.
     """
-    return {
+    fingerprint: Dict[str, Any] = {
         "fixture_sha256": fixture_sha256,
         "engine_id": adapter_config.get("engine_id"),
         "engine_version": adapter_config.get("engine_version"),
@@ -659,6 +726,9 @@ def compute_config_fingerprint(
         "openai_max_output_tokens": openai_max_output_tokens,
         "pass_b_sub_call_timeout_seconds_effective": pass_b_sub_call_timeout_seconds_effective,
     }
+    if selected_case_ids is not None:
+        fingerprint["selected_case_ids"] = list(selected_case_ids)
+    return fingerprint
 
 
 def load_checkpoint_predictions(run_dir: Path) -> List[Dict[str, Any]]:
@@ -910,6 +980,7 @@ def build_final_artifact(
     blocked_reason: Optional[str] = None,
     configured_primary_model: Optional[str] = None,
     configured_dispute_model: Optional[str] = None,
+    selected_case_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Build the final prediction artifact. Mirrors the exact tail
     construction of ``workers.quality_benchmark_execution.generate_predictions``
@@ -930,7 +1001,7 @@ def build_final_artifact(
     }
     error_case_count = sum(1 for p in predictions if p.get("error"))
 
-    return {
+    artifact: Dict[str, Any] = {
         "schema_version": RESULT_ARTIFACT_SCHEMA_VERSION,
         "engine_id": config.get("engine_id"),
         "engine_version": config.get("engine_version"),
@@ -959,6 +1030,9 @@ def build_final_artifact(
         "run_status": run_status,
         "blocked_reason": blocked_reason,
     }
+    if selected_case_ids is not None:
+        artifact["selected_case_ids"] = list(selected_case_ids)
+    return artifact
 
 
 def write_result_artifact(run_dir: Path, artifact: Dict[str, Any]) -> Path:
@@ -1059,12 +1133,20 @@ def describe_effective_openai_settings() -> Dict[str, Any]:
 
 
 def _print_effective_configuration(
-    *, fixture_path: Path, fixture_sha256: str, case_count: int, openai_settings: Dict[str, Any], dsn_info=None
+    *,
+    fixture_path: Path,
+    fixture_sha256: str,
+    case_count: int,
+    openai_settings: Dict[str, Any],
+    dsn_info=None,
+    selected_case_ids: Optional[List[str]] = None,
 ) -> None:
     print("V58 Day 8 OpenAI 40-case benchmark baseline runner")
     print(f"  fixture_path:          {fixture_path}")
     print(f"  fixture_sha256:        {fixture_sha256}")
     print(f"  case_count:            {case_count}")
+    if selected_case_ids is not None:
+        print(f"  selected_case_ids:     {','.join(selected_case_ids)}")
     print("  provider:              openai")
     print(f"  requested_model:       {openai_settings['requested_model']}")
     print(f"  reasoning_effort:      {openai_settings['reasoning_effort']}")
@@ -1106,6 +1188,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--case-ids",
+        metavar="CASE_IDS",
+        default=None,
+        help=(
+            "Comma-separated benchmark case IDs to run (e.g. "
+            "qbv1-006,qbv1-007). Preserves original fixture order, rejects "
+            "unknown or duplicate IDs, and records the selection in run "
+            "metadata. Omit to run all 40 cases."
+        ),
+    )
+    parser.add_argument(
         "--db-url",
         default=None,
         help=(
@@ -1119,7 +1212,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 def _run_dry_run(args: argparse.Namespace) -> int:
     fixture, fixture_sha256 = load_and_validate_fixture(FIXTURE_PATH)
-    case_count = len(fixture["cases"])
+    selected_case_ids, run_fixture = resolve_targeted_fixture(fixture, args.case_ids)
+    case_count = len(run_fixture["cases"])
 
     from workers.quality_benchmark_v48_orchestration import validate_disposable_dsn
 
@@ -1165,6 +1259,7 @@ def _run_dry_run(args: argparse.Namespace) -> int:
         case_count=case_count,
         openai_settings=openai_settings,
         dsn_info=dsn_info,
+        selected_case_ids=selected_case_ids,
     )
     print(f"  prompt_version:        {DEFAULT_PROMPT_VERSION}")
     print(f"  ruleset_version:       {DEFAULT_RULESET_VERSION}")
@@ -1194,7 +1289,8 @@ def _run_live(args: argparse.Namespace) -> int:
     _check_live_authorization_gate()
 
     fixture, fixture_sha256 = load_and_validate_fixture(FIXTURE_PATH)
-    case_count = len(fixture["cases"])
+    selected_case_ids, run_fixture = resolve_targeted_fixture(fixture, args.case_ids)
+    case_count = len(run_fixture["cases"])
 
     dsn = resolve_disposable_db_url(args.db_url)
     from workers.quality_benchmark_v48_orchestration import validate_disposable_dsn
@@ -1234,6 +1330,7 @@ def _run_live(args: argparse.Namespace) -> int:
         case_count=case_count,
         openai_settings=openai_settings,
         dsn_info=dsn_info,
+        selected_case_ids=selected_case_ids,
     )
     print(f"  worker_id:             {WORKER_ID}")
     print(f"  prompt_version:        {adapter_config.get('prompt_version')}")
@@ -1241,8 +1338,16 @@ def _run_live(args: argparse.Namespace) -> int:
     print(f"  evidence_config_id:    {adapter_config.get('evidence_config_id')}")
     print(f"  pass_b_sub_call_timeout_seconds (configured): {base_providers.pass_b_sub_call_timeout_seconds}")
     print(f"  pass_b_sub_call_timeout_seconds (effective):  {effective_pass_b_sub_call_timeout_seconds}")
-    print("  intended live calls:   up to 3 per case (Pass A, Pass B; Pass C only "
-          "when a dispute trigger fires) x 40 cases")
+    if selected_case_ids is not None:
+        print(
+            "  intended live calls:   up to 3 per case (Pass A, Pass B; Pass C only "
+            f"when a dispute trigger fires) x {case_count} selected case(s)"
+        )
+    else:
+        print(
+            "  intended live calls:   up to 3 per case (Pass A, Pass B; Pass C only "
+            "when a dispute trigger fires) x 40 cases"
+        )
     print()
 
     config_fingerprint = compute_config_fingerprint(
@@ -1253,6 +1358,7 @@ def _run_live(args: argparse.Namespace) -> int:
         openai_max_retries=openai_settings["max_retries"],
         openai_max_output_tokens=openai_settings["max_output_tokens"],
         pass_b_sub_call_timeout_seconds_effective=effective_pass_b_sub_call_timeout_seconds,
+        selected_case_ids=selected_case_ids,
     )
 
     resume_dir = Path(args.resume).resolve() if args.resume else None
@@ -1284,7 +1390,7 @@ def _run_live(args: argparse.Namespace) -> int:
 
     try:
         predictions = run_case_loop(
-            fixture,
+            run_fixture,
             adapter,
             recorder=recorder,
             run_dir=run_dir,
@@ -1334,6 +1440,7 @@ def _run_live(args: argparse.Namespace) -> int:
             blocked_reason=blocked_reason,
             configured_primary_model=provenance.primary_model_name,
             configured_dispute_model=provenance.dispute_model_name,
+            selected_case_ids=selected_case_ids,
         )
         out_path = write_result_artifact(run_dir, artifact)
         print(f"Interrupted. Partial artifact written: {out_path}", file=sys.stderr)
@@ -1358,6 +1465,7 @@ def _run_live(args: argparse.Namespace) -> int:
         blocked_reason=blocked_reason,
         configured_primary_model=provenance.primary_model_name,
         configured_dispute_model=provenance.dispute_model_name,
+        selected_case_ids=selected_case_ids,
     )
     out_path = write_result_artifact(run_dir, artifact)
 

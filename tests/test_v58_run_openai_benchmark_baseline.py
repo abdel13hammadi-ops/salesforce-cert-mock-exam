@@ -607,6 +607,208 @@ class TestCaseLoopSequencing(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Targeted --case-ids selection (V60-TARGETED-01)
+# ---------------------------------------------------------------------------
+
+
+class TestTargetedCaseSelection(unittest.TestCase):
+    V60_ABSTENTION_CASE_IDS = (
+        "qbv1-006",
+        "qbv1-007",
+        "qbv1-019",
+        "qbv1-020",
+        "qbv1-029",
+        "qbv1-030",
+        "qbv1-034",
+        "qbv1-036",
+        "qbv1-037",
+        "qbv1-039",
+        "qbv1-040",
+    )
+
+    def setUp(self):
+        import tempfile
+
+        self._run_dir = Path(tempfile.mkdtemp(prefix="v58-openai-baseline-targeted-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._run_dir, ignore_errors=True))
+
+    def _fingerprint(self, **overrides):
+        kwargs = dict(
+            fixture_sha256="fixturehash",
+            adapter_config=_FakeAdapter().describe_config(),
+            reasoning_effort="medium",
+            openai_timeout_seconds=120.0,
+            openai_max_retries=3,
+            openai_max_output_tokens=4096,
+            pass_b_sub_call_timeout_seconds_effective=120.0,
+        )
+        kwargs.update(overrides)
+        return baseline.compute_config_fingerprint(**kwargs)
+
+    def test_full_run_fixture_has_forty_cases(self):
+        fixture, _ = baseline.load_and_validate_fixture(baseline.FIXTURE_PATH)
+        selected, run_fixture = baseline.resolve_targeted_fixture(fixture, None)
+        self.assertIsNone(selected)
+        self.assertEqual(len(run_fixture["cases"]), 40)
+
+    def test_preserves_fixture_order_not_cli_order(self):
+        fixture, _ = baseline.load_and_validate_fixture(baseline.FIXTURE_PATH)
+        cli_order = "qbv1-040,qbv1-006,qbv1-019"
+        selected, run_fixture = baseline.resolve_targeted_fixture(fixture, cli_order)
+        self.assertEqual(selected, ["qbv1-006", "qbv1-019", "qbv1-040"])
+        self.assertEqual([c["case_id"] for c in run_fixture["cases"]], selected)
+
+    def test_unknown_case_id_refuses(self):
+        fixture, _ = baseline.load_and_validate_fixture(baseline.FIXTURE_PATH)
+        with self.assertRaises(baseline.BaselineRunnerRefusal) as ctx:
+            baseline.resolve_targeted_fixture(fixture, "qbv1-006,not-a-real-case")
+        self.assertIn("unknown case id", str(ctx.exception).lower())
+
+    def test_duplicate_case_id_refuses(self):
+        fixture, _ = baseline.load_and_validate_fixture(baseline.FIXTURE_PATH)
+        with self.assertRaises(baseline.BaselineRunnerRefusal) as ctx:
+            baseline.resolve_targeted_fixture(fixture, "qbv1-006,qbv1-006")
+        self.assertIn("duplicate", str(ctx.exception).lower())
+
+    def test_empty_case_ids_refuses(self):
+        fixture, _ = baseline.load_and_validate_fixture(baseline.FIXTURE_PATH)
+        with self.assertRaises(baseline.BaselineRunnerRefusal):
+            baseline.parse_case_ids_csv("")
+        with self.assertRaises(baseline.BaselineRunnerRefusal):
+            baseline.parse_case_ids_csv("   ")
+
+    def test_filtered_run_executes_only_selected_cases(self):
+        fixture = _fixture_with_cases(5)
+        selected, run_fixture = baseline.resolve_targeted_fixture(
+            fixture, "fake-002,fake-004,fake-005"
+        )
+        self.assertEqual(selected, ["fake-002", "fake-004", "fake-005"])
+        adapter = _FakeAdapter()
+        recorder = baseline.PassCallRecorder()
+        predictions = baseline.run_case_loop(
+            run_fixture,
+            adapter,
+            recorder=recorder,
+            run_dir=self._run_dir,
+            config_fingerprint=self._fingerprint(selected_case_ids=selected),
+            existing_predictions=[],
+            completed_case_ids=set(),
+            print_progress=False,
+        )
+        self.assertEqual(adapter.calls, selected)
+        self.assertEqual([p["case_id"] for p in predictions], selected)
+
+    def test_full_run_fingerprint_omits_selected_case_ids(self):
+        fingerprint = self._fingerprint()
+        self.assertNotIn("selected_case_ids", fingerprint)
+
+    def test_targeted_fingerprint_includes_selected_case_ids(self):
+        selected = ["fake-002", "fake-004"]
+        fingerprint = self._fingerprint(selected_case_ids=selected)
+        self.assertEqual(fingerprint["selected_case_ids"], selected)
+
+    def test_resume_refuses_mixed_case_selection(self):
+        fixture = _fixture_with_cases(5)
+        selected_a = ["fake-001", "fake-002"]
+        selected_b = ["fake-001", "fake-003"]
+        fingerprint_a = self._fingerprint(selected_case_ids=selected_a)
+
+        adapter = _FakeAdapter()
+        recorder = baseline.PassCallRecorder()
+        _, run_fixture = baseline.resolve_targeted_fixture(fixture, ",".join(selected_a))
+        baseline.run_case_loop(
+            run_fixture,
+            adapter,
+            recorder=recorder,
+            run_dir=self._run_dir,
+            config_fingerprint=fingerprint_a,
+            existing_predictions=[],
+            completed_case_ids=set(),
+            print_progress=False,
+        )
+
+        fingerprint_b = self._fingerprint(selected_case_ids=selected_b)
+        with self.assertRaises(baseline.BaselineRunnerRefusal):
+            baseline.resume_or_start_run(
+                resume_dir=self._run_dir, config_fingerprint=fingerprint_b
+            )
+
+    def test_resume_refuses_targeted_vs_full_run(self):
+        fixture = _fixture_with_cases(3)
+        selected = ["fake-001", "fake-002"]
+        targeted_fingerprint = self._fingerprint(selected_case_ids=selected)
+        full_fingerprint = self._fingerprint()
+
+        adapter = _FakeAdapter()
+        recorder = baseline.PassCallRecorder()
+        _, run_fixture = baseline.resolve_targeted_fixture(fixture, ",".join(selected))
+        baseline.run_case_loop(
+            run_fixture,
+            adapter,
+            recorder=recorder,
+            run_dir=self._run_dir,
+            config_fingerprint=targeted_fingerprint,
+            existing_predictions=[],
+            completed_case_ids=set(),
+            print_progress=False,
+        )
+
+        with self.assertRaises(baseline.BaselineRunnerRefusal):
+            baseline.resume_or_start_run(
+                resume_dir=self._run_dir, config_fingerprint=full_fingerprint
+            )
+
+    def test_build_final_artifact_records_selected_case_ids(self):
+        selected = list(self.V60_ABSTENTION_CASE_IDS)
+        adapter = _FakeAdapter()
+        artifact = baseline.build_final_artifact(
+            adapter=adapter,
+            source_fixture_path=baseline.FIXTURE_PATH,
+            source_fixture_sha256=baseline.APPROVED_FIXTURE_SHA256,
+            case_count=len(selected),
+            predictions=[],
+            run_id="run-targeted",
+            started_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            completed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            requested_model="gpt-5.5",
+            reasoning_effort="medium",
+            provider_timing_config={},
+            database_info={"host": "127.0.0.1", "dbname": "certbound_v48_test", "cleanup": {}},
+            run_status="completed",
+            selected_case_ids=selected,
+        )
+        self.assertEqual(artifact["case_count"], 11)
+        self.assertEqual(artifact["selected_case_ids"], selected)
+
+    def test_full_run_artifact_omits_selected_case_ids(self):
+        adapter = _FakeAdapter()
+        artifact = baseline.build_final_artifact(
+            adapter=adapter,
+            source_fixture_path=baseline.FIXTURE_PATH,
+            source_fixture_sha256=baseline.APPROVED_FIXTURE_SHA256,
+            case_count=40,
+            predictions=[],
+            run_id="run-full",
+            started_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            completed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            requested_model="gpt-5.5",
+            reasoning_effort="medium",
+            provider_timing_config={},
+            database_info={"host": "127.0.0.1", "dbname": "certbound_v48_test", "cleanup": {}},
+            run_status="completed",
+        )
+        self.assertNotIn("selected_case_ids", artifact)
+
+    def test_v60_abstention_case_ids_resolve_in_fixture_order(self):
+        fixture, _ = baseline.load_and_validate_fixture(baseline.FIXTURE_PATH)
+        cli = ",".join(reversed(self.V60_ABSTENTION_CASE_IDS))
+        selected, run_fixture = baseline.resolve_targeted_fixture(fixture, cli)
+        self.assertEqual(len(selected), 11)
+        self.assertEqual(selected, list(self.V60_ABSTENTION_CASE_IDS))
+        self.assertEqual(len(run_fixture["cases"]), 11)
+
+
+# ---------------------------------------------------------------------------
 # Checkpoint fingerprint completeness for OpenAI execution settings
 # (V58-DAY8-OPENAI-09, blocking fix 2)
 # ---------------------------------------------------------------------------
