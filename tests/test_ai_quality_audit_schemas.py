@@ -1066,7 +1066,11 @@ class TestDeriveCorrectnessFinding(unittest.TestCase):
         # merge_pass_b_findings -> assign_materiality; this asserts intent only.
         self.assertEqual(finding["materiality"], "blocking")
 
-    def test_single_option_insufficient_evidence_also_abstains(self):
+    def test_stored_answer_confirmed_with_insufficient_distractor_produces_no_finding(self):
+        """V60-DERIVE-01 (test 1): a non-stored distractor the specialist
+        could not decide is never, by itself, a reason to abstain once the
+        stored answer is itself decisively confirmed and nothing else is
+        supported."""
         result = _correctness_payload(
             supported=("A",),
             not_supported=("C", "D"),
@@ -1079,8 +1083,7 @@ class TestDeriveCorrectnessFinding(unittest.TestCase):
             stored_correct_option_labels=["A"],
             required_selection_count=1,
         )
-        self.assertIsNotNone(finding)
-        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+        self.assertIsNone(finding)
 
     def test_multi_select_exact_match_produces_no_finding(self):
         result = _correctness_payload(supported=("A", "B"), not_supported=("C", "D"))
@@ -1110,6 +1113,289 @@ class TestDeriveCorrectnessFinding(unittest.TestCase):
         )
         self.assertIsNotNone(finding)
         self.assertEqual(finding["finding_code"], "UNSUPPORTED_ANSWER")
+
+    def test_multi_select_supported_alternative_of_required_size_with_insufficient_stored(self):
+        """V60-DERIVE-01 (test 7): multi-select analog of qbv1-006/007 --
+        neither stored label is contradicted (both INSUFFICIENT_EVIDENCE),
+        but a full alternative set of required size is decisively
+        supported elsewhere -> UNSUPPORTED_ANSWER, not WRONG_ANSWER_KEY."""
+        result = _correctness_payload(
+            supported=("C", "D"),
+            not_supported=(),
+            insufficient=("A", "B"),
+            evidence_sufficient=False,
+            abstention_reason="Options A and B could not be judged from evidence.",
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A", "B"],
+            required_selection_count=2,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "UNSUPPORTED_ANSWER")
+
+    # -- V60-DERIVE-01 required tests 1-6 -----------------------------------
+
+    def test_required_1_stored_supported_unrelated_distractor_insufficient_no_finding(self):
+        result = _correctness_payload(
+            supported=("A",),
+            not_supported=("C",),
+            insufficient=("B", "D"),
+            evidence_sufficient=False,
+            abstention_reason="Options B and D could not be judged from evidence.",
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNone(finding)
+
+    def test_required_2_supported_alternative_and_stored_contradicted_yields_wrong_answer_key(self):
+        result = _correctness_payload(
+            supported=("A",),
+            not_supported=("B", "C"),
+            insufficient=("D",),
+            evidence_sufficient=False,
+            abstention_reason="Option D could not be judged from evidence.",
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["B"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "WRONG_ANSWER_KEY")
+
+    def test_required_3_supported_alternative_and_stored_insufficient_yields_unsupported_answer(self):
+        """Matches the captured qbv1-006/qbv1-007 telemetry pattern."""
+        result = _correctness_payload(
+            supported=("A",),
+            not_supported=(),
+            insufficient=("B", "C", "D"),
+            evidence_sufficient=False,
+            abstention_reason="Options B, C, and D could not be judged from evidence.",
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["B"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "UNSUPPORTED_ANSWER")
+
+    def test_required_4_more_than_required_supported_stored_not_supported_yields_multiple_defensible(self):
+        result = _correctness_payload(supported=("B", "C"), not_supported=("A", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+
+    def test_required_5_more_than_required_supported_stored_included_yields_other_review_needed(self):
+        """Matches the captured qbv1-037 telemetry pattern (trap/meta-option
+        protection): stored is among the supported set, but an unresolved
+        option remains -- must not auto-resolve to MULTIPLE_DEFENSIBLE_ANSWERS."""
+        result = _correctness_payload(
+            supported=("A", "B"),
+            not_supported=("D",),
+            insufficient=("C",),
+            evidence_sufficient=False,
+            abstention_reason="Option C could not be judged from evidence.",
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+
+    def test_multiple_supported_including_stored_but_fully_resolved_yields_multiple_defensible(self):
+        """Matches the captured qbv1-036 telemetry pattern: stored is among
+        the supported set (same shape as qbv1-037 above), but here every
+        option is decisively resolved (no INSUFFICIENT_EVIDENCE anywhere) --
+        this is a confirmed tie, not an unresolved trap/meta-option, so it
+        must resolve to MULTIPLE_DEFENSIBLE_ANSWERS rather than abstaining."""
+        result = _correctness_payload(supported=("A", "B"), not_supported=("C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+
+    def test_required_6_all_options_insufficient_yields_other_review_needed(self):
+        """Matches the captured qbv1-020/qbv1-030 telemetry pattern: even
+        the stored answer itself is unresolved -- must remain human review."""
+        result = _correctness_payload(
+            supported=(),
+            not_supported=(),
+            insufficient=("A", "B", "C", "D"),
+            evidence_sufficient=False,
+            abstention_reason="No option could be judged from evidence.",
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+
+    def test_required_9_canonical_materiality_unchanged_for_correctness_findings(self):
+        """V60-DERIVE-01 (test 9): correctness findings still self-report
+        materiality=blocking (later re-derived canonically through
+        merge_pass_b_findings -> assign_materiality); this rule change does
+        not alter that contract for any decisive branch."""
+        for supported, not_supported, stored, code in (
+            (("B",), ("A", "C", "D"), ["A"], "WRONG_ANSWER_KEY"),
+            (("A",), (), ["B"], "UNSUPPORTED_ANSWER"),
+            (("A", "B"), ("C", "D"), ["A"], "MULTIPLE_DEFENSIBLE_ANSWERS"),
+        ):
+            insufficient = () if code != "UNSUPPORTED_ANSWER" else ("B", "C", "D")
+            result = _correctness_payload(
+                supported=supported,
+                not_supported=not_supported,
+                insufficient=insufficient,
+                evidence_sufficient=not insufficient,
+                abstention_reason=None if not insufficient else "insufficient",
+            )
+            finding = derive_correctness_finding(
+                correctness_result=result,
+                stored_correct_option_labels=stored,
+                required_selection_count=1,
+            )
+            self.assertIsNotNone(finding)
+            self.assertEqual(finding["finding_code"], code)
+            self.assertEqual(finding["materiality"], "blocking")
+            self.assertEqual(finding["finding_type"], "correctness")
+
+    def test_required_10_eleven_captured_telemetry_cases_exact_outcomes(self):
+        """V60-DERIVE-01 (test 10): exact expected outcomes for the 11 cases
+        captured in .local/v58_openai_baseline/20260708T192911Z/result.json
+        (specialist option_judgments) cross-referenced against the stored
+        answer key in workers/fixtures/quality_benchmark_v1_sme_reviewed.json
+        (``question.options[*].is_correct``), transcribed here as literal
+        data so this test does not depend on any file outside the repo.
+
+        Of the 11, 8 resolve deterministically and 3 remain
+        OTHER_REVIEW_NEEDED (qbv1-020, qbv1-030, qbv1-037) -- matching the
+        validated 3/11 remaining human-review expectation.
+        """
+        cases = [
+            (
+                "qbv1-006",
+                {"A": "SUPPORTED_AS_CORRECT", "B": "INSUFFICIENT_EVIDENCE",
+                 "C": "INSUFFICIENT_EVIDENCE", "D": "INSUFFICIENT_EVIDENCE"},
+                ["B"],
+                "UNSUPPORTED_ANSWER",
+            ),
+            (
+                "qbv1-007",
+                {"A": "SUPPORTED_AS_CORRECT", "B": "INSUFFICIENT_EVIDENCE",
+                 "C": "INSUFFICIENT_EVIDENCE", "D": "INSUFFICIENT_EVIDENCE"},
+                ["B"],
+                "UNSUPPORTED_ANSWER",
+            ),
+            (
+                "qbv1-019",
+                {"A": "SUPPORTED_AS_CORRECT", "B": "INSUFFICIENT_EVIDENCE",
+                 "C": "INSUFFICIENT_EVIDENCE", "D": "INSUFFICIENT_EVIDENCE"},
+                ["A"],
+                None,
+            ),
+            (
+                "qbv1-020",
+                {"A": "INSUFFICIENT_EVIDENCE", "B": "INSUFFICIENT_EVIDENCE",
+                 "C": "INSUFFICIENT_EVIDENCE", "D": "INSUFFICIENT_EVIDENCE"},
+                ["A"],
+                "OTHER_REVIEW_NEEDED",
+            ),
+            (
+                "qbv1-029",
+                {"A": "SUPPORTED_AS_CORRECT", "B": "INSUFFICIENT_EVIDENCE",
+                 "C": "INSUFFICIENT_EVIDENCE", "D": "INSUFFICIENT_EVIDENCE"},
+                ["A"],
+                None,
+            ),
+            (
+                "qbv1-030",
+                {"A": "INSUFFICIENT_EVIDENCE", "B": "INSUFFICIENT_EVIDENCE",
+                 "C": "INSUFFICIENT_EVIDENCE", "D": "INSUFFICIENT_EVIDENCE"},
+                ["A"],
+                "OTHER_REVIEW_NEEDED",
+            ),
+            (
+                "qbv1-034",
+                {"A": "SUPPORTED_AS_CORRECT", "B": "NOT_SUPPORTED_AS_CORRECT",
+                 "C": "NOT_SUPPORTED_AS_CORRECT", "D": "INSUFFICIENT_EVIDENCE"},
+                ["B"],
+                "WRONG_ANSWER_KEY",
+            ),
+            (
+                "qbv1-036",
+                {"A": "SUPPORTED_AS_CORRECT", "B": "SUPPORTED_AS_CORRECT",
+                 "C": "NOT_SUPPORTED_AS_CORRECT", "D": "NOT_SUPPORTED_AS_CORRECT"},
+                ["A"],
+                "MULTIPLE_DEFENSIBLE_ANSWERS",
+            ),
+            (
+                "qbv1-037",
+                {"A": "SUPPORTED_AS_CORRECT", "B": "SUPPORTED_AS_CORRECT",
+                 "C": "INSUFFICIENT_EVIDENCE", "D": "NOT_SUPPORTED_AS_CORRECT"},
+                ["A"],
+                "OTHER_REVIEW_NEEDED",
+            ),
+            (
+                "qbv1-039",
+                {"A": "SUPPORTED_AS_CORRECT", "B": "INSUFFICIENT_EVIDENCE",
+                 "C": "INSUFFICIENT_EVIDENCE", "D": "INSUFFICIENT_EVIDENCE"},
+                ["A"],
+                None,
+            ),
+            (
+                "qbv1-040",
+                {"A": "SUPPORTED_AS_CORRECT", "B": "INSUFFICIENT_EVIDENCE",
+                 "C": "INSUFFICIENT_EVIDENCE", "D": "INSUFFICIENT_EVIDENCE"},
+                ["A"],
+                None,
+            ),
+        ]
+
+        review_needed_count = 0
+        for case_id, verdicts, stored, expected_code in cases:
+            with self.subTest(case_id=case_id):
+                supported = tuple(l for l, v in verdicts.items() if v == "SUPPORTED_AS_CORRECT")
+                not_supported = tuple(l for l, v in verdicts.items() if v == "NOT_SUPPORTED_AS_CORRECT")
+                insufficient = tuple(l for l, v in verdicts.items() if v == "INSUFFICIENT_EVIDENCE")
+                result = _correctness_payload(
+                    supported=supported,
+                    not_supported=not_supported,
+                    insufficient=insufficient,
+                    evidence_sufficient=not insufficient,
+                    abstention_reason=None if not insufficient else "captured telemetry abstention",
+                )
+                finding = derive_correctness_finding(
+                    correctness_result=result,
+                    stored_correct_option_labels=stored,
+                    required_selection_count=1,
+                )
+                if expected_code is None:
+                    self.assertIsNone(finding, f"{case_id}: expected no finding")
+                else:
+                    self.assertIsNotNone(finding, f"{case_id}: expected {expected_code}")
+                    self.assertEqual(finding["finding_code"], expected_code, case_id)
+                    if expected_code == "OTHER_REVIEW_NEEDED":
+                        review_needed_count += 1
+
+        self.assertEqual(
+            review_needed_count, 3,
+            "expected exactly 3/11 captured cases to remain OTHER_REVIEW_NEEDED",
+        )
 
     def test_derivation_is_deterministic_across_repeated_calls(self):
         result = _correctness_payload(supported=("B",), not_supported=("A", "C", "D"))

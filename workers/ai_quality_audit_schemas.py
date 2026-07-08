@@ -266,33 +266,81 @@ def derive_correctness_finding(
     finding_ref: str = "FC1",
 ) -> Optional[Dict[str, Any]]:
     """Deterministically derive at most one correctness finding from a
-    validated specialist result (V60). The specialist never chooses a
-    finding code, materiality, or severity -- this function is the sole
-    authority translating its atomic per-option judgments into a proposed
-    finding (or ``None`` when the stored answer is fully confirmed).
+    validated specialist result (V60, bounded-abstention revision /
+    V60-DERIVE-01). The specialist never chooses a finding code,
+    materiality, or severity -- this function is the sole authority
+    translating its atomic per-option judgments into a proposed finding (or
+    ``None`` when the stored answer is fully confirmed).
 
     Let ``S`` = stored correct-label set, ``R`` = required selection count,
-    ``E`` = option labels judged ``SUPPORTED_AS_CORRECT``:
+    ``E`` = labels judged ``SUPPORTED_AS_CORRECT``, ``C`` = labels judged
+    ``NOT_SUPPORTED_AS_CORRECT`` (directly contradicted), ``U`` = labels
+    judged ``INSUFFICIENT_EVIDENCE`` (unresolved):
 
-      1. Evidence insufficient or any option INSUFFICIENT_EVIDENCE:
-         no decisive branch is taken; a real ``OTHER_REVIEW_NEEDED``
-         (finding_type=correctness, therefore canonically blocking) finding
-         is returned so the existing blocking-defect dispute trigger routes
-         this case through Pass C rather than silently auto-approving.
-      2. ``E == S``: fully confirmed, no correctness finding (``None``).
-      3. ``len(E) > R``: ``MULTIPLE_DEFENSIBLE_ANSWERS``.
-      4. ``len(E) == R`` and ``E != S``: ``WRONG_ANSWER_KEY``.
-      5. ``len(E) < R``: ``UNSUPPORTED_ANSWER``.
-
-    An abstention/insufficient-evidence case can never become
-    ``UNSUPPORTED_ANSWER`` -- only a decisive judgment (rule 5 above) can.
+      1. ``E == S``: the stored answer is fully confirmed and nothing
+         outside it is also supported -- no correctness finding (``None``),
+         *regardless* of any remaining ``U`` members. A distractor the
+         specialist could not decide is never, by itself, a reason to
+         abstain (this is the V60-RULE-REVIEW-01 fix: previously *any*
+         ``U`` member forced abstention here, even when the stored answer
+         itself was already decisively confirmed).
+      2. ``len(E) > R``: more options are independently supported than the
+         question allows.
+         2a. If ``S`` is a subset of ``E`` *and* ``U`` is non-empty: this is
+             the validated "trap/meta-option" pattern (qbv1-037; distinct
+             from the fully-resolved qbv1-036 tie by the presence of a
+             still-unresolved option) -- an unresolved option could still
+             turn out to be the question's real intended distinguishing
+             answer, so this abstains (``OTHER_REVIEW_NEEDED``) rather than
+             auto-resolving. This is a conservative, deliberate departure
+             from an unconditional "S subset of E always abstains" reading:
+             qbv1-036 also has ``S`` a subset of ``E`` but is *fully*
+             resolved (``U`` empty, ``evidence_sufficient_for_decision``
+             true) and is correctly ``MULTIPLE_DEFENSIBLE_ANSWERS`` --
+             the two captured-telemetry examples are only distinguishable
+             by ``U``, not by the ``S ⊆ E`` relationship alone.
+         2b. Otherwise: ``MULTIPLE_DEFENSIBLE_ANSWERS``.
+      3. ``len(E) == R`` and ``E != S`` (guaranteed once rule 1 does not
+         apply and ``|S| == R``): an alternative, exact-size answer set
+         replaces the stored one.
+         3a. If any stored label is directly contradicted (``S`` intersects
+             ``C``): ``WRONG_ANSWER_KEY``.
+         3b. Otherwise (every stored label is merely ``INSUFFICIENT_EVIDENCE``,
+             never itself contradicted): ``UNSUPPORTED_ANSWER``. This is the
+             count-based-vs-contradiction-based distinction validated in
+             V60-RULE-REVIEW-01 (qbv1-006/007 vs qbv1-034) -- the prior
+             implementation selected the code purely by comparing set sizes
+             and could never reach this branch at all (it aborted on any
+             ``U`` member first).
+      4. ``len(E) < R``: too few options are supported to match the
+         required count.
+         4a. If every stored label has a decisive verdict (``S`` is a
+             subset of ``E`` union ``C`` -- i.e. no stored label is itself
+             still ``INSUFFICIENT_EVIDENCE``): the required count is
+             already structurally unavailable from the stored set no
+             matter how any *other* still-open ``U`` member resolves --
+             ``UNSUPPORTED_ANSWER``.
+         4b. Otherwise (a stored label is itself unresolved, e.g.
+             qbv1-020/qbv1-030 where every option including the stored one
+             is ``INSUFFICIENT_EVIDENCE``): fall through to rule 5.
+      5. Genuine unresolved state (catch-all): none of the above
+         deterministic branches apply, so resolving the remaining ``U``
+         member(s) could still change whether a correctness finding exists
+         at all -- ``OTHER_REVIEW_NEEDED``.
     """
     stored = _label_set(stored_correct_option_labels) or set()
     judgments = list(correctness_result.get("option_judgments") or [])
-    evidence_sufficient = bool(correctness_result.get("evidence_sufficient_for_decision"))
-    any_insufficient = any(
-        j.get("verdict") == "INSUFFICIENT_EVIDENCE" for j in judgments
-    )
+
+    verdict_by_label: Dict[str, str] = {}
+    for judgment in judgments:
+        label = judgment.get("option_label")
+        verdict = judgment.get("verdict")
+        if label is not None and verdict is not None:
+            verdict_by_label[str(label)] = str(verdict)
+
+    supported = {label for label, v in verdict_by_label.items() if v == "SUPPORTED_AS_CORRECT"}
+    contradicted = {label for label, v in verdict_by_label.items() if v == "NOT_SUPPORTED_AS_CORRECT"}
+    insufficient = {label for label, v in verdict_by_label.items() if v == "INSUFFICIENT_EVIDENCE"}
 
     cited_chunks: List[str] = []
     seen_chunks: Set[str] = set()
@@ -302,9 +350,11 @@ def derive_correctness_finding(
                 seen_chunks.add(chunk_id)
                 cited_chunks.append(chunk_id)
 
-    if not evidence_sufficient or any_insufficient:
-        reason = correctness_result.get("abstention_reason") or (
-            "The answer-correctness detector could not reach a decisive "
+    def _abstain(reason: Optional[str] = None) -> Dict[str, Any]:
+        resolved_reason = (
+            reason
+            or correctness_result.get("abstention_reason")
+            or "The answer-correctness detector could not reach a decisive "
             "evidence-based verdict for one or more options."
         )
         return {
@@ -314,24 +364,24 @@ def derive_correctness_finding(
             "severity": "high",
             "materiality": "blocking",
             "title": "Answer correctness could not be confirmed from evidence",
-            "description": reason,
+            "description": resolved_reason,
             "evidence_chunk_ids": cited_chunks,
             "metadata": {
                 "correctness_detector_abstained": True,
-                "abstention_reason": reason,
+                "abstention_reason": resolved_reason,
             },
         }
 
-    supported = {
-        judgment["option_label"]
-        for judgment in judgments
-        if judgment.get("verdict") == "SUPPORTED_AS_CORRECT"
-    }
-
+    # Rule 1 -- stored answer confirmed, nothing else supported. A
+    # non-stored distractor being INSUFFICIENT_EVIDENCE is never, by
+    # itself, a reason to abstain.
     if supported == stored:
         return None
 
+    # Rule 2 -- more options supported than required.
     if len(supported) > required_selection_count:
+        if stored <= supported and insufficient:
+            return _abstain()
         code = "MULTIPLE_DEFENSIBLE_ANSWERS"
         title = "Multiple options are independently supported by evidence"
         description = (
@@ -339,37 +389,89 @@ def derive_correctness_finding(
             "independently evidence-supported, exceeding the required "
             f"selection count of {required_selection_count}."
         )
-    elif len(supported) == required_selection_count:
-        code = "WRONG_ANSWER_KEY"
-        title = "Stored answer key is not the evidence-supported option set"
-        description = (
-            f"The answer-correctness detector found {sorted(supported)} "
-            f"evidence-supported instead of the stored correct set {sorted(stored)}."
-        )
-    else:
-        code = "UNSUPPORTED_ANSWER"
-        title = "Stored answer key is not confirmed by evidence"
+        return {
+            "finding_ref": finding_ref,
+            "finding_code": code,
+            "finding_type": "correctness",
+            "severity": "high",
+            "materiality": "blocking",
+            "title": title,
+            "description": description,
+            "evidence_chunk_ids": cited_chunks,
+            "metadata": {
+                "correctness_detector_supported_labels": sorted(supported),
+                "correctness_detector_stored_labels": sorted(stored),
+            },
+        }
+
+    # Rule 3 -- an exact-size alternative answer set replaces the stored
+    # one (supported != stored is guaranteed here; rule 1 already handled
+    # the equality case).
+    if len(supported) == required_selection_count:
+        if stored & contradicted:
+            code = "WRONG_ANSWER_KEY"
+            title = "Stored answer key is not the evidence-supported option set"
+            description = (
+                f"The answer-correctness detector found {sorted(supported)} "
+                f"evidence-supported instead of the stored correct set {sorted(stored)}."
+            )
+        else:
+            code = "UNSUPPORTED_ANSWER"
+            title = "Stored answer key is not confirmed by evidence"
+            description = (
+                f"The answer-correctness detector found {sorted(supported)} "
+                f"evidence-supported instead of the stored correct set "
+                f"{sorted(stored)}, which was not directly contradicted but "
+                "was never itself confirmed."
+            )
+        return {
+            "finding_ref": finding_ref,
+            "finding_code": code,
+            "finding_type": "correctness",
+            "severity": "high",
+            "materiality": "blocking",
+            "title": title,
+            "description": description,
+            "evidence_chunk_ids": cited_chunks,
+            "metadata": {
+                "correctness_detector_supported_labels": sorted(supported),
+                "correctness_detector_stored_labels": sorted(stored),
+            },
+        }
+
+    # Rule 4 -- too few options supported. If every stored label already
+    # has a decisive verdict (supported or contradicted, never itself
+    # insufficient), the required count is structurally unavailable no
+    # matter how any other still-open option resolves.
+    decisive_labels = supported | contradicted
+    if stored <= decisive_labels:
         description = (
             f"The answer-correctness detector found only {sorted(supported)} "
             f"evidence-supported option(s), fewer than the required "
             f"{required_selection_count}; the stored answer key {sorted(stored)} "
             "is not confirmed."
         )
+        return {
+            "finding_ref": finding_ref,
+            "finding_code": "UNSUPPORTED_ANSWER",
+            "finding_type": "correctness",
+            "severity": "high",
+            "materiality": "blocking",
+            "title": "Stored answer key is not confirmed by evidence",
+            "description": description,
+            "evidence_chunk_ids": cited_chunks,
+            "metadata": {
+                "correctness_detector_supported_labels": sorted(supported),
+                "correctness_detector_stored_labels": sorted(stored),
+            },
+        }
 
-    return {
-        "finding_ref": finding_ref,
-        "finding_code": code,
-        "finding_type": "correctness",
-        "severity": "high",
-        "materiality": "blocking",
-        "title": title,
-        "description": description,
-        "evidence_chunk_ids": cited_chunks,
-        "metadata": {
-            "correctness_detector_supported_labels": sorted(supported),
-            "correctness_detector_stored_labels": sorted(stored),
-        },
-    }
+    # Rule 5 -- genuine unresolved state: a stored label (rule 4) or an
+    # option relevant to a potential trap/meta-option pattern (rule 2)
+    # remains INSUFFICIENT_EVIDENCE, and resolving it could still change
+    # whether a correctness finding exists, its code, or the
+    # required-answer-count outcome.
+    return _abstain()
 
 
 def merge_pass_b_findings(
