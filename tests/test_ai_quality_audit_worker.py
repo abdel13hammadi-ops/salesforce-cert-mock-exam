@@ -250,6 +250,22 @@ def _warning_only_blocking_finding() -> dict:
     )
 
 
+def _explanation_missing_reported_as_warning() -> dict:
+    """V59-FINDING-01 regression fixture: the exact qbv1-010 failure
+    pattern -- a provider proposes ``EXPLANATION_MISSING`` and self-reports
+    ``materiality='warning'``, which contradicts canonical policy
+    (``workers.finding_policy.assign_materiality`` requires 'blocking').
+    """
+    return _blocking_finding(
+        finding_code="EXPLANATION_MISSING",
+        finding_type="explanation_quality",
+        severity="medium",
+        materiality="warning",
+        title="Explanation missing",
+        description="No explanation was provided for the correct answer.",
+    )
+
+
 def _pass_c_normal_resolved(**overrides) -> dict:
     base = {
         "resolution_type": "NORMAL_DISPUTE",
@@ -1033,6 +1049,102 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
             call for call in client.record_calls if call["p_status"] == "failed"
         ]
         self.assertEqual(len(failed_records), 2)
+
+
+class TestCanonicalMaterialityDrivesDisputeRouting(unittest.TestCase):
+    """V59-FINDING-01 end-to-end: canonicalization happens at schema
+    validation (``workers.ai_quality_audit_schemas``), so its effect must be
+    visible in the worker's own pass-sequencing decisions -- specifically,
+    whether a proposed ``EXPLANATION_MISSING`` finding trips the
+    ``BLOCKING_DEFECT_PROPOSED`` dispute trigger. Before this fix, a
+    provider self-reporting 'warning' for ``EXPLANATION_MISSING`` (exactly
+    the confirmed qbv1-010 pattern) would never trip this trigger and the
+    run would silently complete via NORMAL_NO_DISPUTE/SKIP_PASS_C.
+    """
+
+    def test_explanation_missing_reported_as_warning_still_triggers_blocking_dispute(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("EXECUTE_PASS_C", "C", model_name="test-dispute-model"),
+            _claim("RUN_READY_TO_COMPLETE"),
+        )
+        # Represents what the RPC would actually have persisted for Pass B:
+        # the *canonicalized* (blocking) materiality, since
+        # record_audit_pass_result_v1 only ever sees the already-validated
+        # result_json produced by workers.ai_quality_audit_schemas.
+        canonicalized_finding = dict(
+            _explanation_missing_reported_as_warning(), materiality="blocking"
+        )
+        client.set_table_response(
+            "audit_run_pass_results",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "A",
+                    "status": "completed",
+                    "result_json": _pass_a_result(),
+                },
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "B",
+                    "status": "completed",
+                    "result_json": _pass_b_result(findings=[canonicalized_finding]),
+                },
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "C",
+                    "status": "completed",
+                    "result_json": _pass_c_normal_resolved(),
+                },
+            ],
+        )
+        client.set_table_response(
+            "audit_run_dispute_triggers",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "reason_code": "BLOCKING_DEFECT_PROPOSED",
+                    "source_pass_code": "B",
+                    "trigger_reason": "Pass B proposed one or more blocking findings",
+                    "finding_refs": ["F1"],
+                }
+            ],
+        )
+        client.set_table_response("audit_findings", [{"id": "finding-1"}])
+        client.set_table_response("audit_finding_evidence", [])
+
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                # The *provider's own* response still self-reports 'warning'
+                # -- this is exactly what real schema validation (not
+                # bypassed here) must canonicalize to 'blocking' before
+                # process_ai_quality_audit_job ever inspects materiality.
+                _llm_response(
+                    _pass_b_result(findings=[_explanation_missing_reported_as_warning()])
+                ),
+            ]
+        )
+        dispute = _SequenceProvider([_llm_response(_pass_c_normal_resolved())])
+
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+        )
+
+        self.assertEqual(result["completion_shape"], "NORMAL_DISPUTE")
+        self.assertEqual(len(client.persist_trigger_calls), 1)
+        self.assertEqual(
+            client.persist_trigger_calls[0]["p_reason_code"],
+            "BLOCKING_DEFECT_PROPOSED",
+        )
+        self.assertEqual(client.persist_trigger_calls[0]["p_finding_refs"], ["F1"])
+        confirmed = client.complete_calls[0]["p_confirmed_findings"]
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["finding_code"], "EXPLANATION_MISSING")
+        self.assertEqual(confirmed[0]["materiality"], "blocking")
 
 
 class TestNormalNoDisputeFindingPersistence(unittest.TestCase):

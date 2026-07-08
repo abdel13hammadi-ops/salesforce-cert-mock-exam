@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import AbstractSet, Any, Dict, List, Mapping, Optional, Sequence, Set, Union
 
-from workers.finding_policy import ALLOWED_MATERIALITY, CANONICAL_FINDING_CODES
+from workers.finding_policy import ALLOWED_MATERIALITY, CANONICAL_FINDING_CODES, assign_materiality
 from workers.llm_audit import ALLOWED_FINDING_TYPES, ALLOWED_SEVERITIES
 
 _UUID_RE = re.compile(
@@ -499,12 +499,40 @@ def _validate_proposed_finding(
     if finding_code == "SOURCE_SUPPORT_WEAK" and not normalized_chunk_ids:
         _validate_source_support_context(metadata, prefix=prefix)
 
+    # V59-FINDING-01: the provider-emitted `materiality` above is only
+    # validated for shape (member of ALLOWED_MATERIALITY) and for the two
+    # code-specific "must not be blocking" guards; it is never trusted as
+    # the value that reaches persistence. `workers.finding_policy.
+    # assign_materiality` — this repository's sole materiality authority —
+    # is applied here, at parse time, before either the Pass B/C in-memory
+    # proposal or the eventual `audit_findings` row can exist. This is the
+    # narrowest boundary shared by every downstream consumer (primary Pass
+    # B proposals, Pass C substitution proposals, and — transitively, since
+    # confirmed findings are built from these same validated proposals —
+    # persistence and `_summarize_findings`), so a provider cannot smuggle
+    # a noncanonical materiality (e.g. `EXPLANATION_MISSING@warning`) past
+    # this point. Idempotent: re-validating an already-canonical finding
+    # recomputes the same value. The provider's original value is not
+    # silently discarded — it is preserved in `metadata.provider_materiality`
+    # whenever it disagrees with canonical policy, in addition to already
+    # being preserved verbatim in the pass result's `raw_response_text`.
+    canonical_materiality = assign_materiality({
+        "finding_code": finding_code,
+        "finding_type": finding_type,
+        "severity": severity,
+        "title": title,
+        "description": description,
+    })
+    if canonical_materiality != materiality:
+        metadata = dict(metadata)
+        metadata["provider_materiality"] = materiality
+
     return {
         "finding_ref": finding_ref,
         "finding_code": finding_code,
         "finding_type": finding_type,
         "severity": severity,
-        "materiality": materiality,
+        "materiality": canonical_materiality,
         "title": title,
         "description": description,
         "evidence_chunk_ids": normalized_chunk_ids,

@@ -16,6 +16,7 @@ from workers.ai_quality_audit_schemas import (
     validate_pass_b_result,
     validate_pass_c_result,
 )
+from workers.quality_benchmark_execution import _summarize_findings
 
 _OPTIONS = frozenset({"A", "B", "C", "D"})
 _CHUNK_1 = "11111111-1111-1111-1111-111111111111"
@@ -599,6 +600,228 @@ class TestPassCValidation(unittest.TestCase):
                 },
                 frozen_evidence_chunk_ids=_FROZEN,
             )
+
+
+class TestCanonicalMaterialityEnforcement(unittest.TestCase):
+    """V59-FINDING-01: ``assign_materiality()`` must be the sole materiality
+    authority reaching persistence, for both Pass B primary proposals and
+    Pass C substitution proposals, regardless of what the provider itself
+    reported.
+    """
+
+    def _proposed_finding(self, result: dict, finding_ref: str = "F1") -> dict:
+        for item in result["proposed_findings"]:
+            if item["finding_ref"] == finding_ref:
+                return item
+        raise AssertionError(f"finding_ref {finding_ref!r} not found in {result!r}")
+
+    def test_explanation_missing_warning_is_canonicalized_to_blocking_in_pass_b(self):
+        result = validate_pass_b_result(
+            {
+                "selected_option_labels": ["A"],
+                "proposed_findings": [
+                    _finding(
+                        finding_code="EXPLANATION_MISSING",
+                        finding_type="explanation_quality",
+                        severity="medium",
+                        materiality="warning",
+                    )
+                ],
+            },
+            allowed_option_labels=_OPTIONS,
+            required_selection_count=1,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        finding = self._proposed_finding(result)
+        self.assertEqual(finding["materiality"], "blocking")
+
+    def test_explanation_missing_warning_is_canonicalized_in_pass_c_substitution(self):
+        """Primary (Pass B) and dispute (Pass C) proposals share the exact
+        same canonicalization path (``_validate_proposed_finding``)."""
+        result = validate_pass_c_result(
+            {
+                "resolution_type": "PASS_B_SUBSTITUTION",
+                "resolution_status": "RESOLVED",
+                "substituted_for_passes": ["B"],
+                "confirmed_finding_refs": ["F1"],
+                "proposed_findings": [
+                    _finding(
+                        finding_code="EXPLANATION_MISSING",
+                        finding_type="explanation_quality",
+                        severity="medium",
+                        materiality="warning",
+                    )
+                ],
+            },
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        finding = self._proposed_finding(result)
+        self.assertEqual(finding["materiality"], "blocking")
+
+    def test_provider_materiality_preserved_in_metadata_when_overridden(self):
+        result = validate_pass_b_result(
+            {
+                "selected_option_labels": ["A"],
+                "proposed_findings": [
+                    _finding(
+                        finding_code="EXPLANATION_MISSING",
+                        finding_type="explanation_quality",
+                        severity="medium",
+                        materiality="warning",
+                        metadata={"note": "kept"},
+                    )
+                ],
+            },
+            allowed_option_labels=_OPTIONS,
+            required_selection_count=1,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        finding = self._proposed_finding(result)
+        self.assertEqual(finding["materiality"], "blocking")
+        self.assertEqual(finding["metadata"]["provider_materiality"], "warning")
+        # Pre-existing metadata is untouched, not discarded.
+        self.assertEqual(finding["metadata"]["note"], "kept")
+
+    def test_legitimate_warning_only_finding_remains_warning(self):
+        result = validate_pass_b_result(
+            {
+                "selected_option_labels": ["A"],
+                "proposed_findings": [
+                    _finding(
+                        finding_code="WEAK_DISTRACTORS",
+                        finding_type="answer_quality",
+                        severity="low",
+                        materiality="warning",
+                    )
+                ],
+            },
+            allowed_option_labels=_OPTIONS,
+            required_selection_count=1,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        finding = self._proposed_finding(result)
+        self.assertEqual(finding["materiality"], "warning")
+        # No mismatch occurred, so no provenance clutter is added.
+        self.assertNotIn("provider_materiality", finding["metadata"])
+
+    def test_provider_supplied_blocking_cannot_override_canonical_warning(self):
+        """A provider cannot escalate a canonically-warning code to blocking
+        either -- canonical policy is the sole authority in both directions.
+        """
+        result = validate_pass_b_result(
+            {
+                "selected_option_labels": ["A"],
+                "proposed_findings": [
+                    _finding(
+                        finding_code="WEAK_DISTRACTORS",
+                        finding_type="answer_quality",
+                        severity="high",
+                        materiality="blocking",
+                    )
+                ],
+            },
+            allowed_option_labels=_OPTIONS,
+            required_selection_count=1,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        finding = self._proposed_finding(result)
+        self.assertEqual(finding["materiality"], "warning")
+        self.assertEqual(finding["metadata"]["provider_materiality"], "blocking")
+
+    def test_canonicalization_is_idempotent(self):
+        once = validate_pass_b_result(
+            {
+                "selected_option_labels": ["A"],
+                "proposed_findings": [
+                    _finding(
+                        finding_code="EXPLANATION_MISSING",
+                        finding_type="explanation_quality",
+                        severity="medium",
+                        materiality="warning",
+                    )
+                ],
+            },
+            allowed_option_labels=_OPTIONS,
+            required_selection_count=1,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        canonicalized_finding = self._proposed_finding(once)
+
+        twice = validate_pass_b_result(
+            {
+                "selected_option_labels": ["A"],
+                "proposed_findings": [canonicalized_finding],
+            },
+            allowed_option_labels=_OPTIONS,
+            required_selection_count=1,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        finding = self._proposed_finding(twice)
+        self.assertEqual(finding["materiality"], "blocking")
+        # Re-running canonicalization on already-canonical input must not
+        # keep stacking provenance or otherwise change the result.
+        self.assertEqual(finding["metadata"], canonicalized_finding["metadata"])
+
+    def test_unsupported_finding_code_still_fails_closed_not_invented(self):
+        """Unknown/unsupported codes are rejected by the existing enum
+        policy rather than being handed an invented materiality."""
+        with self.assertRaisesRegex(
+            AiQualityAuditValidationError,
+            "not a supported finding code",
+        ):
+            validate_pass_b_result(
+                {
+                    "selected_option_labels": ["A"],
+                    "proposed_findings": [
+                        _finding(finding_code="NOT_A_REAL_CODE", materiality="warning")
+                    ],
+                },
+                allowed_option_labels=_OPTIONS,
+                required_selection_count=1,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_qbv1_010_regression_full_path_without_ai_call(self):
+        """Regression for the confirmed qbv1-010 defect: both providers
+        emitted ``EXPLANATION_MISSING@warning``; canonical policy requires
+        ``EXPLANATION_MISSING@blocking``. Chains the exact two boundaries
+        the defect crossed -- pass-result schema validation (persistence)
+        and ``_summarize_findings`` (approval/publication-gate) -- with no
+        AI call and no database involved.
+        """
+        provider_materiality = "warning"
+        result = validate_pass_b_result(
+            {
+                "selected_option_labels": ["A"],
+                "proposed_findings": [
+                    _finding(
+                        finding_ref="qbv1-010-f1",
+                        finding_code="EXPLANATION_MISSING",
+                        finding_type="explanation_quality",
+                        severity="medium",
+                        materiality=provider_materiality,
+                        title="Explanation missing",
+                        description="No explanation was provided for the correct answer.",
+                    )
+                ],
+            },
+            allowed_option_labels=_OPTIONS,
+            required_selection_count=1,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        persisted_finding = self._proposed_finding(result, finding_ref="qbv1-010-f1")
+        persisted_materiality = persisted_finding["materiality"]
+        self.assertEqual(persisted_materiality, "blocking")
+
+        codes, overall_materiality, approved = _summarize_findings([persisted_finding])
+        self.assertEqual(codes, ["EXPLANATION_MISSING"])
+        self.assertEqual(overall_materiality, "blocking")
+        publication_blocked = overall_materiality == "blocking"
+
+        self.assertEqual(provider_materiality, "warning")
+        self.assertEqual(persisted_materiality, "blocking")
+        self.assertFalse(approved)
+        self.assertTrue(publication_blocked)
 
 
 if __name__ == "__main__":
