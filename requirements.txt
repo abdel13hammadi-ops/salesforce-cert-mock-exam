@@ -8,4 +8,5 @@ supabase
 streamlit-js-eval
 sentry-sdk
 anthropic
+openai>=2.44.0,<3.0.0
 stripe==11.6.0

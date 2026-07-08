@@ -27,7 +27,7 @@ class TestBuildLlmProviderFromEnv(unittest.TestCase):
             self.assertIsNone(build_llm_provider_from_env())
 
     def test_unknown_provider_rejected_at_startup(self):
-        with patch.dict(os.environ, {ENV_LLM_PROVIDER: "openai"}, clear=False):
+        with patch.dict(os.environ, {ENV_LLM_PROVIDER: "azure-openai"}, clear=False):
             with self.assertRaises(UnknownLlmProviderError):
                 build_llm_provider_from_env()
 
@@ -55,6 +55,50 @@ class TestBuildLlmProviderFromEnv(unittest.TestCase):
             os.environ.pop("CERTBOUND_ANTHROPIC_API_KEY", None)
             with self.assertRaises(MissingProviderError):
                 build_llm_provider_from_env()
+
+    def test_openai_provider_wired_when_configured(self):
+        fake_provider = MagicMock()
+        with patch.dict(
+            os.environ,
+            {
+                ENV_LLM_PROVIDER: "openai",
+                "CERTBOUND_OPENAI_API_KEY": "secret-key",
+            },
+            clear=False,
+        ):
+            with patch(
+                "workers.openai_provider.build_openai_provider_from_env",
+                return_value=fake_provider,
+            ) as build_mock:
+                provider = build_llm_provider_from_env()
+
+        self.assertIs(provider, fake_provider)
+        build_mock.assert_called_once()
+
+    def test_openai_selected_without_api_key_raises(self):
+        with patch.dict(os.environ, {ENV_LLM_PROVIDER: "openai"}, clear=False):
+            os.environ.pop("CERTBOUND_OPENAI_API_KEY", None)
+            with self.assertRaises(MissingProviderError):
+                build_llm_provider_from_env()
+
+    def test_anthropic_wiring_unchanged_after_openai_support_added(self):
+        fake_provider = MagicMock()
+        with patch.dict(
+            os.environ,
+            {
+                ENV_LLM_PROVIDER: "anthropic",
+                "CERTBOUND_ANTHROPIC_API_KEY": "secret-key",
+            },
+            clear=False,
+        ):
+            with patch(
+                "workers.anthropic_provider.build_anthropic_provider_from_env",
+                return_value=fake_provider,
+            ) as build_mock:
+                provider = build_llm_provider_from_env()
+
+        self.assertIs(provider, fake_provider)
+        build_mock.assert_called_once()
 
 
 class TestBackgroundWorkerProviderWiring(unittest.TestCase):

@@ -12,6 +12,9 @@ CERTBOUND_LLM_PROVIDER
     When set to ``anthropic``, constructs ``AnthropicAuditProvider`` using
     existing ``CERTBOUND_ANTHROPIC_*`` variables.
 
+    When set to ``openai``, constructs ``OpenAIAuditProvider`` using
+    existing ``CERTBOUND_OPENAI_*`` variables.
+
 Unknown provider values raise ``UnknownLlmProviderError`` at startup.
 Secrets are never logged.
 """
@@ -28,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 ENV_LLM_PROVIDER = "CERTBOUND_LLM_PROVIDER"
 
-SUPPORTED_LLM_PROVIDERS = frozenset({"anthropic"})
+SUPPORTED_LLM_PROVIDERS = frozenset({"anthropic", "openai"})
 
 
 class UnknownLlmProviderError(ValueError):
@@ -64,6 +67,13 @@ def build_llm_provider_from_env():
         from workers.anthropic_provider import build_anthropic_provider_from_env  # noqa: PLC0415
 
         provider = build_anthropic_provider_from_env()
+        logger.info("LLM provider configured: %s", raw)
+        return provider
+
+    if raw == "openai":
+        from workers.openai_provider import build_openai_provider_from_env  # noqa: PLC0415
+
+        provider = build_openai_provider_from_env()
         logger.info("LLM provider configured: %s", raw)
         return provider
 

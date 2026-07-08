@@ -8,7 +8,7 @@ Environment
 -----------
 CERTBOUND_AI_QUALITY_PRIMARY_LLM_PROVIDER
     Optional. When unset, falls back to ``CERTBOUND_LLM_PROVIDER``.
-    Supported values: ``anthropic``.
+    Supported values: ``anthropic``, ``openai``.
 
 CERTBOUND_AI_QUALITY_DISPUTE_LLM_PROVIDER
     Optional. When unset, the primary provider callable is reused for Pass C.
@@ -115,6 +115,14 @@ def _build_provider_callable(provider_name: str):
         except MissingProviderError as exc:
             raise AiQualityProviderConfigError(str(exc)) from exc
 
+    if provider_name == "openai":
+        from workers.openai_provider import build_openai_provider_from_env  # noqa: PLC0415
+
+        try:
+            return build_openai_provider_from_env()
+        except MissingProviderError as exc:
+            raise AiQualityProviderConfigError(str(exc)) from exc
+
     raise AiQualityProviderConfigError(
         f"Unsupported AI quality LLM provider {provider_name!r}; "
         f"supported values: {sorted(SUPPORTED_LLM_PROVIDERS)}"
@@ -126,6 +134,11 @@ def _resolve_model_for_provider(provider_name: str) -> str:
         from workers.anthropic_provider import resolve_anthropic_model_from_env  # noqa: PLC0415
 
         return resolve_anthropic_model_from_env()
+
+    if provider_name == "openai":
+        from workers.openai_provider import resolve_openai_model_from_env  # noqa: PLC0415
+
+        return resolve_openai_model_from_env()
 
     raise AiQualityProviderConfigError(
         f"Unsupported AI quality LLM provider {provider_name!r}; "

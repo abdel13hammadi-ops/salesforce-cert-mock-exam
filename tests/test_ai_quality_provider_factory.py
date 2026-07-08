@@ -192,6 +192,135 @@ class TestBuildAiQualityProvidersFromEnv(unittest.TestCase):
                 with self.assertRaises(AiQualityProviderConfigError):
                     build_ai_quality_providers_from_env(required=True)
 
+    def test_openai_primary_from_llm_provider_fallback(self):
+        primary = MagicMock()
+        with patch.dict(
+            os.environ,
+            {
+                ENV_LLM_PROVIDER: "openai",
+                "CERTBOUND_OPENAI_API_KEY": "sk-openai-secret",
+            },
+            clear=False,
+        ):
+            with patch(
+                "workers.openai_provider.build_openai_provider_from_env",
+                return_value=primary,
+            ) as build_mock:
+                providers = build_ai_quality_providers_from_env(required=True)
+
+        self.assertIsInstance(providers, AiQualityAuditProviders)
+        self.assertIs(providers.primary, primary)
+        self.assertIs(providers.dispute, primary)
+        build_mock.assert_called_once()
+
+    def test_openai_primary_explicit_provider_name(self):
+        primary = MagicMock()
+        with patch.dict(
+            os.environ,
+            {
+                ENV_PRIMARY_PROVIDER: "openai",
+                "CERTBOUND_OPENAI_API_KEY": "sk-openai-secret",
+            },
+            clear=False,
+        ):
+            with patch(
+                "workers.openai_provider.build_openai_provider_from_env",
+                return_value=primary,
+            ):
+                providers = build_ai_quality_providers_from_env(required=True)
+
+        self.assertIs(providers.primary, primary)
+        self.assertIs(providers.dispute, primary)
+
+    def test_openai_primary_anthropic_dispute_mixed_configuration(self):
+        primary = MagicMock(name="openai-primary")
+        dispute = MagicMock(name="anthropic-dispute")
+        with patch.dict(
+            os.environ,
+            {
+                ENV_PRIMARY_PROVIDER: "openai",
+                ENV_DISPUTE_PROVIDER: "anthropic",
+                "CERTBOUND_OPENAI_API_KEY": "sk-openai-secret",
+                "CERTBOUND_ANTHROPIC_API_KEY": "sk-ant-secret",
+            },
+            clear=False,
+        ):
+            with patch(
+                "workers.openai_provider.build_openai_provider_from_env",
+                return_value=primary,
+            ) as openai_mock:
+                with patch(
+                    "workers.anthropic_provider.build_anthropic_provider_from_env",
+                    return_value=dispute,
+                ) as anthropic_mock:
+                    providers = build_ai_quality_providers_from_env(required=True)
+
+        self.assertIs(providers.primary, primary)
+        self.assertIs(providers.dispute, dispute)
+        openai_mock.assert_called_once()
+        anthropic_mock.assert_called_once()
+
+    def test_anthropic_primary_openai_dispute_mixed_configuration(self):
+        primary = MagicMock(name="anthropic-primary")
+        dispute = MagicMock(name="openai-dispute")
+        with patch.dict(
+            os.environ,
+            {
+                ENV_PRIMARY_PROVIDER: "anthropic",
+                ENV_DISPUTE_PROVIDER: "openai",
+                "CERTBOUND_ANTHROPIC_API_KEY": "sk-ant-secret",
+                "CERTBOUND_OPENAI_API_KEY": "sk-openai-secret",
+            },
+            clear=False,
+        ):
+            with patch(
+                "workers.anthropic_provider.build_anthropic_provider_from_env",
+                return_value=primary,
+            ) as anthropic_mock:
+                with patch(
+                    "workers.openai_provider.build_openai_provider_from_env",
+                    return_value=dispute,
+                ) as openai_mock:
+                    providers = build_ai_quality_providers_from_env(required=True)
+
+        self.assertIs(providers.primary, primary)
+        self.assertIs(providers.dispute, dispute)
+        anthropic_mock.assert_called_once()
+        openai_mock.assert_called_once()
+
+    def test_openai_primary_and_dispute_both_configured_builds_two_instances(self):
+        primary = MagicMock(name="openai-primary")
+        dispute = MagicMock(name="openai-dispute")
+        with patch.dict(
+            os.environ,
+            {
+                ENV_PRIMARY_PROVIDER: "openai",
+                ENV_DISPUTE_PROVIDER: "openai",
+                "CERTBOUND_OPENAI_API_KEY": "sk-openai-secret",
+            },
+            clear=False,
+        ):
+            with patch(
+                "workers.openai_provider.build_openai_provider_from_env",
+                side_effect=[primary, dispute],
+            ) as build_mock:
+                providers = build_ai_quality_providers_from_env(required=True)
+
+        self.assertIs(providers.primary, primary)
+        self.assertIs(providers.dispute, dispute)
+        self.assertEqual(build_mock.call_count, 2)
+
+    def test_openai_missing_api_key_surfaces_as_config_error(self):
+        with patch.dict(
+            os.environ,
+            {ENV_LLM_PROVIDER: "openai"},
+            clear=False,
+        ):
+            os.environ.pop("CERTBOUND_OPENAI_API_KEY", None)
+            with self.assertRaises(AiQualityProviderConfigError) as ctx:
+                build_ai_quality_providers_from_env(required=True)
+        self.assertNotIn("sk-openai", str(ctx.exception))
+
 
 class TestAiQualityModelProvenance(unittest.TestCase):
 
@@ -258,6 +387,63 @@ class TestAiQualityModelProvenance(unittest.TestCase):
 
             with self.assertRaises(AiQualityProviderConfigError):
                 resolve_ai_quality_model_provenance_from_env()
+
+    def test_resolves_configured_openai_model_without_api_key(self):
+        configured_model = "gpt-provenance-test"
+        with patch.dict(
+            os.environ,
+            {
+                ENV_LLM_PROVIDER: "openai",
+                "CERTBOUND_OPENAI_MODEL": configured_model,
+            },
+            clear=False,
+        ):
+            os.environ.pop("CERTBOUND_OPENAI_API_KEY", None)
+            from workers.ai_quality_provider_factory import (
+                resolve_ai_quality_model_provenance_from_env,
+            )
+
+            provenance = resolve_ai_quality_model_provenance_from_env()
+
+        self.assertEqual(provenance.primary_model_name, configured_model)
+        self.assertEqual(provenance.dispute_model_name, configured_model)
+        self.assertTrue(provenance.dispute_reuses_primary)
+
+    def test_uses_openai_default_when_model_env_absent(self):
+        with patch.dict(os.environ, {ENV_LLM_PROVIDER: "openai"}, clear=False):
+            os.environ.pop("CERTBOUND_OPENAI_MODEL", None)
+            from workers.ai_quality_provider_factory import (
+                resolve_ai_quality_model_provenance_from_env,
+            )
+            from workers.openai_provider import DEFAULT_MODEL
+
+            provenance = resolve_ai_quality_model_provenance_from_env()
+
+        self.assertEqual(provenance.primary_model_name, DEFAULT_MODEL)
+        self.assertEqual(provenance.dispute_model_name, DEFAULT_MODEL)
+
+    def test_mixed_provider_provenance_resolves_distinct_models(self):
+        with patch.dict(
+            os.environ,
+            {
+                ENV_PRIMARY_PROVIDER: "openai",
+                ENV_DISPUTE_PROVIDER: "anthropic",
+                "CERTBOUND_OPENAI_MODEL": "gpt-primary-model",
+                "CERTBOUND_ANTHROPIC_MODEL": "claude-dispute-model",
+            },
+            clear=False,
+        ):
+            from workers.ai_quality_provider_factory import (
+                resolve_ai_quality_model_provenance_from_env,
+            )
+
+            provenance = resolve_ai_quality_model_provenance_from_env()
+
+        self.assertEqual(provenance.primary_model_name, "gpt-primary-model")
+        self.assertEqual(provenance.dispute_model_name, "claude-dispute-model")
+        self.assertEqual(provenance.primary_provider, "openai")
+        self.assertEqual(provenance.dispute_provider, "anthropic")
+        self.assertFalse(provenance.dispute_reuses_primary)
 
 
 class TestBackgroundWorkerAiQualityWiring(unittest.TestCase):
