@@ -117,6 +117,88 @@ def _correctness_disagrees_with_stored_key(chunk_id: str) -> dict:
     }
 
 
+def _correctness_abstains_all_insufficient() -> dict:
+    """V60-PASSC-03 specialist response yielding a genuine unresolved
+    abstention (``derive_correctness_finding`` rule 5 / ``OTHER_REVIEW_
+    NEEDED``): every option, including the stored one, is
+    ``INSUFFICIENT_EVIDENCE``. Mirrors the real qbv1-020/qbv1-030 captured
+    telemetry pattern exactly (all four judged INSUFFICIENT_EVIDENCE,
+    ``evidence_sufficient_for_decision=False``).
+    """
+    return {
+        "option_judgments": [
+            {
+                "option_label": "A",
+                "verdict": "INSUFFICIENT_EVIDENCE",
+                "citation_chunk_ids": [],
+                "evidence_rationale": "Fixture evidence does not establish option A either way.",
+            },
+            {
+                "option_label": "B",
+                "verdict": "INSUFFICIENT_EVIDENCE",
+                "citation_chunk_ids": [],
+                "evidence_rationale": "Fixture evidence does not establish option B either way.",
+            },
+        ],
+        "evidence_sufficient_for_decision": False,
+        "abstention_reason": "Neither option could be confirmed or ruled out from the frozen evidence.",
+    }
+
+
+def _correctness_supports_alternative_only(chunk_id: str) -> dict:
+    """V60-PASSC-03 specialist response yielding ``UNSUPPORTED_ANSWER``
+    (``derive_correctness_finding`` rule 3b): the stored option (A) is
+    itself unresolved (``INSUFFICIENT_EVIDENCE``, never contradicted) while
+    an exact-size alternative (B) is independently and decisively
+    supported.
+    """
+    return {
+        "option_judgments": [
+            {
+                "option_label": "A",
+                "verdict": "INSUFFICIENT_EVIDENCE",
+                "citation_chunk_ids": [],
+                "evidence_rationale": "Fixture evidence does not address option A directly.",
+            },
+            {
+                "option_label": "B",
+                "verdict": "SUPPORTED_AS_CORRECT",
+                "citation_chunk_ids": [chunk_id],
+                "evidence_rationale": "Fixture evidence independently supports option B.",
+            },
+        ],
+        "evidence_sufficient_for_decision": False,
+        "abstention_reason": "Option A could not be independently confirmed or contradicted.",
+    }
+
+
+def _correctness_supports_both_options(chunk1: str, chunk2: str) -> dict:
+    """V60-PASSC-03 specialist response yielding ``MULTIPLE_DEFENSIBLE_
+    ANSWERS`` (``derive_correctness_finding`` rule 2b): both options are
+    independently and decisively supported, with no remaining unresolved
+    (``INSUFFICIENT_EVIDENCE``) option -- distinguishing this from the
+    trap/meta-option abstention pattern in rule 2a.
+    """
+    return {
+        "option_judgments": [
+            {
+                "option_label": "A",
+                "verdict": "SUPPORTED_AS_CORRECT",
+                "citation_chunk_ids": [chunk1],
+                "evidence_rationale": "Fixture evidence independently supports option A.",
+            },
+            {
+                "option_label": "B",
+                "verdict": "SUPPORTED_AS_CORRECT",
+                "citation_chunk_ids": [chunk2],
+                "evidence_rationale": "Fixture evidence independently supports option B.",
+            },
+        ],
+        "evidence_sufficient_for_decision": True,
+        "abstention_reason": None,
+    }
+
+
 class TestAiQualityAuditDockerIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1182,6 +1264,495 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
         self.assertEqual(rows[0]["finding_code"], "WEAK_DISTRACTORS")
         self.assertEqual(rows[0]["materiality"], "warning")
         self.assertEqual(rows[0]["finding_status"], "open")
+
+    # -----------------------------------------------------------------
+    # V60-PASSC-03: confirmed correctness-specialist abstention must never
+    # produce an ordinary completed disposition.
+    # -----------------------------------------------------------------
+
+    def _abstention_dispute_providers(self, *, resolution_status: str):
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            if _is_correctness_sub_call(kwargs):
+                return LlmResponse(
+                    parsed_response=_correctness_abstains_all_insufficient(),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={"selected_option_labels": ["A"], "proposed_findings": []},
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": resolution_status,
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": ["FC1"] if resolution_status == "RESOLVED" else [],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        return AiQualityAuditProviders(primary=primary, dispute=dispute)
+
+    def test_resolved_confirmed_correctness_abstention_reroutes_to_inconclusive(self):
+        audit_run_id = self._create_run()
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            self._abstention_dispute_providers(resolution_status="RESOLVED"),
+            worker_id="v48-integration-worker",
+        )
+
+        # Acceptance criterion: a confirmed correctness abstention can never
+        # produce run_status=completed, even though Pass C returned RESOLVED
+        # and confirmed the finding_ref.
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT run_status, completed_at FROM public.audit_runs WHERE id = %s",
+                (audit_run_id,),
+            )
+            run_row = cur.fetchone()
+            cur.execute(
+                """
+                SELECT finding_code, finding_type, severity, materiality,
+                       finding_status, metadata
+                FROM public.audit_findings
+                WHERE audit_run_id = %s
+                """,
+                (audit_run_id,),
+            )
+            finding_rows = cur.fetchall()
+
+        self.assertEqual(run_row["run_status"], "inconclusive")
+        self.assertIsNotNone(run_row["completed_at"])
+
+        self.assertEqual(len(finding_rows), 1)
+        finding = finding_rows[0]
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+        self.assertEqual(finding["finding_type"], "correctness")
+        self.assertEqual(finding["materiality"], "blocking")
+        self.assertEqual(finding["finding_status"], "open")
+        self.assertNotIn(finding["finding_status"], ("accepted", "resolved", "overridden"))
+
+        metadata = finding["metadata"]
+        self.assertIs(metadata["correctness_detector_abstained"], True)
+        self.assertIs(metadata["pass_c_reference_confirmed"], True)
+        self.assertIs(metadata["pass_c_semantic_resolution"], False)
+        self.assertIs(metadata["pass_c_confirmed"], False)
+        self.assertIs(metadata["requires_human_review"], True)
+        self.assertEqual(metadata["source_pass_code"], "B")
+        self.assertEqual(
+            metadata["dispute_resolution_status"],
+            "RESOLVED_REFERENCE_BUT_SEMANTICALLY_UNRESOLVED",
+        )
+        self.assertEqual(metadata["finding_ref"], "FC1")
+
+    def test_unresolved_correctness_abstention_remains_inconclusive_unchanged(self):
+        audit_run_id = self._create_run()
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            self._abstention_dispute_providers(resolution_status="UNRESOLVED"),
+            worker_id="v48-integration-worker",
+        )
+
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT finding_code, materiality, finding_status, metadata
+                FROM public.audit_findings
+                WHERE audit_run_id = %s
+                """,
+                (audit_run_id,),
+            )
+            finding_rows = cur.fetchall()
+
+        self.assertEqual(len(finding_rows), 1)
+        finding = finding_rows[0]
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+        self.assertEqual(finding["materiality"], "blocking")
+        self.assertEqual(finding["finding_status"], "open")
+
+        # Pre-existing UNRESOLVED-branch metadata semantics are untouched by
+        # this migration: Pass C never confirmed anything here, so there is
+        # no pass_c_reference_confirmed / pass_c_semantic_resolution key at
+        # all, only the original dispute_resolution_status='UNRESOLVED'.
+        metadata = finding["metadata"]
+        self.assertEqual(metadata["dispute_resolution_status"], "UNRESOLVED")
+        self.assertIs(metadata["pass_c_confirmed"], False)
+        self.assertIs(metadata["requires_human_review"], True)
+        self.assertNotIn("pass_c_reference_confirmed", metadata)
+        self.assertNotIn("pass_c_semantic_resolution", metadata)
+
+    def test_resolved_confirmed_unsupported_answer_still_completes(self):
+        audit_run_id = self._create_run()
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            if _is_correctness_sub_call(kwargs):
+                return LlmResponse(
+                    parsed_response=_correctness_supports_alternative_only(
+                        self.fixture["chunk2"]
+                    ),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={"selected_option_labels": ["A"], "proposed_findings": []},
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "RESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": ["FC1"],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+            worker_id="v48-integration-worker",
+        )
+
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertEqual(summary["finding_count"], 1)
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT finding_code, materiality, finding_status FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["finding_code"], "UNSUPPORTED_ANSWER")
+        self.assertEqual(rows[0]["materiality"], "blocking")
+        self.assertEqual(rows[0]["finding_status"], "open")
+
+    def test_resolved_confirmed_multiple_defensible_answers_still_completes(self):
+        audit_run_id = self._create_run()
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            if _is_correctness_sub_call(kwargs):
+                return LlmResponse(
+                    parsed_response=_correctness_supports_both_options(
+                        self.fixture["chunk1"], self.fixture["chunk2"]
+                    ),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={"selected_option_labels": ["A"], "proposed_findings": []},
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "RESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": ["FC1"],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+            worker_id="v48-integration-worker",
+        )
+
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertEqual(summary["finding_count"], 1)
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT finding_code, materiality, finding_status FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+        self.assertEqual(rows[0]["materiality"], "blocking")
+        self.assertEqual(rows[0]["finding_status"], "open")
+
+    def test_warning_other_review_needed_does_not_force_inconclusive(self):
+        audit_run_id = self._create_run()
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            if _is_correctness_sub_call(kwargs):
+                # Specialist independently confirms the stored key, so no
+                # correctness finding is derived at all -- the only
+                # OTHER_REVIEW_NEEDED in this run is the general judge's
+                # warning-materiality fallback below, never the
+                # correctness-specialist abstention shape.
+                return LlmResponse(
+                    parsed_response=_correctness_agrees_with_stored_key(
+                        self.fixture["chunk1"]
+                    ),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={
+                    "selected_option_labels": ["A"],
+                    "proposed_findings": [
+                        {
+                            "finding_ref": "F1",
+                            "finding_code": "OTHER_REVIEW_NEEDED",
+                            "finding_type": "other",
+                            "severity": "low",
+                            "materiality": "informational",
+                            "title": "General fallback quality note",
+                            "description": "A minor, non-correctness quality observation.",
+                            "evidence_chunk_ids": [],
+                            "metadata": {},
+                        }
+                    ],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            AiQualityAuditProviders(primary=primary, dispute=primary),
+            worker_id="v48-integration-worker",
+        )
+
+        # No blocking finding was ever proposed, so this never disputes.
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertNotIn("C", summary["passes_executed"])
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT finding_code, materiality, finding_status FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["finding_code"], "OTHER_REVIEW_NEEDED")
+        # assign_materiality is the sole materiality authority: finding_type
+        # 'other' with no style/enrichment tokens canonicalizes to
+        # 'warning' regardless of what the provider proposed.
+        self.assertEqual(rows[0]["materiality"], "warning")
+        self.assertEqual(rows[0]["finding_status"], "open")
+
+    def test_mixed_confirmation_of_abstention_and_other_finding_raises_atomically(self):
+        audit_run_id = self._create_run()
+
+        mixed_confirmed_findings = [
+            {
+                "finding_ref": "FC1",
+                "finding_code": "OTHER_REVIEW_NEEDED",
+                "finding_type": "correctness",
+                "severity": "high",
+                "materiality": "blocking",
+                "title": "Answer correctness could not be confirmed from evidence",
+                "description": "Injected correctness-specialist abstention for mixed-confirmation test.",
+                "metadata": {"correctness_detector_abstained": True},
+                "evidence": [],
+            },
+            {
+                "finding_ref": "FC2",
+                "finding_code": "WRONG_ANSWER_KEY",
+                "finding_type": "correctness",
+                "severity": "high",
+                "materiality": "blocking",
+                "title": "Injected specific finding",
+                "description": "Must never be persisted alongside a confirmed abstention.",
+                "metadata": {},
+                "evidence": [],
+            },
+        ]
+
+        with self.conn.cursor() as cur:
+            cur.execute("SAVEPOINT mixed_confirmation_attempt")
+
+        raised = False
+        error_text = ""
+        try:
+            with patch(
+                "workers.ai_quality_audit_worker.build_confirmed_findings_for_completion",
+                return_value=mixed_confirmed_findings,
+            ):
+                process_ai_quality_audit_job(
+                    self.client,
+                    {
+                        "audit_run_id": audit_run_id,
+                        "question_version_id": self.fixture["question_version_id"],
+                    },
+                    self._abstention_dispute_providers(resolution_status="RESOLVED"),
+                    worker_id="v48-integration-worker",
+                )
+        except Exception as exc:  # noqa: BLE001 - asserting on the raised DB error text
+            raised = True
+            error_text = str(exc)
+        finally:
+            with self.conn.cursor() as cur:
+                cur.execute("ROLLBACK TO SAVEPOINT mixed_confirmation_attempt")
+
+        self.assertTrue(raised, "expected mixed confirmation to raise before any write")
+        self.assertIn("mixes", error_text.lower())
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            finding_count = cur.fetchone()[0]
+            cur.execute(
+                "SELECT run_status FROM public.audit_runs WHERE id = %s",
+                (audit_run_id,),
+            )
+            run_status = cur.fetchone()[0]
+
+        self.assertEqual(finding_count, 0)
+        self.assertIn(run_status, ("pending", "running"))
+
+    def test_repeated_completion_after_resolved_abstention_does_not_duplicate_findings(self):
+        audit_run_id = self._create_run()
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            self._abstention_dispute_providers(resolution_status="RESOLVED"),
+            worker_id="v48-integration-worker",
+        )
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            count_before = cur.fetchone()[0]
+        self.assertEqual(count_before, 1)
+
+        with self.conn.cursor() as cur:
+            cur.execute("SAVEPOINT repeat_completion_after_abstention")
+
+        raised = False
+        try:
+            self.client.rpc(
+                "complete_ai_quality_audit_run_v1",
+                {
+                    "p_audit_run_id": audit_run_id,
+                    "p_confirmed_findings": [],
+                    "p_metadata": {},
+                },
+            ).execute()
+        except psycopg2.Error as exc:
+            raised = True
+            self.assertIn("inconclusive", str(exc).lower())
+        finally:
+            with self.conn.cursor() as cur:
+                cur.execute("ROLLBACK TO SAVEPOINT repeat_completion_after_abstention")
+
+        self.assertTrue(raised, "expected re-completing an inconclusive run to raise")
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            count_after = cur.fetchone()[0]
+        self.assertEqual(count_after, 1)
+
+    def test_resolved_confirmed_abstention_blocks_publication(self):
+        audit_run_id = self._create_run()
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            self._abstention_dispute_providers(resolution_status="RESOLVED"),
+            worker_id="v48-integration-worker",
+        )
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT public.is_question_version_publishable_v1(%s)",
+                (self.fixture["question_version_id"],),
+            )
+            publishable = cur.fetchone()[0]
+            cur.execute(
+                "SELECT public.count_blocking_findings_for_question_version_v1(%s)",
+                (self.fixture["question_version_id"],),
+            )
+            blocking_count = cur.fetchone()[0]
+
+        self.assertFalse(publishable)
+        self.assertEqual(blocking_count, 1)
 
 
 if __name__ == "__main__":
