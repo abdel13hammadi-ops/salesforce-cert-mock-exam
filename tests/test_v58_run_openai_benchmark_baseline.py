@@ -1206,5 +1206,406 @@ class TestDryRun(EnvIsolatedTestCase):
         self.assertEqual(exit_code, 2)
 
 
+# ---------------------------------------------------------------------------
+# V58-DAY8-OPENAI-12: model wiring and systemic fail-fast
+# ---------------------------------------------------------------------------
+
+
+class _FakeProvenance:
+    def __init__(self, *, primary_model_name="gpt-5.5", dispute_model_name="gpt-5.5"):
+        self.primary_provider = "openai"
+        self.dispute_provider = "openai"
+        self.primary_model_name = primary_model_name
+        self.dispute_model_name = dispute_model_name
+
+
+class TestBaselineModelWiring(EnvIsolatedTestCase):
+    def test_default_configuration_sends_gpt_5_5_to_generate_v48_prediction(self):
+        from workers.ai_quality_audit_worker import AiQualityAuditProviders
+        from workers.quality_benchmark_execution import CasePrediction
+
+        provenance = baseline.resolve_and_validate_provider_selection()
+        self.assertEqual(provenance.primary_model_name, "gpt-5.5")
+        self.assertEqual(provenance.dispute_model_name, "gpt-5.5")
+
+        adapter = baseline.build_v48_adapter(
+            dsn=baseline.DEFAULT_DISPOSABLE_DSN,
+            providers=AiQualityAuditProviders(primary=lambda **k: None, dispute=lambda **k: None, timeout_seconds=120),
+            provenance=provenance,
+            evidence_config_id="official_evidence_seed_v1",
+        )
+        case = {"case_id": "qbv1-001"}
+
+        with patch("workers.quality_benchmark_v48_orchestration.generate_v48_prediction") as mock_gen:
+            mock_gen.return_value = CasePrediction(case_id="qbv1-001")
+            adapter.generate_prediction(case)
+            kwargs = mock_gen.call_args.kwargs
+            self.assertEqual(kwargs["primary_model_name"], "gpt-5.5")
+            self.assertEqual(kwargs["dispute_model_name"], "gpt-5.5")
+
+    def test_openai_model_env_override_is_honored_for_both_roles(self):
+        from workers.ai_quality_audit_worker import AiQualityAuditProviders
+        from workers.quality_benchmark_execution import CasePrediction
+
+        os.environ["CERTBOUND_OPENAI_MODEL"] = "gpt-5.5-custom"
+        provenance = baseline.resolve_and_validate_provider_selection()
+        self.assertEqual(provenance.primary_model_name, "gpt-5.5-custom")
+        self.assertEqual(provenance.dispute_model_name, "gpt-5.5-custom")
+
+        adapter = baseline.build_v48_adapter(
+            dsn=baseline.DEFAULT_DISPOSABLE_DSN,
+            providers=AiQualityAuditProviders(primary=lambda **k: None, dispute=lambda **k: None, timeout_seconds=120),
+            provenance=provenance,
+            evidence_config_id="official_evidence_seed_v1",
+        )
+        with patch("workers.quality_benchmark_v48_orchestration.generate_v48_prediction") as mock_gen:
+            mock_gen.return_value = CasePrediction(case_id="qbv1-001")
+            adapter.generate_prediction({"case_id": "qbv1-001"})
+            kwargs = mock_gen.call_args.kwargs
+            self.assertEqual(kwargs["primary_model_name"], "gpt-5.5-custom")
+            self.assertEqual(kwargs["dispute_model_name"], "gpt-5.5-custom")
+
+    def test_provider_invocation_receives_configured_model_not_placeholder(self):
+        from workers.ai_quality_audit_worker import AiQualityAuditProviders
+        from workers.quality_benchmark_v48_orchestration import run_v48_benchmark_case
+        from workers.openai_provider import LlmResponse
+
+        recorded = {"primary": [], "dispute": []}
+
+        def primary(**kwargs):
+            recorded["primary"].append(kwargs["model_name"])
+            return LlmResponse(
+                parsed_response={"selected_option_labels": ["A"]},
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        def dispute(**kwargs):
+            recorded["dispute"].append(kwargs["model_name"])
+            return LlmResponse(
+                parsed_response={"selected_option_labels": ["A"], "proposed_findings": []},
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        providers = AiQualityAuditProviders(primary=primary, dispute=dispute, timeout_seconds=120)
+        case = {"case_id": "qbv1-001", "certification": "ADM", "domain": "General", "question": {"question_text": "Q?", "options": [{"label": "A", "text": "a"}]}, "resource_snapshot": {"chunks": [{"resource_chunk_id": "c1", "content": "x", "content_hash": "h"}]}}
+
+        stored_models = {}
+
+        def fake_create(client, seeded, evidence_payload, **kwargs):
+            stored_models["primary"] = kwargs["primary_model_name"]
+            stored_models["dispute"] = kwargs["dispute_model_name"]
+            return "audit-run-1"
+
+        def fake_process(client, payload, providers_arg, worker_id):
+            providers_arg.primary(
+                model_name=stored_models["primary"],
+                system_prompt="sys",
+                user_prompt="usr",
+                response_schema={},
+                metadata={"pass_code": "A"},
+            )
+            providers_arg.dispute(
+                model_name=stored_models["dispute"],
+                system_prompt="sys",
+                user_prompt="usr",
+                response_schema={},
+                metadata={"pass_code": "B"},
+            )
+            return {"run_status": "inconclusive", "finding_count": 0, "passes_executed": ["A", "B"]}
+
+        class _Seeded:
+            question_version_id = "qv-1"
+            evidence_chunk_count = 1
+
+        with patch("workers.quality_benchmark_v48_orchestration.v48_disposable_transaction") as mock_tx, patch(
+            "workers.quality_benchmark_v48_orchestration.seed_benchmark_case",
+            return_value=(_Seeded(), []),
+        ), patch(
+            "workers.quality_benchmark_v48_orchestration.create_v48_audit_run",
+            side_effect=fake_create,
+        ), patch(
+            "workers.quality_benchmark_v48_orchestration.process_ai_quality_audit_job",
+            side_effect=fake_process,
+        ):
+            mock_tx.return_value.__enter__.return_value = (object(), object())
+            mock_tx.return_value.__exit__.return_value = False
+            run_v48_benchmark_case(
+                case,
+                dsn=baseline.DEFAULT_DISPOSABLE_DSN,
+                allow_disposable_v48_db=True,
+                providers=providers,
+                primary_model_name="gpt-5.5",
+                dispute_model_name="gpt-5.5",
+            )
+
+        self.assertEqual(recorded["primary"], ["gpt-5.5"])
+        self.assertEqual(recorded["dispute"], ["gpt-5.5"])
+        for model_name in recorded["primary"] + recorded["dispute"]:
+            self.assertNotIn(model_name, ("benchmark-primary", "benchmark-dispute"))
+
+    def test_artifact_provenance_records_requested_and_configured_models(self):
+        adapter = _FakeAdapter()
+        artifact = baseline.build_final_artifact(
+            adapter=adapter,
+            source_fixture_path=baseline.FIXTURE_PATH,
+            source_fixture_sha256=baseline.APPROVED_FIXTURE_SHA256,
+            case_count=1,
+            predictions=[],
+            run_id="run-1",
+            started_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            completed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            requested_model="gpt-5.5",
+            reasoning_effort="medium",
+            provider_timing_config={},
+            database_info={"host": "127.0.0.1", "dbname": "certbound_v48_test", "cleanup": {}},
+            run_status="completed",
+            configured_primary_model="gpt-5.5",
+            configured_dispute_model="gpt-5.5",
+        )
+        self.assertEqual(artifact["requested_model"], "gpt-5.5")
+        self.assertEqual(artifact["resolved_model"], "gpt-5.5")
+        self.assertEqual(artifact["configured_primary_model"], "gpt-5.5")
+        self.assertEqual(artifact["configured_dispute_model"], "gpt-5.5")
+        self.assertEqual(artifact["engine_id"], "v48")
+
+
+def _model_not_found_provider_call():
+    return [
+        {
+            "status": "error",
+            "pass_code": "A",
+            "error": (
+                "LlmProviderError: OpenAI request failed: status=400, type=invalid_request_error, "
+                "code=model_not_found, param=model, request_id=req_test, "
+                "message=The requested model 'benchmark-primary' does not exist."
+            ),
+        }
+    ]
+
+
+class TestSystemicFailFast(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        self._run_dir = Path(tempfile.mkdtemp(prefix="v58-openai-baseline-systemic-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._run_dir, ignore_errors=True))
+
+    def _fingerprint(self):
+        return baseline.compute_config_fingerprint(
+            fixture_sha256="fixturehash",
+            adapter_config=_FakeAdapter().describe_config(),
+            reasoning_effort="medium",
+            openai_timeout_seconds=120.0,
+            openai_max_retries=3,
+            openai_max_output_tokens=4096,
+        )
+
+    def test_classify_model_not_found_as_systemic(self):
+        prediction = {
+            "case_id": "fake-001",
+            "raw_output": {"provider_calls": _model_not_found_provider_call()},
+        }
+        reason = baseline.classify_systemic_provider_failure(prediction)
+        self.assertIn("model not found", reason.lower())
+
+    def test_model_not_found_stops_after_first_case(self):
+        fixture = _fixture_with_cases(3)
+        adapter = _FakeAdapter()
+        recorder = baseline.PassCallRecorder()
+
+        with patch.object(recorder, "pop_case_calls", return_value=_model_not_found_provider_call()):
+            with self.assertRaises(baseline.BaselineRunnerSystemicFailure):
+                baseline.run_case_loop(
+                    fixture,
+                    adapter,
+                    recorder=recorder,
+                    run_dir=self._run_dir,
+                    config_fingerprint=self._fingerprint(),
+                    existing_predictions=[],
+                    completed_case_ids=set(),
+                    print_progress=False,
+                )
+        self.assertEqual(adapter.calls, ["fake-001"])
+        checkpoint = json.loads((self._run_dir / "checkpoint.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(checkpoint["predictions"]), 1)
+
+    def test_authentication_failure_stops_after_first_case(self):
+        fixture = _fixture_with_cases(2)
+        adapter = _FakeAdapter()
+        recorder = baseline.PassCallRecorder()
+        auth_calls = [
+            {
+                "status": "error",
+                "pass_code": "A",
+                "error": "LlmProviderError: OpenAI authentication failed; check CERTBOUND_OPENAI_API_KEY (status=401)",
+            }
+        ]
+        with patch.object(recorder, "pop_case_calls", return_value=auth_calls):
+            with self.assertRaises(baseline.BaselineRunnerSystemicFailure) as ctx:
+                baseline.run_case_loop(
+                    fixture,
+                    adapter,
+                    recorder=recorder,
+                    run_dir=self._run_dir,
+                    config_fingerprint=self._fingerprint(),
+                    existing_predictions=[],
+                    completed_case_ids=set(),
+                    print_progress=False,
+                )
+        self.assertEqual(adapter.calls, ["fake-001"])
+        self.assertIn("authentication failed", str(ctx.exception).lower())
+
+    def test_permission_failure_stops_after_first_case(self):
+        fixture = _fixture_with_cases(2)
+        adapter = _FakeAdapter()
+        recorder = baseline.PassCallRecorder()
+        permission_calls = [
+            {
+                "status": "error",
+                "pass_code": "A",
+                "error": "LlmProviderError: OpenAI request failed: code=insufficient_quota, message=permission denied",
+            }
+        ]
+        with patch.object(recorder, "pop_case_calls", return_value=permission_calls):
+            with self.assertRaises(baseline.BaselineRunnerSystemicFailure):
+                baseline.run_case_loop(
+                    fixture,
+                    adapter,
+                    recorder=recorder,
+                    run_dir=self._run_dir,
+                    config_fingerprint=self._fingerprint(),
+                    existing_predictions=[],
+                    completed_case_ids=set(),
+                    print_progress=False,
+                )
+        self.assertEqual(adapter.calls, ["fake-001"])
+
+    def test_inconclusive_per_case_error_does_not_trigger_fail_fast(self):
+        fixture = _fixture_with_cases(2)
+        adapter = _FakeAdapter(fail_on_case_id="fake-001")
+        recorder = baseline.PassCallRecorder()
+        predictions = baseline.run_case_loop(
+            fixture,
+            adapter,
+            recorder=recorder,
+            run_dir=self._run_dir,
+            config_fingerprint=self._fingerprint(),
+            existing_predictions=[],
+            completed_case_ids=set(),
+            print_progress=False,
+        )
+        self.assertEqual(len(predictions), 2)
+        self.assertEqual(adapter.calls, ["fake-001", "fake-002"])
+
+    def test_systemic_failure_message_is_sanitized(self):
+        fake_key = "sk-super-secret-test-key-should-never-appear"
+        prediction = {
+            "case_id": "fake-001",
+            "raw_output": {
+                "provider_calls": [
+                    {
+                        "status": "error",
+                        "error": f"LlmProviderError: authentication failed; key={fake_key}",
+                    }
+                ]
+            },
+        }
+        reason = baseline.classify_systemic_provider_failure(prediction)
+        self.assertIn("authentication failed", reason.lower())
+        self.assertNotIn(fake_key, reason)
+
+
+class TestPartialArtifactFromCheckpoint(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        self._run_dir = Path(tempfile.mkdtemp(prefix="v58-openai-baseline-partial-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._run_dir, ignore_errors=True))
+
+    def _fingerprint(self):
+        return baseline.compute_config_fingerprint(
+            fixture_sha256="fixturehash",
+            adapter_config=_FakeAdapter().describe_config(),
+            reasoning_effort="medium",
+            openai_timeout_seconds=120.0,
+            openai_max_retries=3,
+            openai_max_output_tokens=4096,
+        )
+
+    def test_interruption_partial_result_uses_checkpoint_predictions(self):
+        fixture = _fixture_with_cases(3)
+        adapter = _FakeAdapter(interrupt_on_case_id="fake-003")
+        recorder = baseline.PassCallRecorder()
+        with self.assertRaises(KeyboardInterrupt):
+            baseline.run_case_loop(
+                fixture,
+                adapter,
+                recorder=recorder,
+                run_dir=self._run_dir,
+                config_fingerprint=self._fingerprint(),
+                existing_predictions=[],
+                completed_case_ids=set(),
+                print_progress=False,
+            )
+        checkpoint_predictions = baseline.load_checkpoint_predictions(self._run_dir)
+        self.assertEqual(len(checkpoint_predictions), 2)
+        artifact = baseline.build_final_artifact(
+            adapter=adapter,
+            source_fixture_path=baseline.FIXTURE_PATH,
+            source_fixture_sha256=baseline.APPROVED_FIXTURE_SHA256,
+            case_count=3,
+            predictions=checkpoint_predictions,
+            run_id="run-1",
+            started_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            completed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            requested_model="gpt-5.5",
+            reasoning_effort="medium",
+            provider_timing_config={},
+            database_info={"host": "127.0.0.1", "dbname": "certbound_v48_test", "cleanup": {}},
+            run_status="interrupted",
+            blocked_reason="run was interrupted before completion",
+        )
+        self.assertEqual(len(artifact["predictions"]), 2)
+
+    def test_systemic_failure_partial_result_matches_checkpoint(self):
+        fixture = _fixture_with_cases(2)
+        adapter = _FakeAdapter()
+        recorder = baseline.PassCallRecorder()
+        with patch.object(recorder, "pop_case_calls", return_value=_model_not_found_provider_call()):
+            with self.assertRaises(baseline.BaselineRunnerSystemicFailure):
+                baseline.run_case_loop(
+                    fixture,
+                    adapter,
+                    recorder=recorder,
+                    run_dir=self._run_dir,
+                    config_fingerprint=self._fingerprint(),
+                    existing_predictions=[],
+                    completed_case_ids=set(),
+                    print_progress=False,
+                )
+        checkpoint_predictions = baseline.load_checkpoint_predictions(self._run_dir)
+        self.assertEqual(len(checkpoint_predictions), 1)
+        artifact = baseline.build_final_artifact(
+            adapter=adapter,
+            source_fixture_path=baseline.FIXTURE_PATH,
+            source_fixture_sha256=baseline.APPROVED_FIXTURE_SHA256,
+            case_count=2,
+            predictions=checkpoint_predictions,
+            run_id="run-1",
+            started_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            completed_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            requested_model="gpt-5.5",
+            reasoning_effort="medium",
+            provider_timing_config={},
+            database_info={"host": "127.0.0.1", "dbname": "certbound_v48_test", "cleanup": {}},
+            run_status="blocked",
+            blocked_reason="OpenAI model not found (code=model_not_found); verify configured model",
+        )
+        self.assertEqual(len(artifact["predictions"]), 1)
+        self.assertEqual(artifact["predictions"][0]["case_id"], "fake-001")
+
+
 if __name__ == "__main__":
     unittest.main()

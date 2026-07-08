@@ -124,7 +124,7 @@ import uuid
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -186,6 +186,16 @@ class BaselineRunnerRefusal(Exception):
     def __init__(self, message: str, exit_code: int = 2) -> None:
         super().__init__(message)
         self.exit_code = exit_code
+
+
+class BaselineRunnerSystemicFailure(Exception):
+    """Raised when a case's provider-call diagnostics indicate a global,
+    deterministic configuration failure that cannot be fixed by advancing to
+    the next benchmark case. Message must already be sanitized (no secrets).
+    The affected case is checkpointed before this is raised."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
 
 
 def _running_under_pytest() -> bool:
@@ -472,6 +482,49 @@ def build_instrumented_providers(base_providers: Any, recorder: PassCallRecorder
 # ---------------------------------------------------------------------------
 
 
+class BaselineV48EngineAdapter:
+    """Runner-local V48 adapter that wires real OpenAI API model names into
+    the worker/RPC path.
+
+    ``V48EngineAdapter.generate_prediction`` delegates to
+    ``generate_v48_prediction`` without forwarding model names, so the
+    orchestration defaults (``benchmark-primary`` / ``benchmark-dispute``)
+    would otherwise reach ``OpenAIAuditProvider.__call__`` as the nonblank
+    ``model_name`` argument. This wrapper keeps benchmark provenance in
+    ``describe_config()`` while explicitly passing the resolved OpenAI
+    primary/dispute model names into ``generate_v48_prediction``.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_adapter: Any,
+        primary_model_name: str,
+        dispute_model_name: str,
+    ) -> None:
+        self._base = base_adapter
+        self._primary_model_name = primary_model_name
+        self._dispute_model_name = dispute_model_name
+
+    def describe_config(self) -> Dict[str, Any]:
+        return self._base.describe_config()
+
+    def generate_prediction(self, case: Mapping[str, Any]) -> Any:
+        from workers.quality_benchmark_v48_orchestration import generate_v48_prediction
+
+        return generate_v48_prediction(
+            case,
+            dsn=self._base._disposable_db_url,
+            allow_disposable_v48_db=self._base._allow_disposable_db,
+            providers=self._base._providers,
+            worker_id=self._base._worker_id,
+            prompt_version=self._base._prompt_version,
+            ruleset_version=self._base._ruleset_version,
+            primary_model_name=self._primary_model_name,
+            dispute_model_name=self._dispute_model_name,
+        )
+
+
 def build_v48_adapter(*, dsn: str, providers: Any, provenance: Any, evidence_config_id: str):
     from workers.quality_benchmark_execution import V48EngineAdapter
     from workers.quality_benchmark_v48_orchestration import (
@@ -479,7 +532,7 @@ def build_v48_adapter(*, dsn: str, providers: Any, provenance: Any, evidence_con
         DEFAULT_RULESET_VERSION,
     )
 
-    return V48EngineAdapter(
+    base_adapter = V48EngineAdapter(
         allow_disposable_db=True,
         disposable_db_url=dsn,
         providers=providers,
@@ -489,6 +542,11 @@ def build_v48_adapter(*, dsn: str, providers: Any, provenance: Any, evidence_con
         prompt_version=DEFAULT_PROMPT_VERSION,
         ruleset_version=DEFAULT_RULESET_VERSION,
         evidence_config_id=evidence_config_id,
+    )
+    return BaselineV48EngineAdapter(
+        base_adapter=base_adapter,
+        primary_model_name=provenance.primary_model_name,
+        dispute_model_name=provenance.dispute_model_name,
     )
 
 
@@ -531,6 +589,68 @@ def compute_config_fingerprint(
         "openai_max_retries": openai_max_retries,
         "openai_max_output_tokens": openai_max_output_tokens,
     }
+
+
+def load_checkpoint_predictions(run_dir: Path) -> List[Dict[str, Any]]:
+    """Return the latest predictions list from checkpoint.json.
+
+    Used when a run is interrupted or fatally blocked mid-loop so
+    ``result.json`` reflects every case already checkpointed rather than a
+    stale pre-loop ``predictions`` variable.
+    """
+    path = run_dir / "checkpoint.json"
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    predictions = data.get("predictions") if isinstance(data, dict) else None
+    if not isinstance(predictions, list):
+        return []
+    return list(predictions)
+
+
+# Ordered (marker, sanitized reason) pairs for deterministic global failures.
+_SYSTEMIC_PROVIDER_ERROR_MARKERS: Tuple[Tuple[str, str], ...] = (
+    ("code=model_not_found", "OpenAI model not found (code=model_not_found); verify configured model"),
+    (
+        "authentication failed",
+        "OpenAI authentication failed; verify API credentials",
+    ),
+    (
+        "code=invalid_api_key",
+        "OpenAI authentication failed (code=invalid_api_key); verify API credentials",
+    ),
+    (
+        "code=insufficient_quota",
+        "OpenAI permission/quota failure (code=insufficient_quota)",
+    ),
+    ("permission denied", "OpenAI permission denied"),
+    ("missing scope", "OpenAI missing API scope"),
+    (
+        "benchmark-primary",
+        "Provider received placeholder benchmark model name; verify runner model wiring",
+    ),
+    (
+        "benchmark-dispute",
+        "Provider received placeholder benchmark model name; verify runner model wiring",
+    ),
+)
+
+
+def classify_systemic_provider_failure(prediction: Mapping[str, Any]) -> Optional[str]:
+    """Return a sanitized fatal reason when provider-call errors indicate a
+    global configuration failure that cannot be corrected by running the
+    next benchmark case."""
+    calls = ((prediction.get("raw_output") or {}).get("provider_calls")) or []
+    for call in calls:
+        if call.get("status") != "error":
+            continue
+        error = str(call.get("error") or "")
+        error_lower = error.lower()
+        for marker, reason in _SYSTEMIC_PROVIDER_ERROR_MARKERS:
+            if marker in error or marker.lower() in error_lower:
+                return reason
+    return None
 
 
 def write_checkpoint(run_dir: Path, checkpoint: Dict[str, Any]) -> None:
@@ -656,6 +776,10 @@ def run_case_loop(
             status = "error" if prediction.error else "ok"
             print(f"  completed case {case_id} ({len(predictions)}/{total_cases}) status={status}")
 
+        systemic_reason = classify_systemic_provider_failure(prediction.to_dict())
+        if systemic_reason is not None:
+            raise BaselineRunnerSystemicFailure(systemic_reason)
+
     return predictions
 
 
@@ -714,6 +838,8 @@ def build_final_artifact(
     database_info: Dict[str, Any],
     run_status: str,
     blocked_reason: Optional[str] = None,
+    configured_primary_model: Optional[str] = None,
+    configured_dispute_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the final prediction artifact. Mirrors the exact tail
     construction of ``workers.quality_benchmark_execution.generate_predictions``
@@ -754,6 +880,8 @@ def build_final_artifact(
         "duration_seconds": round((completed_at - started_at).total_seconds(), 3),
         "requested_model": requested_model,
         "resolved_model": config.get("model_id"),
+        "configured_primary_model": configured_primary_model or config.get("model_id"),
+        "configured_dispute_model": configured_dispute_model or config.get("model_id"),
         "reasoning_effort": reasoning_effort,
         "provider_configuration": provider_timing_config,
         "totals": aggregate_totals(predictions),
@@ -1063,9 +1191,19 @@ def _run_live(args: argparse.Namespace) -> int:
             existing_predictions=existing_predictions,
             completed_case_ids=completed_case_ids,
         )
+    except BaselineRunnerSystemicFailure as exc:
+        run_status = "blocked"
+        blocked_reason = str(exc)
+        predictions = load_checkpoint_predictions(run_dir) or predictions
+        print(f"BLOCKED: {blocked_reason}", file=sys.stderr)
+        print(
+            f"{len(predictions)}/{case_count} case(s) were completed before the systemic failure.",
+            file=sys.stderr,
+        )
     except EngineAdapterUnavailableError as exc:
         run_status = "blocked"
         blocked_reason = f"{exc.reason} | follow_up: {exc.follow_up}"
+        predictions = load_checkpoint_predictions(run_dir) or predictions
         print(f"BLOCKED: {blocked_reason}", file=sys.stderr)
         print(f"{len(predictions)}/{case_count} case(s) were completed before the block.", file=sys.stderr)
     except BaseException:
@@ -1075,6 +1213,7 @@ def _run_live(args: argparse.Namespace) -> int:
         # lost. Re-raise after best-effort final-artifact reporting.
         run_status = "interrupted"
         blocked_reason = "run was interrupted before completion"
+        predictions = load_checkpoint_predictions(run_dir) or predictions
         completed_at = datetime.now(timezone.utc)
         cleanup_counts = count_cleanup_tables(dsn)
         artifact = build_final_artifact(
@@ -1092,6 +1231,8 @@ def _run_live(args: argparse.Namespace) -> int:
             database_info={"host": dsn_info.host, "dbname": dsn_info.dbname, "cleanup": cleanup_counts},
             run_status=run_status,
             blocked_reason=blocked_reason,
+            configured_primary_model=provenance.primary_model_name,
+            configured_dispute_model=provenance.dispute_model_name,
         )
         out_path = write_result_artifact(run_dir, artifact)
         print(f"Interrupted. Partial artifact written: {out_path}", file=sys.stderr)
@@ -1114,6 +1255,8 @@ def _run_live(args: argparse.Namespace) -> int:
         database_info={"host": dsn_info.host, "dbname": dsn_info.dbname, "cleanup": cleanup_counts},
         run_status=run_status,
         blocked_reason=blocked_reason,
+        configured_primary_model=provenance.primary_model_name,
+        configured_dispute_model=provenance.dispute_model_name,
     )
     out_path = write_result_artifact(run_dir, artifact)
 
