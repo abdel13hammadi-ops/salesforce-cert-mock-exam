@@ -35,6 +35,7 @@ from workers.ai_quality_audit_schemas import (
     AiQualityAuditValidationError,
     ANSWER_CORRECTNESS_CODES,
     derive_correctness_finding,
+    derive_explanation_finding,
     merge_pass_b_findings,
     validate_pass_a_result,
     validate_pass_b_correctness_result,
@@ -577,10 +578,14 @@ def _execute_pass_b(
         stored_correct_option_labels=stored_correct,
         required_selection_count=required_count,
     )
+    explanation_finding = derive_explanation_finding(
+        explanation=comparison_context.get("explanation"),
+    )
     merge_result = merge_pass_b_findings(
         correctness_finding=correctness_finding,
         general_proposed_findings=general_outcome.validated.get("proposed_findings") or [],
         frozen_evidence_chunk_ids=frozen_ids,
+        explanation_finding=explanation_finding,
     )
     if merge_result["dropped_general_findings"]:
         composite_telemetry["pass_b_composite"]["dropped_general_findings"] = (

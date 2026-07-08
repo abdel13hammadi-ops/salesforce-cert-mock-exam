@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from workers.ai_quality_audit_schemas import (
     AiQualityAuditValidationError,
     derive_correctness_finding,
+    derive_explanation_finding,
     merge_pass_b_findings,
     validate_pass_a_result,
     validate_pass_b_correctness_result,
@@ -1524,6 +1525,193 @@ class TestMergePassBFindings(unittest.TestCase):
                     frozen_evidence_chunk_ids=_FROZEN,
                 )
                 self.assertEqual(result["proposed_findings"][0]["materiality"], "blocking")
+
+
+class TestDeriveExplanationFinding(unittest.TestCase):
+    """V60-EXPL-03: deterministic explanation-presence detection."""
+
+    def test_empty_explanation_produces_explanation_missing(self):
+        finding = derive_explanation_finding(explanation="")
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "EXPLANATION_MISSING")
+        self.assertEqual(finding["finding_type"], "explanation_quality")
+
+    def test_whitespace_only_explanation_produces_explanation_missing(self):
+        finding = derive_explanation_finding(explanation="   \n\t  ")
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "EXPLANATION_MISSING")
+
+    def test_none_explanation_produces_explanation_missing(self):
+        finding = derive_explanation_finding(explanation=None)
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "EXPLANATION_MISSING")
+
+    def test_non_empty_explanation_produces_no_finding(self):
+        finding = derive_explanation_finding(explanation="Profiles control object permissions.")
+        self.assertIsNone(finding)
+
+    def test_canonical_materiality_is_blocking_after_validation(self):
+        finding = derive_explanation_finding(explanation="")
+        result = merge_pass_b_findings(
+            correctness_finding=None,
+            general_proposed_findings=[],
+            frozen_evidence_chunk_ids=_FROZEN,
+            explanation_finding=finding,
+        )
+        self.assertEqual(len(result["proposed_findings"]), 1)
+        self.assertEqual(result["proposed_findings"][0]["materiality"], "blocking")
+
+    def test_stable_finding_ref_and_provenance_metadata(self):
+        finding = derive_explanation_finding(explanation="")
+        self.assertEqual(finding["finding_ref"], "FE1")
+        self.assertEqual(
+            finding["metadata"],
+            {
+                "deterministic_explanation_check": True,
+                "deterministic_detector": "explanation_presence",
+                "deterministic_detector_version": "1.0.0",
+            },
+        )
+
+    def test_custom_finding_ref_is_honored(self):
+        finding = derive_explanation_finding(explanation="", finding_ref="FE9")
+        self.assertEqual(finding["finding_ref"], "FE9")
+
+    def test_no_evidence_chunk_required(self):
+        finding = derive_explanation_finding(explanation="")
+        self.assertEqual(finding["evidence_chunk_ids"], [])
+
+
+class TestMergePassBFindingsExplanationDedup(unittest.TestCase):
+    """V60-EXPL-03: deterministic explanation finding merge/dedup behavior."""
+
+    def test_deterministic_explanation_finding_is_authoritative(self):
+        explanation_finding = derive_explanation_finding(explanation="")
+        result = merge_pass_b_findings(
+            correctness_finding=None,
+            general_proposed_findings=[],
+            frozen_evidence_chunk_ids=_FROZEN,
+            explanation_finding=explanation_finding,
+        )
+        codes = [item["finding_code"] for item in result["proposed_findings"]]
+        self.assertEqual(codes, ["EXPLANATION_MISSING"])
+
+    def test_general_judge_duplicate_is_dropped(self):
+        explanation_finding = derive_explanation_finding(explanation="")
+        general_duplicate = _finding(
+            finding_ref="F1",
+            finding_code="EXPLANATION_MISSING",
+            finding_type="explanation_quality",
+            severity="medium",
+            materiality="warning",
+        )
+        result = merge_pass_b_findings(
+            correctness_finding=None,
+            general_proposed_findings=[general_duplicate],
+            frozen_evidence_chunk_ids=_FROZEN,
+            explanation_finding=explanation_finding,
+        )
+        codes = [item["finding_code"] for item in result["proposed_findings"]]
+        self.assertEqual(codes, ["EXPLANATION_MISSING"])
+        self.assertEqual(len(result["proposed_findings"]), 1)
+        self.assertEqual(len(result["dropped_general_findings"]), 1)
+        self.assertEqual(
+            result["dropped_general_findings"][0]["finding_code"], "EXPLANATION_MISSING"
+        )
+        self.assertEqual(
+            result["dropped_general_findings"][0]["reason"],
+            "general_judge_emitted_deterministic_owned_code",
+        )
+
+    def test_unrelated_explanation_finding_is_not_suppressed(self):
+        explanation_finding = derive_explanation_finding(explanation="")
+        unrelated = _finding(
+            finding_ref="F1",
+            finding_code="EXPLANATION_INCOMPLETE",
+            finding_type="explanation_quality",
+            severity="low",
+            materiality="warning",
+        )
+        result = merge_pass_b_findings(
+            correctness_finding=None,
+            general_proposed_findings=[unrelated],
+            frozen_evidence_chunk_ids=_FROZEN,
+            explanation_finding=explanation_finding,
+        )
+        codes = sorted(item["finding_code"] for item in result["proposed_findings"])
+        self.assertEqual(codes, ["EXPLANATION_INCOMPLETE", "EXPLANATION_MISSING"])
+        self.assertEqual(result["dropped_general_findings"], [])
+
+    def test_coexists_with_correctness_finding(self):
+        correctness_finding = {
+            "finding_ref": "FC1",
+            "finding_code": "WRONG_ANSWER_KEY",
+            "finding_type": "correctness",
+            "severity": "high",
+            "materiality": "blocking",
+            "title": "Wrong key",
+            "description": "Specialist disagrees with stored key.",
+            "evidence_chunk_ids": [_CHUNK_1],
+            "metadata": {},
+        }
+        explanation_finding = derive_explanation_finding(explanation="")
+        result = merge_pass_b_findings(
+            correctness_finding=correctness_finding,
+            general_proposed_findings=[],
+            frozen_evidence_chunk_ids=_FROZEN,
+            explanation_finding=explanation_finding,
+        )
+        codes = sorted(item["finding_code"] for item in result["proposed_findings"])
+        self.assertEqual(codes, ["EXPLANATION_MISSING", "WRONG_ANSWER_KEY"])
+
+    def test_no_explanation_finding_leaves_general_findings_unchanged(self):
+        general_finding = _finding(
+            finding_ref="F1",
+            finding_code="WEAK_DISTRACTORS",
+            finding_type="answer_quality",
+            severity="low",
+            materiality="warning",
+        )
+        result = merge_pass_b_findings(
+            correctness_finding=None,
+            general_proposed_findings=[general_finding],
+            frozen_evidence_chunk_ids=_FROZEN,
+            explanation_finding=None,
+        )
+        codes = [item["finding_code"] for item in result["proposed_findings"]]
+        self.assertEqual(codes, ["WEAK_DISTRACTORS"])
+        self.assertEqual(result["dropped_general_findings"], [])
+
+    def test_existing_correctness_merge_behavior_remains_unchanged(self):
+        correctness_finding = {
+            "finding_ref": "FC1",
+            "finding_code": "WRONG_ANSWER_KEY",
+            "finding_type": "correctness",
+            "severity": "high",
+            "materiality": "blocking",
+            "title": "Wrong key",
+            "description": "Specialist disagrees with stored key.",
+            "evidence_chunk_ids": [_CHUNK_1],
+            "metadata": {},
+        }
+        drifting_general_finding = _finding(
+            finding_ref="F1",
+            finding_code="UNSUPPORTED_ANSWER",
+            finding_type="correctness",
+            materiality="blocking",
+        )
+        result = merge_pass_b_findings(
+            correctness_finding=correctness_finding,
+            general_proposed_findings=[drifting_general_finding],
+            frozen_evidence_chunk_ids=_FROZEN,
+            explanation_finding=None,
+        )
+        codes = [item["finding_code"] for item in result["proposed_findings"]]
+        self.assertEqual(codes, ["WRONG_ANSWER_KEY"])
+        self.assertEqual(len(result["dropped_general_findings"]), 1)
+        self.assertEqual(
+            result["dropped_general_findings"][0]["finding_code"], "UNSUPPORTED_ANSWER"
+        )
 
 
 if __name__ == "__main__":

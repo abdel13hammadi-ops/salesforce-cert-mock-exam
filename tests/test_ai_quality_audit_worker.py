@@ -2075,6 +2075,117 @@ class TestPassBCompositeExecution(unittest.TestCase):
         self.assertEqual(general["status"], "schema_invalid")
         self.assertIn("errors", general["structured_output"])
 
+    def test_empty_explanation_produces_deterministic_finding_in_merge(self):
+        """V60-EXPL-03: _execute_pass_b derives EXPLANATION_MISSING from the
+        comparison context's explanation field, independent of what the
+        general judge proposes."""
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("EXECUTE_PASS_C", "C", model_name="test-dispute-model"),
+            _claim("RUN_READY_TO_COMPLETE"),
+        )
+        empty_explanation_finding = {
+            "finding_ref": "FE1",
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "medium",
+            "materiality": "blocking",
+            "title": "Explanation is missing or empty",
+            "description": (
+                "The question's explanation field is empty or contains only "
+                "whitespace, giving no justification for the correct answer. "
+                "This is a deterministic, objectively verifiable defect and is "
+                "never subject to model confirmation."
+            ),
+            "evidence_chunk_ids": [],
+            "metadata": {
+                "deterministic_explanation_check": True,
+                "deterministic_detector": "explanation_presence",
+                "deterministic_detector_version": "1.0.0",
+            },
+        }
+        client.set_table_response(
+            "audit_run_pass_results",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "A",
+                    "status": "completed",
+                    "result_json": _pass_a_result(),
+                },
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "B",
+                    "status": "completed",
+                    "result_json": _pass_b_result(findings=[empty_explanation_finding]),
+                },
+                {
+                    "audit_run_id": _RUN_ID,
+                    "pass_code": "C",
+                    "status": "completed",
+                    "result_json": _pass_c_normal_resolved(confirmed_finding_refs=["FE1"]),
+                },
+            ],
+        )
+        client.set_table_response(
+            "audit_run_dispute_triggers",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "reason_code": "BLOCKING_DEFECT_PROPOSED",
+                    "source_pass_code": "B",
+                    "trigger_reason": "Pass B proposed one or more blocking findings",
+                    "finding_refs": ["FE1"],
+                }
+            ],
+        )
+        client.set_table_response("audit_findings", [{"id": "finding-1"}])
+        client.set_table_response("audit_finding_evidence", [])
+
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
+                _llm_response(_pass_b_result()),
+            ]
+        )
+        dispute = _SequenceProvider(
+            [_llm_response(_pass_c_normal_resolved(confirmed_finding_refs=["FE1"]))]
+        )
+
+        comparison_context = dict(MIN_COMPARISON_CONTEXT)
+        comparison_context["explanation"] = ""
+        with patch(
+            "workers.ai_quality_audit_worker.load_blind_audit_context",
+            return_value=dict(MIN_BLIND_CONTEXT),
+        ), patch(
+            "workers.ai_quality_audit_worker.load_comparison_audit_context",
+            return_value=comparison_context,
+        ):
+            result = process_ai_quality_audit_job(
+                client,
+                _job_payload(),
+                AiQualityAuditProviders(primary=primary, dispute=dispute),
+                worker_id="test-worker",
+            )
+
+        pass_b_record = next(
+            call for call in client.record_calls if call["p_pass_code"] == "B"
+        )
+        proposed_codes = [
+            item["finding_code"]
+            for item in pass_b_record["p_result_json"]["proposed_findings"]
+        ]
+        self.assertEqual(proposed_codes, ["EXPLANATION_MISSING"])
+
+        self.assertEqual(result["completion_shape"], "NORMAL_DISPUTE")
+        confirmed = client.complete_calls[0]["p_confirmed_findings"]
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(confirmed[0]["finding_ref"], "FE1")
+        self.assertEqual(confirmed[0]["finding_code"], "EXPLANATION_MISSING")
+
     def test_specialist_blocking_finding_triggers_pass_c_routing(self):
         client = OrchestrationFakeSupabase()
         client.enqueue_claims(

@@ -32,6 +32,18 @@ ANSWER_CORRECTNESS_CODES = frozenset({
     "UNSUPPORTED_ANSWER",
 })
 
+# V60-EXPL-03: codes owned by the deterministic explanation-presence check
+# (``derive_explanation_finding``) *whenever it fires*. Unlike
+# ``ANSWER_CORRECTNESS_CODES`` (unconditional specialist ownership), this
+# ownership is conditional: the general Pass B judge may still emit this
+# code (it is not excluded from its prompt), and when the deterministic
+# check found the explanation non-empty (no duplicate to resolve) that
+# general-judge proposal is left untouched. Only when the deterministic
+# check also fired is the general-judge proposal treated as a duplicate and
+# dropped by ``merge_pass_b_findings``, so an objectively verifiable fact is
+# never left dependent on Pass-C confirmation of a probabilistic proposal.
+DETERMINISTIC_EXPLANATION_CODES = frozenset({"EXPLANATION_MISSING"})
+
 ANSWER_CORRECTNESS_VERDICTS = frozenset({
     "SUPPORTED_AS_CORRECT",
     "NOT_SUPPORTED_AS_CORRECT",
@@ -474,25 +486,78 @@ def derive_correctness_finding(
     return _abstain()
 
 
+def derive_explanation_finding(
+    *,
+    explanation: Optional[str],
+    finding_ref: str = "FE1",
+) -> Optional[Dict[str, Any]]:
+    """Deterministically derive an ``EXPLANATION_MISSING`` finding when the
+    question's stored explanation is empty or whitespace-only (V60-EXPL-03).
+
+    This is the sole authority for detecting this objectively verifiable
+    fact -- the single predicate ``(explanation or "").strip() == ""`` is
+    evaluated exactly once, here, in Python. It is never re-evaluated by an
+    LLM pass and never re-implemented in SQL: the completion RPC identifies
+    this finding purely by the provenance metadata this function attaches
+    (``deterministic_explanation_check=true``), not by inspecting the
+    explanation text itself. Returns ``None`` when the explanation contains
+    any non-whitespace text -- no correctness/quality judgment is made
+    beyond presence/absence, exactly mirroring the narrow, bounded scope of
+    ``derive_correctness_finding``.
+    """
+    if (explanation or "").strip():
+        return None
+
+    return {
+        "finding_ref": finding_ref,
+        "finding_code": "EXPLANATION_MISSING",
+        "finding_type": "explanation_quality",
+        "severity": "medium",
+        "materiality": "blocking",
+        "title": "Explanation is missing or empty",
+        "description": (
+            "The question's explanation field is empty or contains only "
+            "whitespace, giving no justification for the correct answer. "
+            "This is a deterministic, objectively verifiable defect and is "
+            "never subject to model confirmation."
+        ),
+        "evidence_chunk_ids": [],
+        "metadata": {
+            "deterministic_explanation_check": True,
+            "deterministic_detector": "explanation_presence",
+            "deterministic_detector_version": "1.0.0",
+        },
+    }
+
+
 def merge_pass_b_findings(
     *,
     correctness_finding: Optional[Mapping[str, Any]],
     general_proposed_findings: Sequence[Mapping[str, Any]],
     frozen_evidence_chunk_ids: LabelSet,
+    explanation_finding: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """The single deterministic Pass B merge boundary (V60).
 
     The specialist's derived correctness finding (if any) is authoritative
-    for ``ANSWER_CORRECTNESS_CODES``. The general judge's non-correctness
-    findings are kept unchanged (already canonicalized by
-    ``validate_pass_b_result``). If the general judge nonetheless proposes a
-    correctness-family code, it is never accepted -- it is dropped and
-    recorded in ``dropped_general_findings`` for drift diagnostics rather
-    than silently discarded or allowed to override the specialist. This is
-    the only place finding lists are combined; no second materiality
-    mapping is introduced here -- the specialist's finding is run through
-    the exact same ``_validate_proposed_finding``/``assign_materiality``
-    path as any other proposed finding.
+    for ``ANSWER_CORRECTNESS_CODES`` (unconditionally: the general judge is
+    never allowed to substitute its own correctness-family verdict, even
+    when the specialist found nothing worth reporting). The deterministic
+    explanation finding is narrower in scope: it is only authoritative for
+    ``DETERMINISTIC_EXPLANATION_CODES`` when it actually fired (i.e. the
+    explanation was empty/whitespace and ``explanation_finding`` is not
+    ``None``) -- when the explanation is present, the general judge's own
+    (rarer, semantic rather than presence-based) EXPLANATION_MISSING
+    proposal is left untouched, since the deterministic check made no
+    finding to be a duplicate of. When it does fire, any general-judge
+    EXPLANATION_MISSING proposal is treated as a duplicate of the
+    deterministic finding and dropped -- never accepted -- and recorded in
+    ``dropped_general_findings`` for drift diagnostics rather than silently
+    discarded or allowed to override the deterministic source. This is the
+    only place finding lists are combined; no second materiality mapping is
+    introduced here -- every derived finding is run through the exact same
+    ``_validate_proposed_finding``/``assign_materiality`` path as any other
+    proposed finding.
     """
     validated_correctness: List[Dict[str, Any]] = []
     if correctness_finding is not None:
@@ -500,6 +565,14 @@ def merge_pass_b_findings(
             [dict(correctness_finding)],
             frozen_evidence_chunk_ids=frozen_evidence_chunk_ids,
             prefix="pass B correctness result.derived_finding",
+        )
+
+    validated_explanation: List[Dict[str, Any]] = []
+    if explanation_finding is not None:
+        validated_explanation = _validate_proposed_findings(
+            [dict(explanation_finding)],
+            frozen_evidence_chunk_ids=frozen_evidence_chunk_ids,
+            prefix="pass B derived explanation finding",
         )
 
     dropped: List[Dict[str, Any]] = []
@@ -513,9 +586,16 @@ def merge_pass_b_findings(
                 "reason": "general_judge_emitted_specialist_owned_code",
             })
             continue
+        if validated_explanation and code in DETERMINISTIC_EXPLANATION_CODES:
+            dropped.append({
+                "finding_ref": item.get("finding_ref"),
+                "finding_code": code,
+                "reason": "general_judge_emitted_deterministic_owned_code",
+            })
+            continue
         kept_general.append(dict(item))
 
-    merged = list(validated_correctness) + kept_general
+    merged = list(validated_correctness) + list(validated_explanation) + kept_general
 
     seen_refs: Set[str] = set()
     for item in merged:

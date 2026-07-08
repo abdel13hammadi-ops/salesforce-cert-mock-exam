@@ -217,6 +217,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
         with self.conn.cursor() as cur:
             cur.execute("BEGIN")
         self.client = PsycopgV48Client(self.conn)
+        self._fixture_version_counter = 0
         self.fixture = self._seed_fixture()
 
     def tearDown(self):
@@ -226,7 +227,14 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
         finally:
             self.conn.close()
 
-    def _seed_fixture(self) -> dict:
+    def _seed_fixture(self, *, explanation: str = "Profiles define default settings.") -> dict:
+        # V60-EXPL-03: tests that need a second, differently-shaped fixture
+        # within the same rolled-back transaction (e.g. an empty-explanation
+        # variant) call this a second time -- version_number must be unique
+        # per (question_id, version_number), so it is drawn from a per-test
+        # counter rather than hardcoded.
+        self._fixture_version_counter = getattr(self, "_fixture_version_counter", 0) + 1
+        version_number = self._fixture_version_counter
         qvid = str(uuid.uuid4())
         chunk1 = str(uuid.uuid4())
         chunk2 = str(uuid.uuid4())
@@ -236,8 +244,8 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
         rv2 = str(uuid.uuid4())
         question_id = 990001
         exam = "V48-INTEGRATION-ADM"
-        hash1 = "a" * 64
-        hash2 = "b" * 64
+        hash1 = f"{version_number:02x}" + "a" * 62
+        hash2 = f"{version_number:02x}" + "b" * 62
 
         with self.conn.cursor() as cur:
             cur.execute(
@@ -273,7 +281,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     exam,
                     "Configuration",
                     "Which Salesforce feature enables profile-based defaults?",
-                    "Profiles define default settings.",
+                    explanation,
                 ),
             )
             cur.execute(
@@ -283,17 +291,18 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     category, difficulty, question_type, select_count, language_code,
                     content_hash, source_type, created_by
                 ) VALUES (
-                    %s, %s, 1, %s, %s, %s, 'medium', 'single', 1, 'en',
+                    %s, %s, %s, %s, %s, %s, 'medium', 'single', 1, 'en',
                     %s, 'manual', 'v48-integration'
                 )
                 """,
                 (
                     qvid,
                     question_id,
+                    version_number,
                     "Which Salesforce feature enables profile-based defaults?",
-                    "Profiles define default settings.",
+                    explanation,
                     "Configuration",
-                    "c" * 64,
+                    f"{version_number:02x}" + "c" * 62,
                 ),
             )
             for label, text, order, correct in (
@@ -385,20 +394,21 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
             "evidence_hash": evidence_hash,
         }
 
-    def _create_run(self) -> str:
+    def _create_run(self, *, fixture: dict | None = None) -> str:
+        fixture = fixture if fixture is not None else self.fixture
         row = self.client.rpc(
             "create_or_get_ai_quality_audit_run_v1",
             {
-                "p_target_question_version_id": self.fixture["question_version_id"],
+                "p_target_question_version_id": fixture["question_version_id"],
                 "p_prompt_version": "v48-integration-prompt",
                 "p_ruleset_version": "v48-integration-rules",
                 "p_primary_model_name": "integration-primary",
                 "p_dispute_model_name": "integration-dispute",
                 "p_pilot_batch_id": "v48-integration-batch",
-                "p_evidence_set_hash": self.fixture["evidence_hash"],
+                "p_evidence_set_hash": fixture["evidence_hash"],
                 "p_evidence_chunks": [
-                    {"resource_chunk_id": self.fixture["chunk1"], "retrieval_rank": 1},
-                    {"resource_chunk_id": self.fixture["chunk2"], "retrieval_rank": 2},
+                    {"resource_chunk_id": fixture["chunk1"], "retrieval_rank": 1},
+                    {"resource_chunk_id": fixture["chunk2"], "retrieval_rank": 2},
                 ],
                 "p_created_by": "v48-integration-test",
                 "p_metadata": {},
@@ -1753,6 +1763,558 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
 
         self.assertFalse(publishable)
         self.assertEqual(blocking_count, 1)
+
+    # -----------------------------------------------------------------
+    # V60-EXPL-03: a deterministic empty/whitespace-only explanation must
+    # always produce a persisted blocking EXPLANATION_MISSING finding and
+    # must never depend on Pass C confirmation.
+    # -----------------------------------------------------------------
+
+    def _empty_explanation_primary(self, fixture: dict, *, general_findings=None):
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            if _is_correctness_sub_call(kwargs):
+                return LlmResponse(
+                    parsed_response=_correctness_agrees_with_stored_key(fixture["chunk1"]),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={
+                    "selected_option_labels": ["A"],
+                    "proposed_findings": list(general_findings or []),
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        return primary
+
+    def test_deterministic_explanation_confirmed_by_pass_c_completes_normally(self):
+        fixture = self._seed_fixture(explanation="")
+        audit_run_id = self._create_run(fixture=fixture)
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "RESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": ["FE1"],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {"audit_run_id": audit_run_id, "question_version_id": fixture["question_version_id"]},
+            AiQualityAuditProviders(
+                primary=self._empty_explanation_primary(fixture), dispute=dispute
+            ),
+            worker_id="v48-integration-worker",
+        )
+
+        # Pass C confirmed the deterministic finding's ref -- normal
+        # completion, exactly like any other Pass-C-confirmed blocking
+        # finding.
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertEqual(summary["finding_count"], 1)
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT finding_code, finding_type, materiality, finding_status, metadata
+                FROM public.audit_findings
+                WHERE audit_run_id = %s
+                """,
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["finding_code"], "EXPLANATION_MISSING")
+        self.assertEqual(rows[0]["finding_type"], "explanation_quality")
+        self.assertEqual(rows[0]["materiality"], "blocking")
+        self.assertEqual(rows[0]["finding_status"], "open")
+
+        metadata = rows[0]["metadata"]
+        self.assertIs(metadata["deterministic_explanation_check"], True)
+        self.assertEqual(metadata["deterministic_detector"], "explanation_presence")
+        self.assertEqual(metadata["deterministic_detector_version"], "1.0.0")
+        self.assertIs(metadata["pass_c_confirmed"], True)
+        self.assertIs(metadata["requires_human_review"], False)
+        self.assertEqual(metadata["dispute_resolution_status"], "RESOLVED_MODEL_CONFIRMED")
+
+    def test_deterministic_explanation_enforced_when_pass_c_omits_it(self):
+        """The exact qbv1-028 regression guard: Pass C returns RESOLVED with
+        an empty confirmed_finding_refs list, so the worker never forwards
+        the deterministic finding to the completion RPC at all -- the RPC
+        must still find and enforce it directly from Pass B's own record."""
+        fixture = self._seed_fixture(explanation="")
+        audit_run_id = self._create_run(fixture=fixture)
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "RESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": [],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {"audit_run_id": audit_run_id, "question_version_id": fixture["question_version_id"]},
+            AiQualityAuditProviders(
+                primary=self._empty_explanation_primary(fixture), dispute=dispute
+            ),
+            worker_id="v48-integration-worker",
+        )
+
+        # Acceptance criterion: the run can never silently complete despite
+        # the objectively empty explanation.
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT run_status, completed_at FROM public.audit_runs WHERE id = %s",
+                (audit_run_id,),
+            )
+            run_row = cur.fetchone()
+            cur.execute(
+                """
+                SELECT finding_code, materiality, finding_status, metadata
+                FROM public.audit_findings
+                WHERE audit_run_id = %s
+                """,
+                (audit_run_id,),
+            )
+            finding_rows = cur.fetchall()
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT public.is_question_version_publishable_v1(%s)",
+                (fixture["question_version_id"],),
+            )
+            publishable = cur.fetchone()[0]
+            cur.execute(
+                "SELECT public.count_blocking_findings_for_question_version_v1(%s)",
+                (fixture["question_version_id"],),
+            )
+            blocking_count = cur.fetchone()[0]
+
+        self.assertEqual(run_row["run_status"], "inconclusive")
+        self.assertIsNotNone(run_row["completed_at"])
+
+        self.assertEqual(len(finding_rows), 1)
+        finding = finding_rows[0]
+        self.assertEqual(finding["finding_code"], "EXPLANATION_MISSING")
+        self.assertEqual(finding["materiality"], "blocking")
+        self.assertEqual(finding["finding_status"], "open")
+
+        metadata = finding["metadata"]
+        self.assertIs(metadata["deterministic_explanation_check"], True)
+        self.assertIs(metadata["pass_c_confirmed"], False)
+        self.assertIs(metadata["requires_human_review"], True)
+        self.assertEqual(metadata["dispute_resolution_status"], "DETERMINISTIC_DEFECT_ENFORCED")
+
+        # Publication remains blocked even though nothing else was confirmed.
+        self.assertFalse(publishable)
+        self.assertEqual(blocking_count, 1)
+
+    def test_deterministic_explanation_persisted_once_when_pass_c_unresolved(self):
+        fixture = self._seed_fixture(explanation="")
+        audit_run_id = self._create_run(fixture=fixture)
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "UNRESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": [],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {"audit_run_id": audit_run_id, "question_version_id": fixture["question_version_id"]},
+            AiQualityAuditProviders(
+                primary=self._empty_explanation_primary(fixture), dispute=dispute
+            ),
+            worker_id="v48-integration-worker",
+        )
+
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT finding_code, materiality, finding_status, metadata
+                FROM public.audit_findings
+                WHERE audit_run_id = %s
+                """,
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        # Persisted exactly once -- no duplicate between the pre-existing
+        # UNRESOLVED loop (which already covers this generically as a
+        # blocking Pass B proposal referenced by the trigger) and any new
+        # V60-EXPL-03 code path.
+        self.assertEqual(len(rows), 1)
+        finding = rows[0]
+        self.assertEqual(finding["finding_code"], "EXPLANATION_MISSING")
+        self.assertEqual(finding["materiality"], "blocking")
+        self.assertEqual(finding["finding_status"], "open")
+
+        metadata = finding["metadata"]
+        self.assertIs(metadata["deterministic_explanation_check"], True)
+        self.assertEqual(metadata["dispute_resolution_status"], "UNRESOLVED")
+        self.assertIs(metadata["pass_c_confirmed"], False)
+        self.assertIs(metadata["requires_human_review"], True)
+
+    def test_deterministic_explanation_persists_alongside_confirmed_wrong_answer_key(self):
+        fixture = self._seed_fixture(explanation="")
+        audit_run_id = self._create_run(fixture=fixture)
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            if _is_correctness_sub_call(kwargs):
+                return LlmResponse(
+                    parsed_response=_correctness_disagrees_with_stored_key(fixture["chunk1"]),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={"selected_option_labels": ["A"], "proposed_findings": []},
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        def dispute(**kwargs):
+            # Pass C confirms only the specific correctness defect, never
+            # the deterministic explanation finding.
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "RESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": ["FC1"],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {"audit_run_id": audit_run_id, "question_version_id": fixture["question_version_id"]},
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+            worker_id="v48-integration-worker",
+        )
+
+        # The unconfirmed deterministic finding forces inconclusive even
+        # though a specific finding was confirmed normally -- and no
+        # finding is lost.
+        self.assertEqual(summary["run_status"], "inconclusive")
+        self.assertEqual(summary["finding_count"], 2)
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT finding_code, materiality, finding_status
+                FROM public.audit_findings
+                WHERE audit_run_id = %s
+                ORDER BY finding_code
+                """,
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        codes = [row["finding_code"] for row in rows]
+        self.assertEqual(codes, ["EXPLANATION_MISSING", "WRONG_ANSWER_KEY"])
+        for row in rows:
+            self.assertEqual(row["materiality"], "blocking")
+            self.assertEqual(row["finding_status"], "open")
+
+    def test_deterministic_explanation_coexists_with_correctness_abstention(self):
+        """V60-EXPL-03 + V60-PASSC-03 coexistence: Pass C confirms BOTH the
+        deterministic explanation finding's ref AND the correctness
+        abstention's ref together -- this must NOT trip the mixed-
+        confirmation safety rule, because the deterministic explanation
+        finding is excluded from that rule's 'other confirmed finding'
+        tally. Without that exclusion this exact call would incorrectly
+        raise."""
+        fixture = self._seed_fixture(explanation="")
+        audit_run_id = self._create_run(fixture=fixture)
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            if _is_correctness_sub_call(kwargs):
+                return LlmResponse(
+                    parsed_response=_correctness_abstains_all_insufficient(),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={"selected_option_labels": ["A"], "proposed_findings": []},
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "RESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": ["FC1", "FE1"],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {"audit_run_id": audit_run_id, "question_version_id": fixture["question_version_id"]},
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+            worker_id="v48-integration-worker",
+        )
+
+        # No mixed-confirmation exception; the abstention alone still forces
+        # inconclusive, and both findings persist exactly once.
+        self.assertEqual(summary["run_status"], "inconclusive")
+        self.assertEqual(summary["finding_count"], 2)
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT finding_code, materiality, finding_status, metadata
+                FROM public.audit_findings
+                WHERE audit_run_id = %s
+                ORDER BY finding_code
+                """,
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        codes = [row["finding_code"] for row in rows]
+        self.assertEqual(codes, ["EXPLANATION_MISSING", "OTHER_REVIEW_NEEDED"])
+        for row in rows:
+            self.assertEqual(row["materiality"], "blocking")
+            self.assertEqual(row["finding_status"], "open")
+
+        by_code = {row["finding_code"]: row for row in rows}
+        self.assertIs(
+            by_code["OTHER_REVIEW_NEEDED"]["metadata"]["correctness_detector_abstained"], True
+        )
+        self.assertIs(
+            by_code["EXPLANATION_MISSING"]["metadata"]["deterministic_explanation_check"], True
+        )
+
+    def test_general_judge_explanation_missing_duplicate_does_not_double_persist(self):
+        fixture = self._seed_fixture(explanation="")
+        audit_run_id = self._create_run(fixture=fixture)
+
+        general_duplicate = {
+            "finding_ref": "F1",
+            "finding_code": "EXPLANATION_MISSING",
+            "finding_type": "explanation_quality",
+            "severity": "medium",
+            "materiality": "warning",
+            "title": "Explanation appears missing",
+            "description": "General judge also noticed the missing explanation.",
+            "evidence_chunk_ids": [],
+            "metadata": {},
+        }
+        primary = self._empty_explanation_primary(fixture, general_findings=[general_duplicate])
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "RESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": ["FE1"],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {"audit_run_id": audit_run_id, "question_version_id": fixture["question_version_id"]},
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+            worker_id="v48-integration-worker",
+        )
+
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertEqual(summary["finding_count"], 1)
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT finding_code, metadata FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["finding_code"], "EXPLANATION_MISSING")
+        self.assertIs(rows[0]["metadata"]["deterministic_explanation_check"], True)
+
+    def test_repeated_completion_after_enforced_explanation_does_not_duplicate_findings(self):
+        fixture = self._seed_fixture(explanation="")
+        audit_run_id = self._create_run(fixture=fixture)
+
+        def dispute(**kwargs):
+            return LlmResponse(
+                parsed_response={
+                    "resolution_type": "NORMAL_DISPUTE",
+                    "resolution_status": "RESOLVED",
+                    "substituted_for_passes": [],
+                    "confirmed_finding_refs": [],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {"audit_run_id": audit_run_id, "question_version_id": fixture["question_version_id"]},
+            AiQualityAuditProviders(
+                primary=self._empty_explanation_primary(fixture), dispute=dispute
+            ),
+            worker_id="v48-integration-worker",
+        )
+        self.assertEqual(summary["run_status"], "inconclusive")
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            count_before = cur.fetchone()[0]
+        self.assertEqual(count_before, 1)
+
+        with self.conn.cursor() as cur:
+            cur.execute("SAVEPOINT repeat_completion_after_enforced_explanation")
+
+        raised = False
+        try:
+            self.client.rpc(
+                "complete_ai_quality_audit_run_v1",
+                {
+                    "p_audit_run_id": audit_run_id,
+                    "p_confirmed_findings": [],
+                    "p_metadata": {},
+                },
+            ).execute()
+        except psycopg2.Error as exc:
+            raised = True
+            self.assertIn("inconclusive", str(exc).lower())
+        finally:
+            with self.conn.cursor() as cur:
+                cur.execute("ROLLBACK TO SAVEPOINT repeat_completion_after_enforced_explanation")
+
+        self.assertTrue(raised, "expected re-completing an inconclusive run to raise")
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            count_after = cur.fetchone()[0]
+        self.assertEqual(count_after, 1)
+
+    def test_warning_materiality_findings_unaffected_by_explanation_enforcement(self):
+        """A non-empty-explanation run with an ordinary warning finding must
+        behave identically to pre-V60-EXPL-03 behavior: no dispute, no
+        deterministic finding, normal completion."""
+        audit_run_id = self._create_run()
+
+        def primary(**kwargs):
+            pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+            if pass_code == "A":
+                return LlmResponse(
+                    parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            if _is_correctness_sub_call(kwargs):
+                return LlmResponse(
+                    parsed_response=_correctness_agrees_with_stored_key(self.fixture["chunk1"]),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            return LlmResponse(
+                parsed_response={
+                    "selected_option_labels": ["A"],
+                    "proposed_findings": [
+                        {
+                            "finding_ref": "F1",
+                            "finding_code": "WEAK_DISTRACTORS",
+                            "finding_type": "answer_quality",
+                            "severity": "low",
+                            "materiality": "warning",
+                            "title": "Weak distractor",
+                            "description": "Option B is not competitive.",
+                            "evidence_chunk_ids": [],
+                            "metadata": {},
+                        }
+                    ],
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
+
+        summary = process_ai_quality_audit_job(
+            self.client,
+            {
+                "audit_run_id": audit_run_id,
+                "question_version_id": self.fixture["question_version_id"],
+            },
+            AiQualityAuditProviders(primary=primary, dispute=primary),
+            worker_id="v48-integration-worker",
+        )
+
+        self.assertEqual(summary["run_status"], "completed")
+        self.assertEqual(summary["finding_count"], 1)
+        self.assertNotIn("C", summary["passes_executed"])
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT finding_code, materiality FROM public.audit_findings WHERE audit_run_id = %s",
+                (audit_run_id,),
+            )
+            rows = cur.fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["finding_code"], "WEAK_DISTRACTORS")
+        self.assertEqual(rows[0]["materiality"], "warning")
 
 
 if __name__ == "__main__":
