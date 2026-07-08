@@ -474,7 +474,56 @@ def build_instrumented_providers(base_providers: Any, recorder: PassCallRecorder
         primary=recorder.wrap(base_providers.primary, role="primary"),
         dispute=recorder.wrap(base_providers.dispute, role="dispute"),
         timeout_seconds=base_providers.timeout_seconds,
+        # V60-IMPL-03: previously dropped, silently reverting every
+        # instrumented run to the timeout_seconds fallback inside
+        # workers.ai_quality_audit_worker._execute_pass_b even if a caller
+        # had explicitly configured a distinct Pass B sub-call budget.
+        pass_b_sub_call_timeout_seconds=base_providers.pass_b_sub_call_timeout_seconds,
     )
+
+
+# ---------------------------------------------------------------------------
+# Effective Pass B sub-call timeout (V60-IMPL-03) -- resolved without
+# constructing any provider, so both --dry-run and live mode can report and
+# fingerprint the exact same value.
+# ---------------------------------------------------------------------------
+
+# There is currently no environment variable that configures
+# workers.ai_quality_audit_worker.AiQualityAuditProviders.
+# pass_b_sub_call_timeout_seconds --
+# workers.ai_quality_provider_factory.build_ai_quality_providers_from_env()
+# never sets it, so its raw configured value is always None today. This
+# constant makes that fact explicit rather than silently assumed; if a
+# future task adds an environment variable for it, this is the one place
+# that must change (no new environment variable is introduced here).
+CONFIGURED_PASS_B_SUB_CALL_TIMEOUT_SECONDS: Optional[float] = None
+
+
+def describe_effective_ai_quality_worker_timeout_seconds() -> float:
+    """Read-only, no-provider-construction-required worker-level timeout --
+    the exact value build_ai_quality_providers_from_env() would resolve
+    into AiQualityAuditProviders.timeout_seconds, without constructing any
+    provider. Reused by both --dry-run (which must construct zero
+    providers) and live mode's checkpoint fingerprint/printed
+    configuration, so the two can never drift apart.
+    """
+    from workers.ai_quality_provider_factory import _parse_timeout_seconds  # noqa: PLC0415
+
+    return _parse_timeout_seconds()
+
+
+def resolve_effective_pass_b_sub_call_timeout_seconds(
+    *, configured: Optional[float], worker_timeout_seconds: float
+) -> float:
+    """Mirror workers.ai_quality_audit_worker._execute_pass_b's own Pass B
+    sub-call timeout fallback exactly: when pass_b_sub_call_timeout_seconds
+    is explicitly configured, that is the value Pass B actually enforces
+    per sub-call; otherwise Pass B falls back to the worker-level
+    timeout_seconds. Fingerprinting this resolved value -- not the raw,
+    possibly-None configured field -- ensures a change to whichever one
+    actually took effect at runtime invalidates --resume.
+    """
+    return configured if configured is not None else worker_timeout_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +612,7 @@ def compute_config_fingerprint(
     openai_timeout_seconds: float,
     openai_max_retries: int,
     openai_max_output_tokens: int,
+    pass_b_sub_call_timeout_seconds_effective: float,
 ) -> Dict[str, Any]:
     """Configuration fingerprint used to gate ``--resume`` compatibility.
 
@@ -574,6 +624,22 @@ def compute_config_fingerprint(
     mismatch), while a genuinely different value correctly refuses resume.
     All values are plain JSON-serializable types (str/int/float), so the
     fingerprint is deterministic and safe to embed in ``checkpoint.json``.
+
+    ``pass_b_sub_call_timeout_seconds_effective`` (V60-IMPL-03) must be the
+    already-resolved value from
+    ``resolve_effective_pass_b_sub_call_timeout_seconds()`` -- i.e. the
+    value Pass B actually enforces per specialist/general sub-call at
+    runtime -- not the raw, possibly-``None`` configured field, so that a
+    change to whichever setting actually took effect (explicit override or
+    its worker-level fallback) refuses ``--resume``, while an unchanged
+    effective value (even via a different raw path) still resumes cleanly.
+
+    ``adapter_config["prompt_version"]``/``["ruleset_version"]`` (sourced
+    from ``workers.quality_benchmark_v48_orchestration.DEFAULT_PROMPT_VERSION``/
+    ``DEFAULT_RULESET_VERSION``) are what make a pre-V60 checkpoint
+    (produced before the answer-correctness specialist existed)
+    unresumable by post-V60 code: those defaults were bumped specifically
+    for this reason in V60-IMPL-03.
     """
     return {
         "fixture_sha256": fixture_sha256,
@@ -588,6 +654,7 @@ def compute_config_fingerprint(
         "openai_timeout_seconds": openai_timeout_seconds,
         "openai_max_retries": openai_max_retries,
         "openai_max_output_tokens": openai_max_output_tokens,
+        "pass_b_sub_call_timeout_seconds_effective": pass_b_sub_call_timeout_seconds_effective,
     }
 
 
@@ -1071,6 +1138,24 @@ def _run_dry_run(args: argparse.Namespace) -> int:
         raise BaselineRunnerRefusal(f"AI-quality provider configuration error: {exc}") from exc
 
     openai_settings = describe_effective_openai_settings()
+
+    # Static identity constants only -- no adapter/provider is constructed
+    # in --dry-run, matching the "Zero providers constructed" guarantee
+    # below. worker_timeout_seconds is likewise resolved via the same
+    # no-provider-construction helper used by live mode, so the printed
+    # effective Pass B sub-call timeout can never drift from what a live
+    # run would actually enforce.
+    from workers.quality_benchmark_v48_orchestration import (
+        DEFAULT_PROMPT_VERSION,
+        DEFAULT_RULESET_VERSION,
+    )
+
+    worker_timeout_seconds = describe_effective_ai_quality_worker_timeout_seconds()
+    effective_pass_b_sub_call_timeout_seconds = resolve_effective_pass_b_sub_call_timeout_seconds(
+        configured=CONFIGURED_PASS_B_SUB_CALL_TIMEOUT_SECONDS,
+        worker_timeout_seconds=worker_timeout_seconds,
+    )
+
     _print_effective_configuration(
         fixture_path=FIXTURE_PATH,
         fixture_sha256=fixture_sha256,
@@ -1078,6 +1163,10 @@ def _run_dry_run(args: argparse.Namespace) -> int:
         openai_settings=openai_settings,
         dsn_info=dsn_info,
     )
+    print(f"  prompt_version:        {DEFAULT_PROMPT_VERSION}")
+    print(f"  ruleset_version:       {DEFAULT_RULESET_VERSION}")
+    print(f"  pass_b_sub_call_timeout_seconds (configured): {CONFIGURED_PASS_B_SUB_CALL_TIMEOUT_SECONDS}")
+    print(f"  pass_b_sub_call_timeout_seconds (effective):  {effective_pass_b_sub_call_timeout_seconds}")
     print(f"  resolved primary provider: {provenance.primary_provider}")
     print(f"  resolved dispute provider: {provenance.dispute_provider}")
     print()
@@ -1119,6 +1208,10 @@ def _run_live(args: argparse.Namespace) -> int:
     base_providers = build_ai_quality_providers_from_env(required=True)
     recorder = PassCallRecorder()
     instrumented_providers = build_instrumented_providers(base_providers, recorder)
+    effective_pass_b_sub_call_timeout_seconds = resolve_effective_pass_b_sub_call_timeout_seconds(
+        configured=base_providers.pass_b_sub_call_timeout_seconds,
+        worker_timeout_seconds=base_providers.timeout_seconds,
+    )
 
     evidence_config_id = str(fixture.get("evidence_fixture") or "quality_benchmark_v1-frozen-evidence")
     adapter = build_v48_adapter(
@@ -1143,6 +1236,8 @@ def _run_live(args: argparse.Namespace) -> int:
     print(f"  prompt_version:        {adapter_config.get('prompt_version')}")
     print(f"  ruleset_version:       {adapter_config.get('ruleset_version')}")
     print(f"  evidence_config_id:    {adapter_config.get('evidence_config_id')}")
+    print(f"  pass_b_sub_call_timeout_seconds (configured): {base_providers.pass_b_sub_call_timeout_seconds}")
+    print(f"  pass_b_sub_call_timeout_seconds (effective):  {effective_pass_b_sub_call_timeout_seconds}")
     print("  intended live calls:   up to 3 per case (Pass A, Pass B; Pass C only "
           "when a dispute trigger fires) x 40 cases")
     print()
@@ -1154,6 +1249,7 @@ def _run_live(args: argparse.Namespace) -> int:
         openai_timeout_seconds=openai_settings["timeout_seconds"],
         openai_max_retries=openai_settings["max_retries"],
         openai_max_output_tokens=openai_settings["max_output_tokens"],
+        pass_b_sub_call_timeout_seconds_effective=effective_pass_b_sub_call_timeout_seconds,
     )
 
     resume_dir = Path(args.resume).resolve() if args.resume else None
@@ -1173,6 +1269,8 @@ def _run_live(args: argparse.Namespace) -> int:
         "openai_max_retries": openai_settings["max_retries"],
         "openai_max_output_tokens": openai_settings["max_output_tokens"],
         "ai_quality_worker_timeout_seconds": base_providers.timeout_seconds,
+        "pass_b_sub_call_timeout_seconds_configured": base_providers.pass_b_sub_call_timeout_seconds,
+        "pass_b_sub_call_timeout_seconds_effective": effective_pass_b_sub_call_timeout_seconds,
     }
 
     run_status = "completed"

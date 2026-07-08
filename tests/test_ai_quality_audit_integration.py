@@ -62,6 +62,61 @@ def _can_connect() -> bool:
         return False
 
 
+def _is_correctness_sub_call(kwargs: dict) -> bool:
+    return (kwargs.get("metadata") or {}).get("pass_b_sub_call") == "correctness_detector"
+
+
+def _correctness_agrees_with_stored_key(chunk_id: str) -> dict:
+    """V60 specialist response for this fixture's fixed two-option (A/B,
+    A correct) question that independently confirms the stored key, so
+    ``derive_correctness_finding`` returns no correctness finding.
+    """
+    return {
+        "option_judgments": [
+            {
+                "option_label": "A",
+                "verdict": "SUPPORTED_AS_CORRECT",
+                "citation_chunk_ids": [chunk_id],
+                "evidence_rationale": "Fixture evidence confirms option A.",
+            },
+            {
+                "option_label": "B",
+                "verdict": "NOT_SUPPORTED_AS_CORRECT",
+                "citation_chunk_ids": [chunk_id],
+                "evidence_rationale": "Fixture evidence does not support option B.",
+            },
+        ],
+        "evidence_sufficient_for_decision": True,
+        "abstention_reason": None,
+    }
+
+
+def _correctness_disagrees_with_stored_key(chunk_id: str) -> dict:
+    """V60 specialist response that independently supports option B instead
+    of the stored-correct option A, so ``derive_correctness_finding``
+    deterministically derives a real ``WRONG_ANSWER_KEY`` finding
+    (finding_ref defaults to ``FC1``).
+    """
+    return {
+        "option_judgments": [
+            {
+                "option_label": "A",
+                "verdict": "NOT_SUPPORTED_AS_CORRECT",
+                "citation_chunk_ids": [chunk_id],
+                "evidence_rationale": "Fixture evidence does not support option A.",
+            },
+            {
+                "option_label": "B",
+                "verdict": "SUPPORTED_AS_CORRECT",
+                "citation_chunk_ids": [chunk_id],
+                "evidence_rationale": "Fixture evidence supports option B instead.",
+            },
+        ],
+        "evidence_sufficient_for_decision": True,
+        "abstention_reason": None,
+    }
+
+
 class TestAiQualityAuditDockerIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -277,6 +332,8 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
             pass_code = (kwargs.get("metadata") or {}).get("pass_code")
             if pass_code == "A":
                 body = {"selected_option_labels": ["A"]}
+            elif _is_correctness_sub_call(kwargs):
+                body = _correctness_agrees_with_stored_key(self.fixture["chunk1"])
             else:
                 body = {
                     "selected_option_labels": ["A"],
@@ -316,24 +373,20 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     input_tokens=1,
                     output_tokens=1,
                 )
-            calls["b"] += 1
+            if _is_correctness_sub_call(kwargs):
+                # The specialist independently disagrees with the stored
+                # key (V60: WRONG_ANSWER_KEY is now exclusively
+                # specialist-derived, not general-judge-proposed).
+                calls["b"] += 1
+                return LlmResponse(
+                    parsed_response=_correctness_disagrees_with_stored_key(
+                        self.fixture["chunk1"]
+                    ),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
             return LlmResponse(
-                parsed_response={
-                    "selected_option_labels": ["A"],
-                    "proposed_findings": [
-                        {
-                            "finding_ref": "F1",
-                            "finding_code": "WRONG_ANSWER_KEY",
-                            "finding_type": "correctness",
-                            "severity": "high",
-                            "materiality": "blocking",
-                            "title": "Wrong key",
-                            "description": "Stored answer appears wrong.",
-                            "evidence_chunk_ids": [self.fixture["chunk1"]],
-                            "metadata": {},
-                        }
-                    ],
-                },
+                parsed_response={"selected_option_labels": ["A"], "proposed_findings": []},
                 input_tokens=1,
                 output_tokens=1,
             )
@@ -344,7 +397,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     "resolution_type": "NORMAL_DISPUTE",
                     "resolution_status": "RESOLVED",
                     "substituted_for_passes": [],
-                    "confirmed_finding_refs": ["F1"],
+                    "confirmed_finding_refs": ["FC1"],
                 },
                 input_tokens=1,
                 output_tokens=1,
@@ -388,6 +441,14 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     )
                 return LlmResponse(
                     parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            if _is_correctness_sub_call(kwargs):
+                return LlmResponse(
+                    parsed_response=_correctness_agrees_with_stored_key(
+                        self.fixture["chunk1"]
+                    ),
                     input_tokens=1,
                     output_tokens=1,
                 )
@@ -572,6 +633,17 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     input_tokens=1,
                     output_tokens=1,
                 )
+            if _is_correctness_sub_call(kwargs):
+                # The specialist succeeds and agrees with the stored key on
+                # every attempt; only the general judge's response is
+                # schema-invalid on the first attempt.
+                return LlmResponse(
+                    parsed_response=_correctness_agrees_with_stored_key(
+                        self.fixture["chunk1"]
+                    ),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
             pass_b_calls["count"] += 1
             if pass_b_calls["count"] == 1:
                 return LlmResponse(
@@ -658,6 +730,14 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     input_tokens=1,
                     output_tokens=1,
                 )
+            if _is_correctness_sub_call(kwargs):
+                return LlmResponse(
+                    parsed_response=_correctness_agrees_with_stored_key(
+                        self.fixture["chunk1"]
+                    ),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
             return LlmResponse(
                 parsed_response={
                     "selected_option_labels": ["A"],
@@ -699,23 +779,18 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     input_tokens=1,
                     output_tokens=1,
                 )
+            if _is_correctness_sub_call(kwargs):
+                # V60: WRONG_ANSWER_KEY is now exclusively specialist-derived
+                # (finding_ref defaults to "FC1"), not general-judge-proposed.
+                return LlmResponse(
+                    parsed_response=_correctness_disagrees_with_stored_key(
+                        self.fixture["chunk1"]
+                    ),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
             return LlmResponse(
-                parsed_response={
-                    "selected_option_labels": ["A"],
-                    "proposed_findings": [
-                        {
-                            "finding_ref": "F1",
-                            "finding_code": "WRONG_ANSWER_KEY",
-                            "finding_type": "correctness",
-                            "severity": "high",
-                            "materiality": "blocking",
-                            "title": "Wrong key",
-                            "description": "Stored answer appears wrong.",
-                            "evidence_chunk_ids": [self.fixture["chunk1"]],
-                            "metadata": {},
-                        }
-                    ],
-                },
+                parsed_response={"selected_option_labels": ["A"], "proposed_findings": []},
                 input_tokens=1,
                 output_tokens=1,
             )
@@ -782,7 +857,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
         self.assertIs(metadata["pass_c_confirmed"], False)
         self.assertIs(metadata["requires_human_review"], True)
         self.assertEqual(metadata["source_pass_code"], "B")
-        self.assertEqual(metadata["finding_ref"], "F1")
+        self.assertEqual(metadata["finding_ref"], "FC1")
         self.assertEqual(metadata["completion_shape"], "NORMAL_DISPUTE")
 
     def test_unresolved_dispute_preserves_evidence_and_provenance(self):
@@ -831,21 +906,20 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     input_tokens=1,
                     output_tokens=1,
                 )
+            if _is_correctness_sub_call(kwargs):
+                # V60: WRONG_ANSWER_KEY (finding_ref="FC1") is now
+                # exclusively specialist-derived.
+                return LlmResponse(
+                    parsed_response=_correctness_disagrees_with_stored_key(
+                        self.fixture["chunk1"]
+                    ),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
             return LlmResponse(
                 parsed_response={
                     "selected_option_labels": ["A"],
                     "proposed_findings": [
-                        {
-                            "finding_ref": "F1",
-                            "finding_code": "WRONG_ANSWER_KEY",
-                            "finding_type": "correctness",
-                            "severity": "high",
-                            "materiality": "blocking",
-                            "title": "Wrong key",
-                            "description": "Stored answer appears wrong.",
-                            "evidence_chunk_ids": [self.fixture["chunk1"]],
-                            "metadata": {},
-                        },
                         {
                             "finding_ref": "F2",
                             "finding_code": "WEAK_DISTRACTORS",
@@ -895,7 +969,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["finding_code"], "WRONG_ANSWER_KEY")
-        self.assertEqual(rows[0]["metadata"]["finding_ref"], "F1")
+        self.assertEqual(rows[0]["metadata"]["finding_ref"], "FC1")
 
     def test_unresolved_dispute_blocks_publication(self):
         audit_run_id = self._create_run()
@@ -987,23 +1061,18 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     input_tokens=1,
                     output_tokens=1,
                 )
+            if _is_correctness_sub_call(kwargs):
+                # V60: WRONG_ANSWER_KEY (finding_ref="FC1") is now
+                # exclusively specialist-derived.
+                return LlmResponse(
+                    parsed_response=_correctness_disagrees_with_stored_key(
+                        self.fixture["chunk1"]
+                    ),
+                    input_tokens=1,
+                    output_tokens=1,
+                )
             return LlmResponse(
-                parsed_response={
-                    "selected_option_labels": ["A"],
-                    "proposed_findings": [
-                        {
-                            "finding_ref": "F1",
-                            "finding_code": "WRONG_ANSWER_KEY",
-                            "finding_type": "correctness",
-                            "severity": "high",
-                            "materiality": "blocking",
-                            "title": "Wrong key",
-                            "description": "Stored answer appears wrong.",
-                            "evidence_chunk_ids": [self.fixture["chunk1"]],
-                            "metadata": {},
-                        }
-                    ],
-                },
+                parsed_response={"selected_option_labels": ["A"], "proposed_findings": []},
                 input_tokens=1,
                 output_tokens=1,
             )
@@ -1014,7 +1083,7 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
                     "resolution_type": "NORMAL_DISPUTE",
                     "resolution_status": "RESOLVED",
                     "substituted_for_passes": [],
-                    "confirmed_finding_refs": ["F1"],
+                    "confirmed_finding_refs": ["FC1"],
                 },
                 input_tokens=1,
                 output_tokens=1,
@@ -1056,6 +1125,14 @@ class TestAiQualityAuditDockerIntegration(unittest.TestCase):
             if pass_code == "A":
                 return LlmResponse(
                     parsed_response={"selected_option_labels": ["A"]},
+                    input_tokens=1,
+                    output_tokens=1,
+                )
+            if _is_correctness_sub_call(kwargs):
+                return LlmResponse(
+                    parsed_response=_correctness_agrees_with_stored_key(
+                        self.fixture["chunk1"]
+                    ),
                     input_tokens=1,
                     output_tokens=1,
                 )

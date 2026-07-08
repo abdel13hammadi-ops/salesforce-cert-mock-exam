@@ -27,7 +27,9 @@ rollback-proof surface introduced by this task.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 import unittest
 
@@ -93,10 +95,51 @@ def _one_real_case() -> dict:
     return fixture["cases"][0]
 
 
+_OPTION_LABEL_RE = re.compile(r"^- \[([^\]]+)\]", re.MULTILINE)
+_STORED_CORRECT_RE = re.compile(r"Stored correct labels: (\[.*?\])")
+_CHUNK_ID_RE = re.compile(r"chunk_id=([0-9a-fA-F-]{36})")
+
+
+def _correctness_response_matching_stored_key(user_prompt: str) -> dict:
+    """Generic V60 specialist fixture response that agrees with whatever the
+    stored correct label(s) are for this run (parsed directly from the
+    specialist prompt, since some of these fixtures are shared across
+    fixture cases with different option sets/labels). Produces
+    ``option_judgments`` covering every option in the prompt with
+    ``evidence_sufficient_for_decision=True``, so
+    ``derive_correctness_finding`` returns ``None`` (fully confirmed,
+    no correctness finding) -- i.e. this is the "specialist agrees with
+    the stored key" filler for fixtures that expect Pass B to complete
+    without a correctness defect.
+    """
+    option_labels = _OPTION_LABEL_RE.findall(user_prompt)
+    stored_match = _STORED_CORRECT_RE.search(user_prompt)
+    stored_correct = json.loads(stored_match.group(1)) if stored_match else []
+    chunk_ids = _CHUNK_ID_RE.findall(user_prompt)
+    citation = [chunk_ids[0]] if chunk_ids else []
+    judgments = []
+    for label in option_labels:
+        verdict = "SUPPORTED_AS_CORRECT" if label in stored_correct else "NOT_SUPPORTED_AS_CORRECT"
+        judgments.append({
+            "option_label": label,
+            "verdict": verdict,
+            "citation_chunk_ids": citation,
+            "evidence_rationale": "Fixture-derived evidence rationale confirming the stored key.",
+        })
+    return {
+        "option_judgments": judgments,
+        "evidence_sufficient_for_decision": True,
+        "abstention_reason": None,
+    }
+
+
 def _always_a_provider(**kwargs):
-    pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+    metadata = kwargs.get("metadata") or {}
+    pass_code = metadata.get("pass_code")
     if pass_code == "A":
         body = {"selected_option_labels": ["A"]}
+    elif metadata.get("pass_b_sub_call") == "correctness_detector":
+        body = _correctness_response_matching_stored_key(kwargs.get("user_prompt") or "")
     else:
         body = {"selected_option_labels": ["A"], "proposed_findings": []}
     return LlmResponse(parsed_response=body, input_tokens=1, output_tokens=1)
@@ -111,38 +154,61 @@ def _first_chunk_id(case: dict) -> str:
 
 
 def _unresolved_blocking_dispute_providers(case: dict) -> AiQualityAuditProviders:
-    """Pass B proposes one blocking finding; Pass C disputes it and never
-    confirms it (resolution_status=UNRESOLVED) - the scenario the
-    UNRESOLVED branch of ``complete_ai_quality_audit_run_v1`` (migration
-    20260707000000) persists as an open, human-review-required finding.
+    """The specialized answer-correctness detector (V60) independently
+    judges a *different* option than the stored key as evidence-supported,
+    so ``derive_correctness_finding`` deterministically produces a real
+    ``WRONG_ANSWER_KEY`` blocking finding (WRONG_ANSWER_KEY is now
+    exclusively specialist-derived; the general judge can no longer
+    propose it -- see ``ANSWER_CORRECTNESS_CODES``). Pass C then disputes
+    it and never confirms it (resolution_status=UNRESOLVED) - the scenario
+    the UNRESOLVED branch of ``complete_ai_quality_audit_run_v1``
+    (migration 20260707000000) persists as an open,
+    human-review-required finding.
     """
     chunk_id = _first_chunk_id(case)
+    options = case["question"]["options"]
+    all_labels = [str(option["option_label"]) for option in options]
+    stored_correct = {
+        str(option["option_label"]) for option in options if option.get("is_correct")
+    }
+    wrong_label = next(label for label in all_labels if label not in stored_correct)
 
     def primary(**kwargs):
-        pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+        metadata = kwargs.get("metadata") or {}
+        pass_code = metadata.get("pass_code")
         if pass_code == "A":
             return LlmResponse(
                 parsed_response={"selected_option_labels": ["A"]},
                 input_tokens=1,
                 output_tokens=1,
             )
+        if metadata.get("pass_b_sub_call") == "correctness_detector":
+            judgments = [
+                {
+                    "option_label": label,
+                    "verdict": (
+                        "SUPPORTED_AS_CORRECT" if label == wrong_label
+                        else "NOT_SUPPORTED_AS_CORRECT"
+                    ),
+                    "citation_chunk_ids": [chunk_id],
+                    "evidence_rationale": (
+                        "Fixture-derived evidence rationale disagreeing with the "
+                        "stored key."
+                    ),
+                }
+                for label in all_labels
+            ]
+            return LlmResponse(
+                parsed_response={
+                    "option_judgments": judgments,
+                    "evidence_sufficient_for_decision": True,
+                    "abstention_reason": None,
+                },
+                input_tokens=1,
+                output_tokens=1,
+            )
         return LlmResponse(
-            parsed_response={
-                "selected_option_labels": ["A"],
-                "proposed_findings": [
-                    {
-                        "finding_ref": "F1",
-                        "finding_code": "WRONG_ANSWER_KEY",
-                        "finding_type": "correctness",
-                        "severity": "high",
-                        "materiality": "blocking",
-                        "title": "Wrong key",
-                        "description": "Stored answer appears wrong.",
-                        "evidence_chunk_ids": [chunk_id],
-                        "metadata": {},
-                    }
-                ],
-            },
+            parsed_response={"selected_option_labels": ["A"], "proposed_findings": []},
             input_tokens=1,
             output_tokens=1,
         )
@@ -201,20 +267,26 @@ def _pass_b_substitution_unresolved_providers() -> AiQualityAuditProviders:
 
 
 def _normal_no_dispute_warning_providers() -> AiQualityAuditProviders:
-    """Pass B proposes one non-blocking (warning) finding; no dispute
-    trigger fires (NORMAL_NO_DISPUTE), so the run completes normally with
-    the warning finding persisted (V58-DAY7-IMPROVE-03 behavior, unaffected
-    by the artifact-mapping change under test here).
+    """The general judge proposes one non-blocking (warning,
+    non-correctness) finding; the specialist independently confirms the
+    stored key (no correctness finding). No dispute trigger fires
+    (NORMAL_NO_DISPUTE), so the run completes normally with the warning
+    finding persisted (V58-DAY7-IMPROVE-03 behavior, unaffected by the
+    artifact-mapping change under test here).
     """
 
     def primary(**kwargs):
-        pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+        metadata = kwargs.get("metadata") or {}
+        pass_code = metadata.get("pass_code")
         if pass_code == "A":
             return LlmResponse(
                 parsed_response={"selected_option_labels": ["A"]},
                 input_tokens=1,
                 output_tokens=1,
             )
+        if metadata.get("pass_b_sub_call") == "correctness_detector":
+            body = _correctness_response_matching_stored_key(kwargs.get("user_prompt") or "")
+            return LlmResponse(parsed_response=body, input_tokens=1, output_tokens=1)
         return LlmResponse(
             parsed_response={
                 "selected_option_labels": ["A"],

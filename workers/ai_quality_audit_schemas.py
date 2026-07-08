@@ -21,6 +21,23 @@ _UUID_RE = re.compile(
 
 SUPPORTED_FINDING_CODES = CANONICAL_FINDING_CODES | frozenset({"DOMAIN_MISALIGNMENT"})
 
+# V60: codes exclusively owned by the specialized answer-correctness detector.
+# The general Pass B judge is instructed not to propose these, and the merge
+# boundary (``merge_pass_b_findings``) discards any it emits anyway rather
+# than accepting them -- the specialist's deterministic derivation is the
+# sole authority for these three codes.
+ANSWER_CORRECTNESS_CODES = frozenset({
+    "WRONG_ANSWER_KEY",
+    "MULTIPLE_DEFENSIBLE_ANSWERS",
+    "UNSUPPORTED_ANSWER",
+})
+
+ANSWER_CORRECTNESS_VERDICTS = frozenset({
+    "SUPPORTED_AS_CORRECT",
+    "NOT_SUPPORTED_AS_CORRECT",
+    "INSUFFICIENT_EVIDENCE",
+})
+
 ALLOWED_RESOLUTION_TYPES = frozenset({
     "NORMAL_DISPUTE",
     "PASS_A_SUBSTITUTION",
@@ -86,6 +103,330 @@ def validate_pass_b_result(
     return {
         "selected_option_labels": labels,
         "proposed_findings": proposed,
+    }
+
+
+def validate_pass_b_correctness_result(
+    raw: object,
+    *,
+    allowed_option_labels: LabelSet,
+    frozen_evidence_chunk_ids: LabelSet,
+) -> Dict[str, Any]:
+    """Validate and normalize the specialized answer-correctness detector's
+    payload (V60). The detector judges every option independently and never
+    chooses a finding code, materiality, severity, or approval state -- this
+    only validates its atomic per-option judgments and overall sufficiency
+    signal. ``derive_correctness_finding`` is the sole authority translating
+    a validated result into a proposed finding.
+    """
+    obj = _require_object(raw, "pass B correctness result")
+    allowed = _label_set(allowed_option_labels) or set()
+    if not allowed:
+        raise AiQualityAuditValidationError(
+            "allowed_option_labels must contain at least one label"
+        )
+    frozen_raw = _label_set(frozen_evidence_chunk_ids) or set()
+    frozen = {chunk_id.lower() for chunk_id in frozen_raw}
+
+    if "option_judgments" not in obj:
+        raise AiQualityAuditValidationError(
+            "pass B correctness result is missing required field 'option_judgments'"
+        )
+    raw_judgments = obj.get("option_judgments")
+    if not isinstance(raw_judgments, list) or not raw_judgments:
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.option_judgments must be a non-empty JSON array"
+        )
+
+    if "evidence_sufficient_for_decision" not in obj:
+        raise AiQualityAuditValidationError(
+            "pass B correctness result is missing required field "
+            "'evidence_sufficient_for_decision'"
+        )
+    evidence_sufficient = obj.get("evidence_sufficient_for_decision")
+    if not isinstance(evidence_sufficient, bool):
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.evidence_sufficient_for_decision must be a boolean"
+        )
+
+    abstention_reason_raw = obj.get("abstention_reason")
+    if abstention_reason_raw is not None and not isinstance(abstention_reason_raw, str):
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.abstention_reason must be a string or null"
+        )
+    abstention_reason = (abstention_reason_raw or "").strip() or None
+
+    normalized_judgments: List[Dict[str, Any]] = []
+    seen_labels: Set[str] = set()
+    any_insufficient = False
+    for index, item in enumerate(raw_judgments):
+        prefix = f"pass B correctness result.option_judgments[{index}]"
+        if not isinstance(item, dict):
+            raise AiQualityAuditValidationError(f"{prefix} must be a JSON object")
+
+        label = _require_non_empty_string(item.get("option_label"), f"{prefix}.option_label")
+        if label not in allowed:
+            raise AiQualityAuditValidationError(
+                f"{prefix}.option_label={label!r} is not an allowed option label"
+            )
+        if label in seen_labels:
+            raise AiQualityAuditValidationError(
+                f"{prefix}.option_label contains duplicate label: {label!r}"
+            )
+        seen_labels.add(label)
+
+        verdict = _require_non_empty_string(item.get("verdict"), f"{prefix}.verdict")
+        if verdict not in ANSWER_CORRECTNESS_VERDICTS:
+            raise AiQualityAuditValidationError(
+                f"{prefix}.verdict={verdict!r} is not one of "
+                f"{sorted(ANSWER_CORRECTNESS_VERDICTS)}"
+            )
+
+        rationale = _require_non_empty_string(
+            item.get("evidence_rationale"), f"{prefix}.evidence_rationale"
+        )
+
+        citations_raw = item.get("citation_chunk_ids")
+        if not isinstance(citations_raw, list):
+            raise AiQualityAuditValidationError(
+                f"{prefix}.citation_chunk_ids must be a JSON array"
+            )
+        citations: List[str] = []
+        seen_chunks: Set[str] = set()
+        for chunk_index, chunk_value in enumerate(citations_raw):
+            chunk_id = _validate_uuid_string(
+                chunk_value, f"{prefix}.citation_chunk_ids[{chunk_index}]"
+            )
+            if chunk_id in seen_chunks:
+                raise AiQualityAuditValidationError(
+                    f"{prefix}.citation_chunk_ids contains duplicate chunk id: {chunk_id!r}"
+                )
+            if chunk_id not in frozen:
+                raise AiQualityAuditValidationError(
+                    f"{prefix}.citation_chunk_ids[{chunk_index}]={chunk_id!r} is outside "
+                    f"the frozen run evidence set"
+                )
+            seen_chunks.add(chunk_id)
+            citations.append(chunk_id)
+
+        if verdict == "SUPPORTED_AS_CORRECT" and not citations:
+            raise AiQualityAuditValidationError(
+                f"{prefix} has verdict=SUPPORTED_AS_CORRECT but no citation_chunk_ids"
+            )
+        if verdict == "INSUFFICIENT_EVIDENCE":
+            any_insufficient = True
+
+        normalized_judgments.append({
+            "option_label": label,
+            "verdict": verdict,
+            "citation_chunk_ids": citations,
+            "evidence_rationale": rationale,
+        })
+
+    missing = allowed - seen_labels
+    if missing:
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.option_judgments is missing judgments "
+            f"for options: {sorted(missing)}"
+        )
+
+    if evidence_sufficient and any_insufficient:
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.evidence_sufficient_for_decision cannot be "
+            "true while an option_judgments entry has verdict=INSUFFICIENT_EVIDENCE"
+        )
+    if not frozen and evidence_sufficient:
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.evidence_sufficient_for_decision cannot be "
+            "true when the run has zero frozen evidence chunks"
+        )
+    if not evidence_sufficient and not abstention_reason:
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.abstention_reason must be a non-empty string "
+            "when evidence_sufficient_for_decision is false"
+        )
+    if evidence_sufficient and abstention_reason:
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.abstention_reason must be null when "
+            "evidence_sufficient_for_decision is true"
+        )
+
+    return {
+        "option_judgments": normalized_judgments,
+        "evidence_sufficient_for_decision": evidence_sufficient,
+        "abstention_reason": abstention_reason,
+    }
+
+
+def derive_correctness_finding(
+    *,
+    correctness_result: Mapping[str, Any],
+    stored_correct_option_labels: LabelSet,
+    required_selection_count: int,
+    finding_ref: str = "FC1",
+) -> Optional[Dict[str, Any]]:
+    """Deterministically derive at most one correctness finding from a
+    validated specialist result (V60). The specialist never chooses a
+    finding code, materiality, or severity -- this function is the sole
+    authority translating its atomic per-option judgments into a proposed
+    finding (or ``None`` when the stored answer is fully confirmed).
+
+    Let ``S`` = stored correct-label set, ``R`` = required selection count,
+    ``E`` = option labels judged ``SUPPORTED_AS_CORRECT``:
+
+      1. Evidence insufficient or any option INSUFFICIENT_EVIDENCE:
+         no decisive branch is taken; a real ``OTHER_REVIEW_NEEDED``
+         (finding_type=correctness, therefore canonically blocking) finding
+         is returned so the existing blocking-defect dispute trigger routes
+         this case through Pass C rather than silently auto-approving.
+      2. ``E == S``: fully confirmed, no correctness finding (``None``).
+      3. ``len(E) > R``: ``MULTIPLE_DEFENSIBLE_ANSWERS``.
+      4. ``len(E) == R`` and ``E != S``: ``WRONG_ANSWER_KEY``.
+      5. ``len(E) < R``: ``UNSUPPORTED_ANSWER``.
+
+    An abstention/insufficient-evidence case can never become
+    ``UNSUPPORTED_ANSWER`` -- only a decisive judgment (rule 5 above) can.
+    """
+    stored = _label_set(stored_correct_option_labels) or set()
+    judgments = list(correctness_result.get("option_judgments") or [])
+    evidence_sufficient = bool(correctness_result.get("evidence_sufficient_for_decision"))
+    any_insufficient = any(
+        j.get("verdict") == "INSUFFICIENT_EVIDENCE" for j in judgments
+    )
+
+    cited_chunks: List[str] = []
+    seen_chunks: Set[str] = set()
+    for judgment in judgments:
+        for chunk_id in judgment.get("citation_chunk_ids") or []:
+            if chunk_id not in seen_chunks:
+                seen_chunks.add(chunk_id)
+                cited_chunks.append(chunk_id)
+
+    if not evidence_sufficient or any_insufficient:
+        reason = correctness_result.get("abstention_reason") or (
+            "The answer-correctness detector could not reach a decisive "
+            "evidence-based verdict for one or more options."
+        )
+        return {
+            "finding_ref": finding_ref,
+            "finding_code": "OTHER_REVIEW_NEEDED",
+            "finding_type": "correctness",
+            "severity": "high",
+            "materiality": "blocking",
+            "title": "Answer correctness could not be confirmed from evidence",
+            "description": reason,
+            "evidence_chunk_ids": cited_chunks,
+            "metadata": {
+                "correctness_detector_abstained": True,
+                "abstention_reason": reason,
+            },
+        }
+
+    supported = {
+        judgment["option_label"]
+        for judgment in judgments
+        if judgment.get("verdict") == "SUPPORTED_AS_CORRECT"
+    }
+
+    if supported == stored:
+        return None
+
+    if len(supported) > required_selection_count:
+        code = "MULTIPLE_DEFENSIBLE_ANSWERS"
+        title = "Multiple options are independently supported by evidence"
+        description = (
+            f"The answer-correctness detector found {sorted(supported)} "
+            "independently evidence-supported, exceeding the required "
+            f"selection count of {required_selection_count}."
+        )
+    elif len(supported) == required_selection_count:
+        code = "WRONG_ANSWER_KEY"
+        title = "Stored answer key is not the evidence-supported option set"
+        description = (
+            f"The answer-correctness detector found {sorted(supported)} "
+            f"evidence-supported instead of the stored correct set {sorted(stored)}."
+        )
+    else:
+        code = "UNSUPPORTED_ANSWER"
+        title = "Stored answer key is not confirmed by evidence"
+        description = (
+            f"The answer-correctness detector found only {sorted(supported)} "
+            f"evidence-supported option(s), fewer than the required "
+            f"{required_selection_count}; the stored answer key {sorted(stored)} "
+            "is not confirmed."
+        )
+
+    return {
+        "finding_ref": finding_ref,
+        "finding_code": code,
+        "finding_type": "correctness",
+        "severity": "high",
+        "materiality": "blocking",
+        "title": title,
+        "description": description,
+        "evidence_chunk_ids": cited_chunks,
+        "metadata": {
+            "correctness_detector_supported_labels": sorted(supported),
+            "correctness_detector_stored_labels": sorted(stored),
+        },
+    }
+
+
+def merge_pass_b_findings(
+    *,
+    correctness_finding: Optional[Mapping[str, Any]],
+    general_proposed_findings: Sequence[Mapping[str, Any]],
+    frozen_evidence_chunk_ids: LabelSet,
+) -> Dict[str, Any]:
+    """The single deterministic Pass B merge boundary (V60).
+
+    The specialist's derived correctness finding (if any) is authoritative
+    for ``ANSWER_CORRECTNESS_CODES``. The general judge's non-correctness
+    findings are kept unchanged (already canonicalized by
+    ``validate_pass_b_result``). If the general judge nonetheless proposes a
+    correctness-family code, it is never accepted -- it is dropped and
+    recorded in ``dropped_general_findings`` for drift diagnostics rather
+    than silently discarded or allowed to override the specialist. This is
+    the only place finding lists are combined; no second materiality
+    mapping is introduced here -- the specialist's finding is run through
+    the exact same ``_validate_proposed_finding``/``assign_materiality``
+    path as any other proposed finding.
+    """
+    validated_correctness: List[Dict[str, Any]] = []
+    if correctness_finding is not None:
+        validated_correctness = _validate_proposed_findings(
+            [dict(correctness_finding)],
+            frozen_evidence_chunk_ids=frozen_evidence_chunk_ids,
+            prefix="pass B correctness result.derived_finding",
+        )
+
+    dropped: List[Dict[str, Any]] = []
+    kept_general: List[Dict[str, Any]] = []
+    for item in general_proposed_findings:
+        code = item.get("finding_code")
+        if code in ANSWER_CORRECTNESS_CODES:
+            dropped.append({
+                "finding_ref": item.get("finding_ref"),
+                "finding_code": code,
+                "reason": "general_judge_emitted_specialist_owned_code",
+            })
+            continue
+        kept_general.append(dict(item))
+
+    merged = list(validated_correctness) + kept_general
+
+    seen_refs: Set[str] = set()
+    for item in merged:
+        ref = item.get("finding_ref")
+        if ref in seen_refs:
+            raise AiQualityAuditValidationError(
+                f"pass B merged proposed_findings contains duplicate finding_ref: {ref!r}"
+            )
+        seen_refs.add(ref)
+
+    return {
+        "proposed_findings": merged,
+        "dropped_general_findings": dropped,
     }
 
 

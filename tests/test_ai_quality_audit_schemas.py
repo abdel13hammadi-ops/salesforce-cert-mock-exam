@@ -12,7 +12,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from workers.ai_quality_audit_schemas import (
     AiQualityAuditValidationError,
+    derive_correctness_finding,
+    merge_pass_b_findings,
     validate_pass_a_result,
+    validate_pass_b_correctness_result,
     validate_pass_b_result,
     validate_pass_c_result,
 )
@@ -822,6 +825,419 @@ class TestCanonicalMaterialityEnforcement(unittest.TestCase):
         self.assertEqual(persisted_materiality, "blocking")
         self.assertFalse(approved)
         self.assertTrue(publication_blocked)
+
+
+def _option_judgment(label: str, verdict: str, *, chunk_ids=None, rationale=None) -> dict:
+    return {
+        "option_label": label,
+        "verdict": verdict,
+        "citation_chunk_ids": list(chunk_ids or []),
+        "evidence_rationale": rationale or f"Evidence assessment for option {label}.",
+    }
+
+
+def _correctness_payload(
+    *,
+    supported=("A",),
+    not_supported=("B", "C", "D"),
+    insufficient=(),
+    evidence_sufficient=True,
+    abstention_reason=None,
+    citation_chunk_id=_CHUNK_1,
+) -> dict:
+    citation_ids = [citation_chunk_id] if citation_chunk_id else []
+    judgments = []
+    for label in supported:
+        judgments.append(
+            _option_judgment(label, "SUPPORTED_AS_CORRECT", chunk_ids=citation_ids)
+        )
+    for label in not_supported:
+        judgments.append(
+            _option_judgment(label, "NOT_SUPPORTED_AS_CORRECT", chunk_ids=citation_ids)
+        )
+    for label in insufficient:
+        judgments.append(_option_judgment(label, "INSUFFICIENT_EVIDENCE"))
+    return {
+        "option_judgments": judgments,
+        "evidence_sufficient_for_decision": evidence_sufficient,
+        "abstention_reason": abstention_reason,
+    }
+
+
+class TestPassBCorrectnessValidation(unittest.TestCase):
+    """V60-IMPL-01: specialized answer-correctness detector schema validation."""
+
+    def test_valid_decisive_result_one_judgment_per_option(self):
+        result = validate_pass_b_correctness_result(
+            _correctness_payload(),
+            allowed_option_labels=_OPTIONS,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        self.assertEqual(len(result["option_judgments"]), 4)
+        labels = {item["option_label"] for item in result["option_judgments"]}
+        self.assertEqual(labels, set(_OPTIONS))
+        self.assertTrue(result["evidence_sufficient_for_decision"])
+        self.assertIsNone(result["abstention_reason"])
+
+    def test_missing_option_judgment_rejected(self):
+        payload = _correctness_payload(supported=("A",), not_supported=("B", "C"))
+        with self.assertRaisesRegex(AiQualityAuditValidationError, "missing judgments"):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_duplicate_option_judgment_rejected(self):
+        payload = _correctness_payload()
+        payload["option_judgments"].append(
+            _option_judgment("A", "NOT_SUPPORTED_AS_CORRECT", chunk_ids=[_CHUNK_1])
+        )
+        with self.assertRaisesRegex(AiQualityAuditValidationError, "duplicate label"):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_unknown_option_label_rejected(self):
+        payload = _correctness_payload(supported=("A",), not_supported=("B", "C", "D", "Z"))
+        with self.assertRaisesRegex(AiQualityAuditValidationError, "not an allowed option label"):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_invalid_citation_id_outside_frozen_set_rejected(self):
+        payload = _correctness_payload(citation_chunk_id="99999999-9999-9999-9999-999999999999")
+        with self.assertRaisesRegex(AiQualityAuditValidationError, "outside"):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_supported_verdict_without_citation_rejected(self):
+        payload = _correctness_payload()
+        payload["option_judgments"][0]["citation_chunk_ids"] = []
+        with self.assertRaisesRegex(AiQualityAuditValidationError, "no citation_chunk_ids"):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_evidence_sufficient_true_with_insufficient_judgment_rejected(self):
+        payload = _correctness_payload(
+            supported=("A",),
+            not_supported=("B", "C"),
+            insufficient=("D",),
+            evidence_sufficient=True,
+            abstention_reason=None,
+        )
+        with self.assertRaisesRegex(
+            AiQualityAuditValidationError, "cannot be\\s+true while"
+        ):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_abstention_reason_required_when_evidence_insufficient(self):
+        payload = _correctness_payload(
+            supported=(),
+            not_supported=(),
+            insufficient=("A", "B", "C", "D"),
+            evidence_sufficient=False,
+            abstention_reason=None,
+        )
+        with self.assertRaisesRegex(AiQualityAuditValidationError, "abstention_reason"):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_abstention_reason_must_be_null_when_evidence_sufficient(self):
+        payload = _correctness_payload(evidence_sufficient=True, abstention_reason="some reason")
+        with self.assertRaisesRegex(AiQualityAuditValidationError, "must be null"):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_empty_frozen_evidence_forces_abstention(self):
+        payload = _correctness_payload(
+            supported=(),
+            not_supported=(),
+            insufficient=("A", "B", "C", "D"),
+            evidence_sufficient=False,
+            abstention_reason="No frozen evidence is available for this run.",
+        )
+        result = validate_pass_b_correctness_result(
+            payload,
+            allowed_option_labels=_OPTIONS,
+            frozen_evidence_chunk_ids=frozenset(),
+        )
+        self.assertFalse(result["evidence_sufficient_for_decision"])
+
+    def test_empty_frozen_evidence_rejects_claimed_sufficiency(self):
+        payload = _correctness_payload(
+            supported=(),
+            not_supported=("A", "B", "C", "D"),
+            evidence_sufficient=True,
+            abstention_reason=None,
+            citation_chunk_id=None,
+        )
+        with self.assertRaisesRegex(
+            AiQualityAuditValidationError, "zero frozen evidence chunks"
+        ):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=frozenset(),
+            )
+
+
+class TestDeriveCorrectnessFinding(unittest.TestCase):
+    """V60-IMPL-01: deterministic finding derivation from specialist output."""
+
+    def test_exact_stored_set_produces_no_finding(self):
+        result = _correctness_payload(supported=("A",), not_supported=("B", "C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNone(finding)
+
+    def test_alternative_set_of_required_size_yields_wrong_answer_key(self):
+        result = _correctness_payload(supported=("B",), not_supported=("A", "C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "WRONG_ANSWER_KEY")
+        self.assertEqual(finding["finding_type"], "correctness")
+
+    def test_more_supported_than_required_yields_multiple_defensible_answers(self):
+        result = _correctness_payload(supported=("A", "B"), not_supported=("C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+
+    def test_fewer_supported_than_required_yields_unsupported_answer(self):
+        result = _correctness_payload(supported=(), not_supported=("A", "B", "C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "UNSUPPORTED_ANSWER")
+
+    def test_insufficient_evidence_never_becomes_unsupported_answer(self):
+        result = _correctness_payload(
+            supported=(),
+            not_supported=(),
+            insufficient=("A", "B", "C", "D"),
+            evidence_sufficient=False,
+            abstention_reason="Evidence does not address any option.",
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertNotEqual(finding["finding_code"], "UNSUPPORTED_ANSWER")
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+        self.assertEqual(finding["finding_type"], "correctness")
+        # Materiality assigned here is later re-derived canonically through
+        # merge_pass_b_findings -> assign_materiality; this asserts intent only.
+        self.assertEqual(finding["materiality"], "blocking")
+
+    def test_single_option_insufficient_evidence_also_abstains(self):
+        result = _correctness_payload(
+            supported=("A",),
+            not_supported=("C", "D"),
+            insufficient=("B",),
+            evidence_sufficient=False,
+            abstention_reason="Option B could not be judged from evidence.",
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+
+    def test_multi_select_exact_match_produces_no_finding(self):
+        result = _correctness_payload(supported=("A", "B"), not_supported=("C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A", "B"],
+            required_selection_count=2,
+        )
+        self.assertIsNone(finding)
+
+    def test_multi_select_wrong_answer_key(self):
+        result = _correctness_payload(supported=("A", "C"), not_supported=("B", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A", "B"],
+            required_selection_count=2,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "WRONG_ANSWER_KEY")
+
+    def test_multi_select_unsupported_answer(self):
+        result = _correctness_payload(supported=("A",), not_supported=("B", "C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A", "B"],
+            required_selection_count=2,
+        )
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["finding_code"], "UNSUPPORTED_ANSWER")
+
+    def test_derivation_is_deterministic_across_repeated_calls(self):
+        result = _correctness_payload(supported=("B",), not_supported=("A", "C", "D"))
+        first = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        second = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(first, second)
+
+
+class TestMergePassBFindings(unittest.TestCase):
+    """V60-IMPL-01: deterministic Pass B specialist/general merge boundary."""
+
+    def test_specialist_correctness_finding_is_authoritative(self):
+        correctness_finding = {
+            "finding_ref": "FC1",
+            "finding_code": "WRONG_ANSWER_KEY",
+            "finding_type": "correctness",
+            "severity": "high",
+            "materiality": "blocking",
+            "title": "Wrong key",
+            "description": "Specialist disagrees with stored key.",
+            "evidence_chunk_ids": [_CHUNK_1],
+            "metadata": {},
+        }
+        result = merge_pass_b_findings(
+            correctness_finding=correctness_finding,
+            general_proposed_findings=[],
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        codes = [item["finding_code"] for item in result["proposed_findings"]]
+        self.assertEqual(codes, ["WRONG_ANSWER_KEY"])
+
+    def test_general_non_correctness_findings_remain(self):
+        general_finding = _finding(
+            finding_ref="F1",
+            finding_code="WEAK_DISTRACTORS",
+            finding_type="answer_quality",
+            severity="low",
+            materiality="warning",
+        )
+        result = merge_pass_b_findings(
+            correctness_finding=None,
+            general_proposed_findings=[general_finding],
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        codes = [item["finding_code"] for item in result["proposed_findings"]]
+        self.assertEqual(codes, ["WEAK_DISTRACTORS"])
+        self.assertEqual(result["dropped_general_findings"], [])
+
+    def test_general_correctness_drift_cannot_override_specialist(self):
+        correctness_finding = {
+            "finding_ref": "FC1",
+            "finding_code": "WRONG_ANSWER_KEY",
+            "finding_type": "correctness",
+            "severity": "high",
+            "materiality": "blocking",
+            "title": "Wrong key",
+            "description": "Specialist disagrees with stored key.",
+            "evidence_chunk_ids": [_CHUNK_1],
+            "metadata": {},
+        }
+        drifting_general_finding = _finding(
+            finding_ref="F1",
+            finding_code="UNSUPPORTED_ANSWER",
+            finding_type="correctness",
+            materiality="blocking",
+        )
+        result = merge_pass_b_findings(
+            correctness_finding=correctness_finding,
+            general_proposed_findings=[drifting_general_finding],
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        codes = [item["finding_code"] for item in result["proposed_findings"]]
+        self.assertEqual(codes, ["WRONG_ANSWER_KEY"])
+        self.assertEqual(len(result["dropped_general_findings"]), 1)
+        self.assertEqual(
+            result["dropped_general_findings"][0]["finding_code"], "UNSUPPORTED_ANSWER"
+        )
+
+    def test_finding_refs_remain_unique(self):
+        correctness_finding = {
+            "finding_ref": "F1",
+            "finding_code": "WRONG_ANSWER_KEY",
+            "finding_type": "correctness",
+            "severity": "high",
+            "materiality": "blocking",
+            "title": "Wrong key",
+            "description": "Specialist disagrees with stored key.",
+            "evidence_chunk_ids": [_CHUNK_1],
+            "metadata": {},
+        }
+        colliding_general_finding = _finding(finding_ref="F1", finding_code="WEAK_DISTRACTORS")
+        with self.assertRaisesRegex(AiQualityAuditValidationError, "duplicate finding_ref"):
+            merge_pass_b_findings(
+                correctness_finding=correctness_finding,
+                general_proposed_findings=[colliding_general_finding],
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_canonical_materiality_remains_blocking_for_all_three_correctness_codes(self):
+        for code in ("WRONG_ANSWER_KEY", "MULTIPLE_DEFENSIBLE_ANSWERS", "UNSUPPORTED_ANSWER"):
+            with self.subTest(code=code):
+                correctness_finding = {
+                    "finding_ref": "FC1",
+                    "finding_code": code,
+                    "finding_type": "correctness",
+                    "severity": "high",
+                    # Deliberately wrong materiality; canonical policy must
+                    # override this exactly as it does for any other finding.
+                    "materiality": "warning",
+                    "title": "Correctness defect",
+                    "description": "Specialist-derived correctness defect.",
+                    "evidence_chunk_ids": [_CHUNK_1],
+                    "metadata": {},
+                }
+                result = merge_pass_b_findings(
+                    correctness_finding=correctness_finding,
+                    general_proposed_findings=[],
+                    frozen_evidence_chunk_ids=_FROZEN,
+                )
+                self.assertEqual(result["proposed_findings"][0]["materiality"], "blocking")
 
 
 if __name__ == "__main__":

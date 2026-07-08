@@ -191,15 +191,76 @@ def _pass_b_result(*, findings=None) -> dict:
     }
 
 
+def _option_judgment(label: str, verdict: str, *, chunk_ids=None, rationale=None) -> dict:
+    return {
+        "option_label": label,
+        "verdict": verdict,
+        "citation_chunk_ids": list(chunk_ids or []),
+        "evidence_rationale": rationale or f"Evidence assessment for option {label}.",
+    }
+
+
+def _correctness_result(
+    *,
+    supported=("A",),
+    not_supported=("B",),
+    insufficient=(),
+    evidence_sufficient=True,
+    abstention_reason=None,
+    citation_chunk_id=_CHUNK_1,
+) -> dict:
+    """Default V60 specialist response fixture. With the default arguments
+    this represents a fully-confirmed, decisive answer (supported == stored
+    correct set {"A"} on the default single-select fixture), so
+    ``derive_correctness_finding`` returns ``None`` (no correctness finding)
+    -- i.e. this is the "specialist agrees with the stored key" filler used
+    by tests that are not specifically exercising the correctness detector.
+    """
+    judgments = []
+    for label in supported:
+        judgments.append(
+            _option_judgment(label, "SUPPORTED_AS_CORRECT", chunk_ids=[citation_chunk_id])
+        )
+    for label in not_supported:
+        judgments.append(
+            _option_judgment(label, "NOT_SUPPORTED_AS_CORRECT", chunk_ids=[citation_chunk_id])
+        )
+    for label in insufficient:
+        judgments.append(_option_judgment(label, "INSUFFICIENT_EVIDENCE"))
+    return {
+        "option_judgments": judgments,
+        "evidence_sufficient_for_decision": evidence_sufficient,
+        "abstention_reason": abstention_reason,
+    }
+
+
+def _correctness_result_abstain(reason: str = "Evidence does not address every option.") -> dict:
+    return _correctness_result(
+        supported=(),
+        not_supported=(),
+        insufficient=("A", "B"),
+        evidence_sufficient=False,
+        abstention_reason=reason,
+    )
+
+
 def _blocking_finding(**overrides) -> dict:
+    # V60: WRONG_ANSWER_KEY/UNSUPPORTED_ANSWER/MULTIPLE_DEFENSIBLE_ANSWERS are
+    # now owned exclusively by the specialized correctness detector and are
+    # discarded if the general judge proposes them (see
+    # ``merge_pass_b_findings``). This fixture represents a generic
+    # *general-judge* blocking finding used throughout this file to exercise
+    # dispute-routing/Pass-C/canonical-materiality machinery that is
+    # agnostic to which specific defect triggered it, so its default code
+    # uses a non-correctness blocking code instead.
     base = {
         "finding_ref": "F1",
-        "finding_code": "WRONG_ANSWER_KEY",
-        "finding_type": "correctness",
+        "finding_code": "EXPLANATION_MISSING",
+        "finding_type": "explanation_quality",
         "severity": "high",
         "materiality": "blocking",
-        "title": "Wrong answer key",
-        "description": "Marked correct option is wrong.",
+        "title": "Explanation missing",
+        "description": "No explanation was provided for the correct answer.",
         "evidence_chunk_ids": [_CHUNK_1],
         "metadata": {},
     }
@@ -642,6 +703,7 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 _llm_response(_pass_b_result()),
             ]
         )
@@ -673,6 +735,7 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 _llm_response(_pass_b_result(findings=[_blocking_finding()])),
             ]
         )
@@ -731,6 +794,7 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 _llm_response(_pass_b_result(findings=[_blocking_finding()])),
             ]
         )
@@ -816,7 +880,9 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 _llm_response({"selected_option_labels": ["Z"]}),
+                _llm_response(_correctness_result()),
                 _llm_response(_pass_b_result()),
             ]
         )
@@ -848,7 +914,9 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 _llm_response({"selected_option_labels": ["Z"]}),
+                _llm_response(_correctness_result()),
                 _llm_response({"selected_option_labels": ["Z"]}),
             ]
         )
@@ -941,6 +1009,7 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 _llm_response(_pass_b_result()),
             ]
         )
@@ -968,6 +1037,7 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 _llm_response(_pass_b_result(findings=[_blocking_finding()])),
             ]
         )
@@ -997,6 +1067,7 @@ class TestAiQualityAuditWorkerOrchestration(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 _llm_response(
                     _pass_b_result(findings=[_warning_only_blocking_finding()])
                 ),
@@ -1118,6 +1189,7 @@ class TestCanonicalMaterialityDrivesDisputeRouting(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 # The *provider's own* response still self-reports 'warning'
                 # -- this is exactly what real schema validation (not
                 # bypassed here) must canonicalize to 'blocking' before
@@ -1192,6 +1264,7 @@ class TestNormalNoDisputeFindingPersistence(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 _llm_response(_pass_b_result(findings=[_warning_finding()])),
             ]
         )
@@ -1495,7 +1568,9 @@ class TestAiQualityAuditSchemaRouting(unittest.TestCase):
             _claim("EXECUTE_PASS_B", "B"),
             _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
         )
-        primary = _SequenceProvider([_llm_response(_pass_b_result())])
+        primary = _SequenceProvider(
+            [_llm_response(_correctness_result()), _llm_response(_pass_b_result())]
+        )
 
         with patch(
             "workers.ai_quality_audit_worker.validate_pass_b_result",
@@ -1698,7 +1773,9 @@ class TestPassBRetryFeedback(unittest.TestCase):
         primary = _SequenceProvider(
             [
                 _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
                 _llm_response(invalid_source_support),
+                _llm_response(_correctness_result()),
                 _llm_response(valid_source_support),
             ]
         )
@@ -1714,7 +1791,7 @@ class TestPassBRetryFeedback(unittest.TestCase):
                 AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
             )
 
-        self.assertEqual(len(primary.calls), 3)
+        self.assertEqual(len(primary.calls), 5)
         retry_kwargs = build_b.call_args_list[1].kwargs
         self.assertIn("source_support_context", retry_kwargs["retry_schema_errors"][0])
         pass_b_records = [
@@ -1768,6 +1845,303 @@ class TestAiQualityAuditProviderTimeout(unittest.TestCase):
 
         self.assertEqual(result["run_status"], "inconclusive")
         _assert_timeout_failure(self, client, dispute, pass_code="C")
+
+
+class TestPassBCompositeExecution(unittest.TestCase):
+    """V60-IMPL-01: composite specialist + general-judge Pass B worker path."""
+
+    def test_specialist_and_general_calls_execute_in_intended_order(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("SKIP_PASS_C", "C"),
+            _claim("RUN_READY_TO_COMPLETE"),
+        )
+        _wire_normal_no_dispute_tables(client)
+
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
+                _llm_response(_pass_b_result()),
+            ]
+        )
+
+        _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
+
+        # calls[0] is Pass A; the two Pass B sub-calls must follow in order:
+        # specialist (correctness_detector) strictly before the general
+        # judge (general_quality_judge).
+        self.assertEqual(len(primary.calls), 3)
+        sub_calls = [
+            (call.get("metadata") or {}).get("pass_b_sub_call") for call in primary.calls[1:]
+        ]
+        self.assertEqual(sub_calls, ["correctness_detector", "general_quality_judge"])
+
+    def test_one_logical_pass_b_result_is_persisted(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("SKIP_PASS_C", "C"),
+            _claim("RUN_READY_TO_COMPLETE"),
+        )
+        _wire_normal_no_dispute_tables(client)
+
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
+                _llm_response(_pass_b_result()),
+            ]
+        )
+
+        _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
+
+        pass_b_records = [
+            call for call in client.record_calls if call["p_pass_code"] == "B"
+        ]
+        self.assertEqual(len(pass_b_records), 1)
+        self.assertEqual(pass_b_records[0]["p_status"], "completed")
+
+    def test_both_sub_call_telemetry_records_remain_visible(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("SKIP_PASS_C", "C"),
+            _claim("RUN_READY_TO_COMPLETE"),
+        )
+        _wire_normal_no_dispute_tables(client)
+
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result(), provider_request_id="req-correctness-1"),
+                _llm_response(_pass_b_result(), provider_request_id="req-general-1"),
+            ]
+        )
+
+        _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
+
+        pass_b_record = next(
+            call for call in client.record_calls if call["p_pass_code"] == "B"
+        )
+        composite = pass_b_record["p_metadata"]["pass_b_composite"]
+        self.assertIn("correctness_detector", composite)
+        self.assertIn("general_quality_judge", composite)
+        for label in ("correctness_detector", "general_quality_judge"):
+            telemetry = composite[label]
+            self.assertEqual(telemetry["status"], "completed")
+            self.assertIsInstance(telemetry["duration_ms"], int)
+            self.assertIn("provider_request_id", telemetry)
+            self.assertIn("input_tokens", telemetry)
+            self.assertIn("output_tokens", telemetry)
+        self.assertEqual(
+            composite["correctness_detector"]["provider_request_id"], "req-correctness-1"
+        )
+        self.assertEqual(
+            composite["general_quality_judge"]["provider_request_id"], "req-general-1"
+        )
+        # Top-level RPC fields combine both sub-calls' token counts rather
+        # than reporting only the general judge's.
+        self.assertEqual(pass_b_record["p_input_tokens"], 200)
+        self.assertEqual(pass_b_record["p_output_tokens"], 80)
+
+    def test_specialist_blocking_finding_triggers_pass_c_routing(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("EXECUTE_PASS_C", "C", model_name="test-dispute-model"),
+            _claim("RUN_READY_TO_COMPLETE"),
+        )
+        _wire_resolved_dispute_tables(client)
+
+        # Specialist disagrees with the stored key (supports "B" instead of
+        # the stored-correct "A"), so derive_correctness_finding produces a
+        # real WRONG_ANSWER_KEY finding -- the general judge itself proposes
+        # nothing.
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result(supported=("B",), not_supported=("A",))),
+                _llm_response(_pass_b_result()),
+            ]
+        )
+        dispute = _SequenceProvider([_llm_response(_pass_c_normal_resolved())])
+
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+        )
+
+        self.assertEqual(result["passes_executed"], ["A", "B", "C"])
+        self.assertEqual(len(client.persist_trigger_calls), 1)
+        self.assertEqual(
+            client.persist_trigger_calls[0]["p_reason_code"],
+            "BLOCKING_DEFECT_PROPOSED",
+        )
+        pass_b_record = next(
+            call for call in client.record_calls if call["p_pass_code"] == "B"
+        )
+        self.assertEqual(
+            pass_b_record["p_result_json"]["proposed_findings"][0]["finding_code"],
+            "WRONG_ANSWER_KEY",
+        )
+
+    def test_specialist_abstention_does_not_silently_auto_approve(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("EXECUTE_PASS_C", "C", model_name="test-dispute-model"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        client.set_table_response(
+            "audit_run_dispute_triggers",
+            [
+                {
+                    "audit_run_id": _RUN_ID,
+                    "reason_code": "BLOCKING_DEFECT_PROPOSED",
+                    "source_pass_code": "B",
+                    "trigger_reason": "Pass B proposed one or more blocking findings",
+                    "finding_refs": ["FC1"],
+                }
+            ],
+        )
+
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result_abstain()),
+                _llm_response(_pass_b_result()),
+            ]
+        )
+        dispute = _SequenceProvider([_llm_response(_pass_c_unresolved())])
+
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+        )
+
+        # Abstention must never silently auto-approve: it produces a real
+        # blocking finding that routes through the existing dispute/Pass C
+        # machinery, and an unresolved dispute keeps the run inconclusive
+        # with zero confirmed findings -- never "completed".
+        self.assertEqual(len(client.persist_trigger_calls), 1)
+        self.assertEqual(
+            client.persist_trigger_calls[0]["p_reason_code"],
+            "BLOCKING_DEFECT_PROPOSED",
+        )
+        pass_b_record = next(
+            call for call in client.record_calls if call["p_pass_code"] == "B"
+        )
+        proposed = pass_b_record["p_result_json"]["proposed_findings"]
+        self.assertEqual(len(proposed), 1)
+        self.assertEqual(proposed[0]["finding_code"], "OTHER_REVIEW_NEEDED")
+        self.assertEqual(proposed[0]["materiality"], "blocking")
+        self.assertEqual(result["run_status"], "inconclusive")
+        self.assertEqual(len(client.complete_calls), 0)
+
+    def test_specialist_schema_invalid_fails_whole_pass_b_attempt(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+
+        # Specialist response is missing option_judgments entirely --
+        # schema-invalid -- so the whole Pass B attempt fails without ever
+        # calling the general judge.
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response({"not_a_valid_field": True}),
+            ]
+        )
+
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=lambda **_: None),
+        )
+
+        self.assertEqual(result["run_status"], "inconclusive")
+        self.assertEqual(len(primary.calls), 2)
+        pass_b_record = next(
+            call for call in client.record_calls if call["p_pass_code"] == "B"
+        )
+        self.assertEqual(pass_b_record["p_status"], "schema_invalid")
+        composite = pass_b_record["p_metadata"]["pass_b_composite"]
+        self.assertIn("correctness_detector", composite)
+        self.assertNotIn("general_quality_judge", composite)
+        self.assertEqual(composite["correctness_detector"]["status"], "schema_invalid")
+
+    def test_specialist_provider_timeout_fails_whole_pass_b_attempt(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("RUN_INCONCLUSIVE", run_status="inconclusive"),
+        )
+        primary = _HangingProvider(response_factory=_correctness_result)
+
+        result = _run_job(
+            client,
+            _providers_with_timeout(primary),
+        )
+
+        self.assertEqual(result["run_status"], "inconclusive")
+        # Only the specialist call is made; the timeout fails the whole
+        # attempt before the general judge is ever invoked.
+        _assert_timeout_failure(self, client, primary, pass_code="B")
+
+    def test_pass_a_and_pass_c_behavior_remain_unchanged(self):
+        client = OrchestrationFakeSupabase()
+        client.enqueue_claims(
+            _claim("EXECUTE_PASS_A", "A"),
+            _claim("EXECUTE_PASS_B", "B"),
+            _claim("EXECUTE_PASS_C", "C", model_name="test-dispute-model"),
+            _claim("RUN_READY_TO_COMPLETE"),
+        )
+        _wire_resolved_dispute_tables(client)
+
+        primary = _SequenceProvider(
+            [
+                _llm_response(_pass_a_result()),
+                _llm_response(_correctness_result()),
+                _llm_response(_pass_b_result(findings=[_blocking_finding()])),
+            ]
+        )
+        dispute = _SequenceProvider([_llm_response(_pass_c_normal_resolved())])
+
+        result = _run_job(
+            client,
+            AiQualityAuditProviders(primary=primary, dispute=dispute),
+        )
+
+        # Pass A remains a single un-split call; Pass C remains a single
+        # un-split dispute call, exactly as before V60.
+        pass_a_calls = [
+            call for call in client.record_calls if call["p_pass_code"] == "A"
+        ]
+        pass_c_calls = [
+            call for call in client.record_calls if call["p_pass_code"] == "C"
+        ]
+        self.assertEqual(len(pass_a_calls), 1)
+        self.assertEqual(len(pass_c_calls), 1)
+        self.assertEqual(len(dispute.calls), 1)
+        self.assertEqual(result["completion_shape"], "NORMAL_DISPUTE")
 
 
 if __name__ == "__main__":

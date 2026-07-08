@@ -16,10 +16,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from workers.ai_quality_audit_prompts import (
     _FINDING_CODE_DEFINITIONS,
     build_pass_a_prompt,
+    build_pass_b_correctness_prompt,
     build_pass_b_prompt,
     build_pass_c_prompt,
 )
-from workers.ai_quality_audit_schemas import SUPPORTED_FINDING_CODES
+from workers.ai_quality_audit_schemas import ANSWER_CORRECTNESS_CODES, SUPPORTED_FINDING_CODES
 
 _HELD_OUT_FIXTURE = (
     Path(__file__).resolve().parent / "fixtures" / "pass_b_taxonomy_held_out_scenarios.json"
@@ -295,6 +296,112 @@ class TestPassBTaxonomyGuidance(unittest.TestCase):
                     self.assertIn(code, user_prompt)
                 for phrase in scenario["required_prompt_phrases"]:
                     self.assertIn(phrase, user_prompt)
+
+
+class TestPassBCorrectnessPrompt(unittest.TestCase):
+    """V60-IMPL-01: specialized answer-correctness detector prompt."""
+
+    def test_excludes_pass_a_selected_labels(self):
+        context = _comparison_context(pass_a_selected_option_labels=["B"])
+        system_prompt, user_prompt = build_pass_b_correctness_prompt(context)
+        combined = f"{system_prompt}\n{user_prompt}"
+
+        self.assertNotIn("Pass A selected labels", combined)
+        self.assertNotIn("Pass A", combined)
+
+    def test_includes_stored_labels_and_frozen_evidence_but_not_pass_a(self):
+        _, user_prompt = build_pass_b_correctness_prompt(_comparison_context())
+
+        self.assertIn("Stored correct labels", user_prompt)
+        self.assertIn(_CHUNK_1, user_prompt)
+        self.assertIn(_CHUNK_2, user_prompt)
+        self.assertIn("Profiles define default settings.", user_prompt)
+
+    def test_forbids_choosing_finding_code_or_materiality(self):
+        _, user_prompt = build_pass_b_correctness_prompt(_comparison_context())
+
+        self.assertIn("not selecting a finding code, materiality, severity", user_prompt)
+        # "materiality" appears exactly once, in the explicit prohibition
+        # sentence above -- the specialist schema itself never asks for it.
+        self.assertEqual(user_prompt.count("materiality"), 1)
+        self.assertNotIn("finding_code", user_prompt)
+
+    def test_requires_three_state_verdict_and_citations(self):
+        _, user_prompt = build_pass_b_correctness_prompt(_comparison_context())
+
+        self.assertIn("SUPPORTED_AS_CORRECT", user_prompt)
+        self.assertIn("NOT_SUPPORTED_AS_CORRECT", user_prompt)
+        self.assertIn("INSUFFICIENT_EVIDENCE", user_prompt)
+        self.assertIn("must cite at least one frozen", user_prompt)
+        self.assertIn("evidence_sufficient_for_decision", user_prompt)
+        self.assertIn("abstention_reason", user_prompt)
+
+    def test_forbids_general_knowledge_guessing(self):
+        _, user_prompt = build_pass_b_correctness_prompt(_comparison_context())
+
+        self.assertIn("Do not use general Salesforce knowledge", user_prompt)
+        self.assertIn("do not guess", user_prompt)
+
+    def test_zero_frozen_evidence_forces_insufficient_evidence_guidance(self):
+        context = _comparison_context(frozen_evidence=[])
+        _, user_prompt = build_pass_b_correctness_prompt(context)
+
+        self.assertIn("zero frozen evidence chunks", user_prompt)
+        self.assertIn("every option must be judged INSUFFICIENT_EVIDENCE", user_prompt)
+
+    def test_retry_prompt_includes_prior_validation_error(self):
+        _, user_prompt = build_pass_b_correctness_prompt(
+            _comparison_context(),
+            retry_schema_errors=["option_judgments is missing judgments for options: ['B']"],
+        )
+
+        self.assertIn(
+            "Prior answer-correctness response failed deterministic schema validation:",
+            user_prompt,
+        )
+        self.assertIn("option_judgments is missing judgments", user_prompt)
+
+    def test_identical_inputs_produce_identical_prompts(self):
+        context = _comparison_context()
+        first = build_pass_b_correctness_prompt(context)
+        second = build_pass_b_correctness_prompt(context)
+        self.assertEqual(first, second)
+
+
+class TestPassBPromptExcludeFindingCodes(unittest.TestCase):
+    """V60-IMPL-01: general Pass B judge narrowed to exclude correctness codes."""
+
+    def test_excluded_codes_are_not_offered_in_codes_block(self):
+        _, user_prompt = build_pass_b_prompt(
+            _comparison_context(),
+            exclude_finding_codes=ANSWER_CORRECTNESS_CODES,
+        )
+        for code in ANSWER_CORRECTNESS_CODES:
+            self.assertNotIn(f"- {code}", user_prompt)
+
+    def test_scope_restriction_notice_present_when_excluding(self):
+        _, user_prompt = build_pass_b_prompt(
+            _comparison_context(),
+            exclude_finding_codes=ANSWER_CORRECTNESS_CODES,
+        )
+        self.assertIn("Scope restriction for this run:", user_prompt)
+        self.assertIn("Do NOT propose these finding codes:", user_prompt)
+        for code in ANSWER_CORRECTNESS_CODES:
+            self.assertIn(code, user_prompt)
+
+    def test_default_call_without_exclusion_still_offers_all_codes(self):
+        _, user_prompt = build_pass_b_prompt(_comparison_context())
+        for code in ANSWER_CORRECTNESS_CODES:
+            self.assertIn(f"- {code}", user_prompt)
+        self.assertNotIn("Scope restriction for this run:", user_prompt)
+
+    def test_non_correctness_codes_remain_available_when_excluding(self):
+        _, user_prompt = build_pass_b_prompt(
+            _comparison_context(),
+            exclude_finding_codes=ANSWER_CORRECTNESS_CODES,
+        )
+        self.assertIn("WEAK_DISTRACTORS", user_prompt)
+        self.assertIn("EXPLANATION_MISSING", user_prompt)
 
 
 if __name__ == "__main__":

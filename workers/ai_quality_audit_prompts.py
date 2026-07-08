@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 from workers.ai_quality_audit_schemas import (
     ALLOWED_RESOLUTION_STATUS,
     ALLOWED_RESOLUTION_TYPES,
+    ANSWER_CORRECTNESS_VERDICTS,
     SUPPORTED_FINDING_CODES,
 )
 from workers.finding_policy import ALLOWED_MATERIALITY
@@ -37,6 +38,16 @@ _PASS_C_SYSTEM = (
     "You are an independent dispute reviewer for a Salesforce certification "
     "question quality audit. Resolve the triggered dispute or substitution "
     "exactly as specified. Respond only with JSON matching the required schema."
+)
+
+_PASS_B_CORRECTNESS_SYSTEM = (
+    "You are an independent answer-correctness verifier for a Salesforce "
+    "certification question audit. Judge every option strictly and "
+    "independently against only the frozen official evidence provided. "
+    "You do not select a finding code, materiality, severity, or approval "
+    "state -- only report per-option evidence verdicts and an overall "
+    "evidence-sufficiency judgment. Respond only with JSON matching the "
+    "required schema."
 )
 
 _WARNING_ONLY_CODES = frozenset({"SOURCE_SUPPORT_WEAK", "DOMAIN_MISALIGNMENT"})
@@ -193,8 +204,16 @@ def build_pass_b_prompt(
     comparison_context: dict,
     *,
     retry_schema_errors: Sequence[str] | None = None,
+    exclude_finding_codes: frozenset | None = None,
 ) -> Tuple[str, str]:
-    """Build Pass B prompts with frozen evidence in retrieval rank order."""
+    """Build Pass B prompts with frozen evidence in retrieval rank order.
+
+    ``exclude_finding_codes`` (V60) narrows the general-quality judge's scope
+    when a specialized detector exclusively owns those codes for this run
+    (see ``build_pass_b_correctness_prompt``). Defaults to the full,
+    unrestricted code set for backward compatibility.
+    """
+    excluded = frozenset(exclude_finding_codes or ())
     required_count = int(comparison_context["required_selection_count"])
     options = _sorted_options(comparison_context.get("options") or [])
     pass_a_labels = list(comparison_context.get("pass_a_selected_option_labels") or [])
@@ -202,7 +221,7 @@ def build_pass_b_prompt(
     frozen_evidence = list(comparison_context.get("frozen_evidence") or [])
     frozen_evidence.sort(key=lambda item: item["rank"])
 
-    codes_block = _format_finding_codes_block()
+    codes_block = _format_finding_codes_block(exclude=excluded)
 
     lines = [
         "Task: evidence-backed quality review (Pass B).",
@@ -279,12 +298,18 @@ def build_pass_b_prompt(
         sort_keys=True,
     )
 
-    lines.extend(
-        [
-            "",
-            "Supported finding codes:",
-            codes_block,
-            "",
+    if excluded:
+        selection_procedure = [
+            "Finding code selection procedure:",
+            "1. Choose the single most specific finding code that fully explains the defect.",
+            "2. Do not add multiple codes when one code fully explains the defect.",
+            "3. Use materiality=blocking only when the defect can invalidate correctness "
+            "or make the question unsafe to publish.",
+            "4. Use materiality=warning for quality defects that do not invalidate the "
+            "stored answer.",
+        ]
+    else:
+        selection_procedure = [
             "Finding code selection procedure:",
             "1. Solve the question independently from the stem, options, and frozen evidence.",
             "2. Compare your independent answer with the stored answer key.",
@@ -299,6 +324,15 @@ def build_pass_b_prompt(
             "or make the question unsafe to publish.",
             "8. Use materiality=warning for quality defects that do not invalidate the "
             "stored answer.",
+        ]
+
+    lines.extend(
+        [
+            "",
+            "Supported finding codes:",
+            codes_block,
+            "",
+            *selection_procedure,
             "",
             "Materiality assignment:",
             "- blocking: correctness is wrong, the stem cannot be answered reliably, "
@@ -308,6 +342,25 @@ def build_pass_b_prompt(
             "- informational: minor polish issues with no material impact on learning.",
             "- SOURCE_SUPPORT_WEAK and DOMAIN_MISALIGNMENT are warning-only; never "
             "assign materiality=blocking to them.",
+        ]
+    )
+
+    if excluded:
+        lines.extend(
+            [
+                "",
+                "Scope restriction for this run:",
+                f"- Do NOT propose these finding codes: {', '.join(sorted(excluded))}.",
+                "- A separate specialized detector exclusively owns answer-correctness "
+                "verification for this run and its output is authoritative for those "
+                "codes; anything you propose in that scope anyway will be discarded, "
+                "not merged. Focus on explanation quality, distractor quality, "
+                "cognitive level, source support, and other non-correctness concerns.",
+            ]
+        )
+
+    lines.extend(
+        [
             "",
             "Rules:",
             "- Use only supported finding_code values.",
@@ -355,6 +408,139 @@ def build_pass_b_prompt(
         ]
     )
     return _PASS_B_SYSTEM, "\n".join(lines)
+
+
+def build_pass_b_correctness_prompt(
+    comparison_context: dict,
+    *,
+    retry_schema_errors: Sequence[str] | None = None,
+) -> Tuple[str, str]:
+    """Build the specialized answer-correctness detector prompt (V60).
+
+    Judges every option independently against only the frozen evidence.
+    Deliberately excludes Pass A's independently-selected labels -- anchoring
+    to another model's answer would undermine this detector's independence
+    and increase correlated errors. Never asks the model to choose a finding
+    code, materiality, severity, or approval state; those are derived
+    deterministically in ``workers.ai_quality_audit_schemas.
+    derive_correctness_finding``.
+    """
+    required_count = int(comparison_context["required_selection_count"])
+    options = _sorted_options(comparison_context.get("options") or [])
+    stored_correct = list(comparison_context.get("stored_correct_option_labels") or [])
+    frozen_evidence = list(comparison_context.get("frozen_evidence") or [])
+    frozen_evidence.sort(key=lambda item: item["rank"])
+
+    lines = [
+        "Task: independent answer-correctness verification (Pass B specialist).",
+        f"Certification: {comparison_context['certification_exam_name']}",
+        f"Domain: {comparison_context['domain_name']}",
+        f"Question type: {comparison_context['question_type']}",
+        f"Required selection count: {required_count}",
+        "",
+        "Question:",
+        comparison_context["question_text"],
+        "",
+        "Options:",
+    ]
+    for option in options:
+        lines.append(f"- [{option['option_label']}] {option['option_text']}")
+
+    lines.extend(
+        [
+            "",
+            f"Stored correct labels: {json.dumps(stored_correct, separators=(',', ':'))}",
+            "",
+            "Frozen evidence (retrieval rank order; cite only these chunk_id values):",
+        ]
+    )
+    if frozen_evidence:
+        for item in frozen_evidence:
+            header = f"[rank={item['rank']} chunk_id={item['chunk_id']}]"
+            if item.get("title"):
+                header += f" title={item['title']!r}"
+            if item.get("source_label"):
+                header += f" source={item['source_label']!r}"
+            lines.append(header)
+            lines.append(item["chunk_text"])
+            lines.append("")
+    else:
+        lines.append("(no frozen evidence chunks for this run)")
+
+    lines.extend(
+        [
+            "",
+            "Your task:",
+            "1. Judge EVERY option independently and only against the frozen evidence "
+            "above.",
+            "2. Do not use general Salesforce knowledge, training data, or "
+            "assumptions beyond what the frozen evidence states. If the evidence "
+            "does not address an option, do not guess.",
+            "3. Do not consider or infer any other assessment, blind answer attempt, "
+            "or review of this question; judge strictly from the artifacts provided "
+            "here.",
+            "4. For each option, choose exactly one verdict:",
+            "   - SUPPORTED_AS_CORRECT: the frozen evidence affirmatively "
+            "establishes this option is correct.",
+            "   - NOT_SUPPORTED_AS_CORRECT: the frozen evidence is sufficient to "
+            "judge this option, and it affirmatively establishes the option is NOT "
+            "correct.",
+            "   - INSUFFICIENT_EVIDENCE: the frozen evidence does not say enough to "
+            "judge this option either way. Use this instead of guessing.",
+            "5. Every SUPPORTED_AS_CORRECT verdict must cite at least one frozen "
+            "chunk_id that directly supports it.",
+            "6. Set evidence_sufficient_for_decision=true only if every option "
+            "received a decisive verdict (SUPPORTED_AS_CORRECT or "
+            "NOT_SUPPORTED_AS_CORRECT) and the evidence is adequate to distinguish "
+            "the correct option(s) from the rest. If any option is "
+            "INSUFFICIENT_EVIDENCE, this must be false.",
+            "7. When evidence_sufficient_for_decision is false, provide a concise, "
+            "specific abstention_reason explaining what the evidence fails to "
+            "establish. When it is true, leave abstention_reason null.",
+            "8. You are not selecting a finding code, materiality, severity, or "
+            "approval state. Only report per-option verdicts and the overall "
+            "sufficiency judgment; any finding is derived deterministically from "
+            "your verdicts.",
+            "",
+            "Rules:",
+            "- Provide exactly one judgment per listed option label, no more, no "
+            "fewer.",
+            "- citation_chunk_ids must reference frozen chunk_id values only.",
+            "- evidence_rationale must be concise (1-2 sentences) and specific to "
+            "the cited evidence, not a restatement of the option text.",
+        ]
+    )
+
+    if not frozen_evidence:
+        lines.extend(
+            [
+                "- This run has zero frozen evidence chunks: every option must be "
+                "judged INSUFFICIENT_EVIDENCE and evidence_sufficient_for_decision "
+                "must be false.",
+            ]
+        )
+
+    if retry_schema_errors:
+        lines.extend(
+            [
+                "",
+                "Prior answer-correctness response failed deterministic schema "
+                "validation:",
+                *[f"- {error}" for error in retry_schema_errors],
+                "Correct only the invalid JSON shape from the prior attempt. "
+                "Preserve your per-option evidence judgments where they were valid.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "Return JSON with option_judgments (one entry per option label), "
+            "evidence_sufficient_for_decision, and abstention_reason (string or "
+            "null).",
+        ]
+    )
+    return _PASS_B_CORRECTNESS_SYSTEM, "\n".join(lines)
 
 
 def build_pass_c_prompt(
@@ -445,9 +631,11 @@ def _sorted_options(options: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]
     )
 
 
-def _format_finding_codes_block() -> str:
+def _format_finding_codes_block(*, exclude: frozenset = frozenset()) -> str:
     lines = []
     for code in sorted(SUPPORTED_FINDING_CODES):
+        if code in exclude:
+            continue
         definition = _FINDING_CODE_DEFINITIONS.get(code)
         if not definition:
             raise ValueError(
@@ -532,6 +720,46 @@ PASS_B_RESPONSE_SCHEMA: dict = {
             "type": "array",
             "items": _proposed_finding_schema(),
         },
+    },
+}
+
+def _option_judgment_schema() -> dict:
+    return {
+        "type": "object",
+        "required": [
+            "option_label",
+            "verdict",
+            "citation_chunk_ids",
+            "evidence_rationale",
+        ],
+        "additionalProperties": False,
+        "properties": {
+            "option_label": {"type": "string"},
+            "verdict": {
+                "type": "string",
+                "enum": sorted(ANSWER_CORRECTNESS_VERDICTS),
+            },
+            "citation_chunk_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "evidence_rationale": {"type": "string"},
+        },
+    }
+
+
+PASS_B_CORRECTNESS_RESPONSE_SCHEMA: dict = {
+    "type": "object",
+    "required": ["option_judgments", "evidence_sufficient_for_decision"],
+    "additionalProperties": False,
+    "properties": {
+        "option_judgments": {
+            "type": "array",
+            "items": _option_judgment_schema(),
+            "minItems": 1,
+        },
+        "evidence_sufficient_for_decision": {"type": "boolean"},
+        "abstention_reason": {"type": ["string", "null"]},
     },
 }
 

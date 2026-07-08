@@ -379,8 +379,8 @@ class _FakeAdapter:
             "engine_version": "v48-disposable-db-v1",
             "provider_id": "openai",
             "model_id": "gpt-5.5",
-            "prompt_version": "v58-quality-04c-benchmark-prompt",
-            "ruleset_version": "v58-quality-04c-benchmark-rules",
+            "prompt_version": "v60-answer-correctness-specialist-prompt-v1",
+            "ruleset_version": "v60-answer-correctness-specialist-rules-v1",
             "evidence_config_id": "official_evidence_seed_v1",
         }
 
@@ -417,6 +417,7 @@ class TestCaseLoopSequencing(unittest.TestCase):
             openai_timeout_seconds=120.0,
             openai_max_retries=3,
             openai_max_output_tokens=4096,
+            pass_b_sub_call_timeout_seconds_effective=120.0,
         )
         kwargs.update(overrides)
         return baseline.compute_config_fingerprint(**kwargs)
@@ -638,6 +639,7 @@ class TestCheckpointFingerprintOpenAiSettings(EnvIsolatedTestCase):
             openai_timeout_seconds=120.0,
             openai_max_retries=3,
             openai_max_output_tokens=4096,
+            pass_b_sub_call_timeout_seconds_effective=120.0,
         )
         kwargs.update(overrides)
         return baseline.compute_config_fingerprint(**kwargs)
@@ -851,6 +853,279 @@ class TestCheckpointFingerprintOpenAiSettings(EnvIsolatedTestCase):
             resume_dir=self._run_dir, config_fingerprint=fingerprint_explicit
         )
         self.assertEqual(completed_case_ids, {"fake-001", "fake-002"})
+
+
+# ---------------------------------------------------------------------------
+# V60-IMPL-03: specialist prompt/ruleset identity + effective Pass B
+# sub-call timeout must both be part of the resume-compatibility
+# fingerprint, so a pre-V60 checkpoint (produced before the specialist
+# existed) or a checkpoint with a different effective sub-call timeout can
+# never be silently resumed by post-V60 code.
+# ---------------------------------------------------------------------------
+
+_PRE_V60_PROMPT_VERSION = "v58-quality-04c-benchmark-prompt"
+_PRE_V60_RULESET_VERSION = "v58-quality-04c-benchmark-rules"
+
+
+class TestV60IdentityAndTimeoutFingerprint(EnvIsolatedTestCase):
+    def setUp(self):
+        super().setUp()
+        import tempfile
+
+        self._run_dir = Path(tempfile.mkdtemp(prefix="v58-openai-baseline-v60-identity-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._run_dir, ignore_errors=True))
+
+    @staticmethod
+    def _adapter_config(*, prompt_version, ruleset_version):
+        return {
+            "engine_id": "v48",
+            "engine_version": "v48-disposable-db-v1",
+            "provider_id": "openai",
+            "model_id": "gpt-5.5",
+            "prompt_version": prompt_version,
+            "ruleset_version": ruleset_version,
+            "evidence_config_id": "official_evidence_seed_v1",
+        }
+
+    def _fingerprint(self, **overrides):
+        from workers.quality_benchmark_v48_orchestration import (
+            DEFAULT_PROMPT_VERSION,
+            DEFAULT_RULESET_VERSION,
+        )
+
+        kwargs = dict(
+            fixture_sha256="fixturehash",
+            adapter_config=self._adapter_config(
+                prompt_version=DEFAULT_PROMPT_VERSION,
+                ruleset_version=DEFAULT_RULESET_VERSION,
+            ),
+            reasoning_effort="medium",
+            openai_timeout_seconds=120.0,
+            openai_max_retries=3,
+            openai_max_output_tokens=4096,
+            pass_b_sub_call_timeout_seconds_effective=120.0,
+        )
+        kwargs.update(overrides)
+        return baseline.compute_config_fingerprint(**kwargs)
+
+    def _write_completed_checkpoint(self, fixture, fingerprint):
+        baseline.run_case_loop(
+            fixture,
+            _FakeAdapter(),
+            recorder=baseline.PassCallRecorder(),
+            run_dir=self._run_dir,
+            config_fingerprint=fingerprint,
+            existing_predictions=[],
+            completed_case_ids=set(),
+            print_progress=False,
+        )
+
+    # -- Required correction 1: V60 identity ---------------------------
+
+    def test_default_identity_is_v60_not_pre_v60(self):
+        from workers.quality_benchmark_v48_orchestration import (
+            DEFAULT_PROMPT_VERSION,
+            DEFAULT_RULESET_VERSION,
+        )
+
+        self.assertNotEqual(DEFAULT_PROMPT_VERSION, _PRE_V60_PROMPT_VERSION)
+        self.assertNotEqual(DEFAULT_RULESET_VERSION, _PRE_V60_RULESET_VERSION)
+        self.assertIn("v60", DEFAULT_PROMPT_VERSION.lower())
+        self.assertIn("v60", DEFAULT_RULESET_VERSION.lower())
+
+    def test_pre_v60_prompt_version_checkpoint_is_rejected(self):
+        """Resume test 1: a pre-V60 checkpoint (old prompt_version, current
+        ruleset_version) is rejected by current (V60) code."""
+        fixture = _fixture_with_cases(2)
+        from workers.quality_benchmark_v48_orchestration import DEFAULT_RULESET_VERSION
+
+        pre_v60_fingerprint = self._fingerprint(
+            adapter_config=self._adapter_config(
+                prompt_version=_PRE_V60_PROMPT_VERSION,
+                ruleset_version=DEFAULT_RULESET_VERSION,
+            )
+        )
+        self._write_completed_checkpoint(fixture, pre_v60_fingerprint)
+
+        current_fingerprint = self._fingerprint()
+        with self.assertRaises(baseline.BaselineRunnerRefusal):
+            baseline.resume_or_start_run(resume_dir=self._run_dir, config_fingerprint=current_fingerprint)
+
+    def test_pre_v60_ruleset_version_checkpoint_is_rejected(self):
+        """Resume test 1 (ruleset half): a pre-V60 checkpoint (current
+        prompt_version, old ruleset_version) is also rejected."""
+        fixture = _fixture_with_cases(2)
+        from workers.quality_benchmark_v48_orchestration import DEFAULT_PROMPT_VERSION
+
+        pre_v60_fingerprint = self._fingerprint(
+            adapter_config=self._adapter_config(
+                prompt_version=DEFAULT_PROMPT_VERSION,
+                ruleset_version=_PRE_V60_RULESET_VERSION,
+            )
+        )
+        self._write_completed_checkpoint(fixture, pre_v60_fingerprint)
+
+        current_fingerprint = self._fingerprint()
+        with self.assertRaises(baseline.BaselineRunnerRefusal):
+            baseline.resume_or_start_run(resume_dir=self._run_dir, config_fingerprint=current_fingerprint)
+
+    # -- Required correction 2: effective Pass B sub-call timeout ------
+
+    def test_resolve_effective_timeout_uses_explicit_configured_value(self):
+        self.assertEqual(
+            baseline.resolve_effective_pass_b_sub_call_timeout_seconds(
+                configured=45.0, worker_timeout_seconds=120.0
+            ),
+            45.0,
+        )
+
+    def test_resolve_effective_timeout_falls_back_to_worker_timeout_when_none(self):
+        self.assertEqual(
+            baseline.resolve_effective_pass_b_sub_call_timeout_seconds(
+                configured=None, worker_timeout_seconds=90.0
+            ),
+            90.0,
+        )
+
+    def test_different_effective_pass_b_sub_call_timeout_checkpoint_is_rejected(self):
+        """Resume test 2: a checkpoint with a different effective Pass B
+        sub-call timeout is rejected."""
+        fixture = _fixture_with_cases(2)
+        original = self._fingerprint(pass_b_sub_call_timeout_seconds_effective=120.0)
+        self._write_completed_checkpoint(fixture, original)
+
+        changed = self._fingerprint(pass_b_sub_call_timeout_seconds_effective=60.0)
+        with self.assertRaises(baseline.BaselineRunnerRefusal):
+            baseline.resume_or_start_run(resume_dir=self._run_dir, config_fingerprint=changed)
+
+    def test_effective_timeout_change_via_worker_fallback_also_invalidates_resume(self):
+        """The fingerprint must use the resolved *effective* value, so a
+        change to the worker-level fallback timeout (while
+        pass_b_sub_call_timeout_seconds itself stays unset/None) also
+        invalidates resume -- not just an explicit override changing."""
+        fixture = _fixture_with_cases(2)
+        original_effective = baseline.resolve_effective_pass_b_sub_call_timeout_seconds(
+            configured=None, worker_timeout_seconds=120.0
+        )
+        original = self._fingerprint(pass_b_sub_call_timeout_seconds_effective=original_effective)
+        self._write_completed_checkpoint(fixture, original)
+
+        changed_effective = baseline.resolve_effective_pass_b_sub_call_timeout_seconds(
+            configured=None, worker_timeout_seconds=45.0
+        )
+        changed = self._fingerprint(pass_b_sub_call_timeout_seconds_effective=changed_effective)
+        with self.assertRaises(baseline.BaselineRunnerRefusal):
+            baseline.resume_or_start_run(resume_dir=self._run_dir, config_fingerprint=changed)
+
+    # -- Resume test 3: otherwise identical V60 checkpoint resumes -----
+
+    def test_otherwise_identical_v60_checkpoint_remains_resumable(self):
+        fixture = _fixture_with_cases(3)
+        fingerprint = self._fingerprint()
+        adapter1 = _FakeAdapter(interrupt_on_case_id="fake-002")
+        with self.assertRaises(KeyboardInterrupt):
+            baseline.run_case_loop(
+                fixture,
+                adapter1,
+                recorder=baseline.PassCallRecorder(),
+                run_dir=self._run_dir,
+                config_fingerprint=fingerprint,
+                existing_predictions=[],
+                completed_case_ids=set(),
+                print_progress=False,
+            )
+        run_dir, existing_predictions, completed_case_ids = baseline.resume_or_start_run(
+            resume_dir=self._run_dir, config_fingerprint=fingerprint
+        )
+        self.assertEqual(completed_case_ids, {"fake-001"})
+        adapter2 = _FakeAdapter()
+        predictions = baseline.run_case_loop(
+            fixture,
+            adapter2,
+            recorder=baseline.PassCallRecorder(),
+            run_dir=run_dir,
+            config_fingerprint=fingerprint,
+            existing_predictions=existing_predictions,
+            completed_case_ids=completed_case_ids,
+            print_progress=False,
+        )
+        self.assertEqual(adapter2.calls, ["fake-002", "fake-003"])
+        self.assertEqual(len(predictions), 3)
+
+    # -- Resume test 4: fingerprint determinism -------------------------
+
+    def test_fingerprint_is_deterministic_for_identical_inputs(self):
+        fingerprint_a = self._fingerprint()
+        fingerprint_b = self._fingerprint()
+        self.assertEqual(fingerprint_a, fingerprint_b)
+        self.assertEqual(
+            json.dumps(fingerprint_a, sort_keys=True),
+            json.dumps(fingerprint_b, sort_keys=True),
+        )
+
+    # -- Resume test 5: dry-run/configuration output contains V60 identity
+
+    def test_dry_run_output_contains_v60_identity_and_effective_timeout(self):
+        import contextlib
+        import io
+
+        from workers.quality_benchmark_v48_orchestration import (
+            DEFAULT_PROMPT_VERSION,
+            DEFAULT_RULESET_VERSION,
+        )
+
+        args = baseline._build_arg_parser().parse_args(["--dry-run"])
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            exit_code = baseline._run_dry_run(args)
+        self.assertEqual(exit_code, 0)
+        output = captured.getvalue()
+        self.assertIn(DEFAULT_PROMPT_VERSION, output)
+        self.assertIn(DEFAULT_RULESET_VERSION, output)
+        self.assertIn("pass_b_sub_call_timeout_seconds", output)
+
+    # -- Resume test 6: a fresh (non-resumed) run is unaffected ---------
+
+    def test_fresh_run_without_resume_ignores_identity_entirely(self):
+        run_dir, existing_predictions, completed_case_ids = baseline.resume_or_start_run(
+            resume_dir=None, config_fingerprint=self._fingerprint()
+        )
+        self.assertEqual(existing_predictions, [])
+        self.assertEqual(completed_case_ids, set())
+        self.assertTrue(str(run_dir).startswith(str(baseline.ARTIFACT_ROOT)))
+
+    # -- Resume test 7: no SME ground truth read during generation ------
+    #
+    # Covered generically (for the whole module, including the code added
+    # in this task) by
+    # TestFixtureValidation.test_module_never_references_sme_reviewed_path_except_documented_constant
+    # and .test_sme_reviewed_fixture_is_never_read above, which scan/guard
+    # the entire scripts/v58_run_openai_benchmark_baseline.py source and
+    # the full load_and_validate_fixture() path respectively. This test
+    # adds an explicit, focused check that the new identity/timeout dry-run
+    # code path specifically never touches the fixture's ground-truth
+    # fields.
+    def test_dry_run_identity_output_never_touches_ground_truth_fields(self):
+        import contextlib
+        import io
+
+        real_case = json.loads(baseline.FIXTURE_PATH.read_text(encoding="utf-8"))["cases"][0]
+        self.assertIn("expected_finding_codes", real_case)  # sanity: fixture does carry ground truth
+
+        args = baseline._build_arg_parser().parse_args(["--dry-run"])
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            baseline._run_dry_run(args)
+        output = captured.getvalue()
+        for forbidden_key in (
+            "expected_finding_codes",
+            "expected_materiality",
+            "expected_correct_option_labels",
+            "known_good",
+            "reviewer_label",
+            "reviewer_rationale",
+        ):
+            self.assertNotIn(forbidden_key, output)
 
 
 # ---------------------------------------------------------------------------
@@ -1400,6 +1675,7 @@ class TestSystemicFailFast(unittest.TestCase):
             openai_timeout_seconds=120.0,
             openai_max_retries=3,
             openai_max_output_tokens=4096,
+            pass_b_sub_call_timeout_seconds_effective=120.0,
         )
 
     def test_classify_model_not_found_as_systemic(self):
@@ -1532,6 +1808,7 @@ class TestPartialArtifactFromCheckpoint(unittest.TestCase):
             openai_timeout_seconds=120.0,
             openai_max_retries=3,
             openai_max_output_tokens=4096,
+            pass_b_sub_call_timeout_seconds_effective=120.0,
         )
 
     def test_interruption_partial_result_uses_checkpoint_predictions(self):

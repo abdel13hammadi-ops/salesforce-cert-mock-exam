@@ -86,8 +86,18 @@ except ImportError:  # pragma: no cover - exercised only when psycopg2 absent
     psycopg2 = None  # type: ignore
 
 DEFAULT_WORKER_ID = "v58-quality-04c-benchmark"
-DEFAULT_PROMPT_VERSION = "v58-quality-04c-benchmark-prompt"
-DEFAULT_RULESET_VERSION = "v58-quality-04c-benchmark-rules"
+# V60-IMPL-03: bumped from the pre-V60 "v58-quality-04c-benchmark-prompt" /
+# "v58-quality-04c-benchmark-rules" values specifically so that
+# scripts.v58_run_openai_benchmark_baseline.compute_config_fingerprint()
+# (which fingerprints this string, not prompt/schema content) can no
+# longer resolve to the same fingerprint as a checkpoint produced before
+# the V60 answer-correctness specialist existed -- a --resume against such
+# a pre-V60 checkpoint must be refused, not silently mixed with composite
+# Pass B predictions. Bump this value again for any future change to the
+# specialist prompt, the specialist response schema, the general Pass B
+# prompt's exclude_finding_codes narrowing, or the codes ANSWER_CORRECTNESS_CODES.
+DEFAULT_PROMPT_VERSION = "v60-answer-correctness-specialist-prompt-v1"
+DEFAULT_RULESET_VERSION = "v60-answer-correctness-specialist-rules-v1"
 DEFAULT_PRIMARY_MODEL_NAME = "benchmark-primary"
 DEFAULT_DISPUTE_MODEL_NAME = "benchmark-dispute"
 DEFAULT_PILOT_BATCH_ID = "v58-quality-04c-benchmark"

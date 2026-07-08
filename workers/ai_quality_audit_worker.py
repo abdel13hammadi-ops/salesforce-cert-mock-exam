@@ -23,15 +23,21 @@ from workers.ai_quality_audit_context import (
 )
 from workers.ai_quality_audit_prompts import (
     PASS_A_RESPONSE_SCHEMA,
+    PASS_B_CORRECTNESS_RESPONSE_SCHEMA,
     PASS_B_RESPONSE_SCHEMA,
     PASS_C_RESPONSE_SCHEMA,
     build_pass_a_prompt,
+    build_pass_b_correctness_prompt,
     build_pass_b_prompt,
     build_pass_c_prompt,
 )
 from workers.ai_quality_audit_schemas import (
     AiQualityAuditValidationError,
+    ANSWER_CORRECTNESS_CODES,
+    derive_correctness_finding,
+    merge_pass_b_findings,
     validate_pass_a_result,
+    validate_pass_b_correctness_result,
     validate_pass_b_result,
     validate_pass_c_result,
 )
@@ -73,11 +79,23 @@ class AiQualityAuditWorkerError(RuntimeError):
 
 @dataclass(frozen=True)
 class AiQualityAuditProviders:
-    """Primary and dispute LLM callables matching ``workers.llm_providers``."""
+    """Primary and dispute LLM callables matching ``workers.llm_providers``.
+
+    ``pass_b_sub_call_timeout_seconds`` (V60) independently bounds each of
+    the two sequential provider calls that compose Pass B (the specialized
+    answer-correctness detector, then the narrowed general-quality judge).
+    It defaults to ``timeout_seconds`` -- i.e. no behavior change unless a
+    caller explicitly configures a distinct Pass B sub-call budget -- since
+    Pass B now makes two provider calls per attempt instead of one and a
+    single shared ``timeout_seconds`` would otherwise silently double the
+    worst-case wall-clock time of one attempt without callers being able to
+    tune it independently of Pass A/C.
+    """
 
     primary: Callable[..., LlmResponse]
     dispute: Callable[..., LlmResponse]
     timeout_seconds: Optional[float] = None
+    pass_b_sub_call_timeout_seconds: Optional[float] = None
 
 
 def validate_job_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
@@ -401,36 +419,119 @@ def _execute_pass_b(
     schema_version: str,
     retry_schema_errors: Optional[Sequence[str]] = None,
 ) -> tuple[Optional[Dict[str, Any]], Optional[List[str]]]:
+    """Execute the composite V60 Pass B step.
+
+    Internally runs two sequential provider calls -- the specialized
+    answer-correctness detector, then the narrowed general-quality judge --
+    through the same timeout/retry/error-handling primitive
+    (``_call_and_validate``) as every other pass, deterministically merges
+    their outputs (``derive_correctness_finding`` + ``merge_pass_b_findings``),
+    and persists the result through exactly one ``record_audit_pass_result_v1``
+    call, preserving the existing single-persisted-row Pass B contract.
+    Both sub-calls' full telemetry is recorded in ``p_metadata`` (a jsonb
+    column already present and unused by any other caller), so nothing is
+    silently lost even though only one row is written.
+
+    A failure (provider error or schema-invalid output) in *either* sub-call
+    fails the whole Pass B attempt using that sub-call's own status/error --
+    exactly the same failure contract a single failed Pass B call already
+    had -- so the existing bounded-retry-then-substitution machinery
+    (``NEEDS_DISPUTE_TRIGGER_B`` / ``PASS_B_SUBSTITUTION``) is reused
+    unmodified rather than needing a new failure path.
+    """
     comparison_context = load_comparison_audit_context(
         client,
         question_version_id,
         audit_run_id,
     )
-    system_prompt, user_prompt = build_pass_b_prompt(
-        comparison_context,
-        retry_schema_errors=retry_schema_errors,
-    )
+    lease_token = claim.get("lease_token")
+    model_name = str(claim.get("model_name") or "")
     allowed_labels = {
         option["option_label"] for option in comparison_context.get("options") or []
     }
     required_count = int(comparison_context["required_selection_count"])
+    stored_correct = comparison_context.get("stored_correct_option_labels") or []
     frozen_ids = {
         item["chunk_id"] for item in comparison_context.get("frozen_evidence") or []
     }
-    input_hash = _hash_prompts(system_prompt, user_prompt)
+    sub_call_timeout_seconds = (
+        providers.pass_b_sub_call_timeout_seconds
+        if providers.pass_b_sub_call_timeout_seconds is not None
+        else providers.timeout_seconds
+    )
 
-    return _invoke_and_record_pass(
-        client,
-        audit_run_id=audit_run_id,
-        pass_code="B",
-        claim=claim,
+    correctness_system, correctness_user = build_pass_b_correctness_prompt(
+        comparison_context,
+        retry_schema_errors=retry_schema_errors,
+    )
+    general_system, general_user = build_pass_b_prompt(
+        comparison_context,
+        retry_schema_errors=retry_schema_errors,
+        exclude_finding_codes=ANSWER_CORRECTNESS_CODES,
+    )
+    input_hash = _hash_prompts(
+        f"{correctness_system}\n===\n{general_system}",
+        f"{correctness_user}\n===\n{general_user}",
+    )
+
+    correctness_outcome = _call_and_validate(
         provider=providers.primary,
-        timeout_seconds=providers.timeout_seconds,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        timeout_seconds=sub_call_timeout_seconds,
+        model_name=model_name,
+        system_prompt=correctness_system,
+        user_prompt=correctness_user,
+        response_schema=PASS_B_CORRECTNESS_RESPONSE_SCHEMA,
+        metadata={
+            "audit_run_id": audit_run_id,
+            "pass_code": "B",
+            "pass_b_sub_call": "correctness_detector",
+        },
+        validate=lambda raw: validate_pass_b_correctness_result(
+            raw,
+            allowed_option_labels=allowed_labels,
+            frozen_evidence_chunk_ids=frozen_ids,
+        ),
+    )
+
+    if correctness_outcome.status is not None:
+        response = correctness_outcome.response
+        _record_pass_result(
+            client,
+            audit_run_id=audit_run_id,
+            pass_code="B",
+            lease_token=lease_token,
+            status=correctness_outcome.status,
+            schema_version=schema_version,
+            input_hash=input_hash,
+            raw_response_text=correctness_outcome.raw_response_text,
+            schema_validation_errors=correctness_outcome.schema_validation_errors,
+            last_error=correctness_outcome.last_error,
+            provider_request_id=response.provider_request_id if response else None,
+            input_tokens=response.input_tokens if response else None,
+            output_tokens=response.output_tokens if response else None,
+            actual_cost_usd=response.actual_cost_usd if response else None,
+            metadata={
+                "pass_b_composite": {
+                    "correctness_detector": _telemetry_from_outcome(
+                        correctness_outcome, label="correctness_detector"
+                    ),
+                }
+            },
+        )
+        return None, correctness_outcome.errors
+
+    general_outcome = _call_and_validate(
+        provider=providers.primary,
+        timeout_seconds=sub_call_timeout_seconds,
+        model_name=model_name,
+        system_prompt=general_system,
+        user_prompt=general_user,
         response_schema=PASS_B_RESPONSE_SCHEMA,
-        schema_version=schema_version,
-        input_hash=input_hash,
+        metadata={
+            "audit_run_id": audit_run_id,
+            "pass_code": "B",
+            "pass_b_sub_call": "general_quality_judge",
+        },
         validate=lambda raw: validate_pass_b_result(
             raw,
             allowed_option_labels=allowed_labels,
@@ -438,6 +539,101 @@ def _execute_pass_b(
             frozen_evidence_chunk_ids=frozen_ids,
         ),
     )
+
+    composite_telemetry = {
+        "pass_b_composite": {
+            "correctness_detector": _telemetry_from_outcome(
+                correctness_outcome, label="correctness_detector"
+            ),
+            "general_quality_judge": _telemetry_from_outcome(
+                general_outcome, label="general_quality_judge"
+            ),
+        }
+    }
+
+    if general_outcome.status is not None:
+        response = general_outcome.response
+        _record_pass_result(
+            client,
+            audit_run_id=audit_run_id,
+            pass_code="B",
+            lease_token=lease_token,
+            status=general_outcome.status,
+            schema_version=schema_version,
+            input_hash=input_hash,
+            raw_response_text=general_outcome.raw_response_text,
+            schema_validation_errors=general_outcome.schema_validation_errors,
+            last_error=general_outcome.last_error,
+            provider_request_id=response.provider_request_id if response else None,
+            input_tokens=response.input_tokens if response else None,
+            output_tokens=response.output_tokens if response else None,
+            actual_cost_usd=response.actual_cost_usd if response else None,
+            metadata=composite_telemetry,
+        )
+        return None, general_outcome.errors
+
+    correctness_finding = derive_correctness_finding(
+        correctness_result=correctness_outcome.validated,
+        stored_correct_option_labels=stored_correct,
+        required_selection_count=required_count,
+    )
+    merge_result = merge_pass_b_findings(
+        correctness_finding=correctness_finding,
+        general_proposed_findings=general_outcome.validated.get("proposed_findings") or [],
+        frozen_evidence_chunk_ids=frozen_ids,
+    )
+    if merge_result["dropped_general_findings"]:
+        composite_telemetry["pass_b_composite"]["dropped_general_findings"] = (
+            merge_result["dropped_general_findings"]
+        )
+
+    final_result = {
+        "selected_option_labels": general_outcome.validated["selected_option_labels"],
+        "proposed_findings": merge_result["proposed_findings"],
+    }
+
+    correctness_response = correctness_outcome.response
+    general_response = general_outcome.response
+    combined_input_tokens = _sum_optional(
+        correctness_response.input_tokens if correctness_response else None,
+        general_response.input_tokens if general_response else None,
+    )
+    combined_output_tokens = _sum_optional(
+        correctness_response.output_tokens if correctness_response else None,
+        general_response.output_tokens if general_response else None,
+    )
+    combined_cost = _sum_optional(
+        correctness_response.actual_cost_usd if correctness_response else None,
+        general_response.actual_cost_usd if general_response else None,
+    )
+
+    _record_pass_result(
+        client,
+        audit_run_id=audit_run_id,
+        pass_code="B",
+        lease_token=lease_token,
+        status="completed",
+        result_json=final_result,
+        schema_version=schema_version,
+        input_hash=input_hash,
+        raw_response_text=general_outcome.raw_response_text,
+        provider_request_id=(
+            general_response.provider_request_id if general_response else None
+        ),
+        input_tokens=combined_input_tokens,
+        output_tokens=combined_output_tokens,
+        actual_cost_usd=combined_cost,
+        metadata=composite_telemetry,
+    )
+    return final_result, None
+
+
+def _sum_optional(*values: Optional[float]) -> Optional[float]:
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+    total = sum(present)
+    return int(total) if all(isinstance(v, int) for v in present) else total
 
 
 def _execute_pass_c(
@@ -503,6 +699,145 @@ def _execute_pass_c(
     )
 
 
+@dataclass(frozen=True)
+class _PassCallOutcome:
+    """Result of one provider call + validation attempt (V60).
+
+    ``status`` is ``None`` on success (validated is populated) and one of
+    ``"failed"``/``"schema_invalid"`` on failure, mirroring the persisted
+    pass-result status vocabulary exactly. Used both by the single-call A/C
+    path and by the two internal sub-calls composing Pass B, so every call
+    -- specialist or general -- goes through the same timeout, retry-budget,
+    and error-handling primitives.
+    """
+
+    response: Optional[LlmResponse]
+    validated: Optional[Dict[str, Any]]
+    status: Optional[str]
+    raw_response_text: Optional[str]
+    schema_validation_errors: Optional[Dict[str, Any]]
+    last_error: Optional[Dict[str, Any]]
+    errors: Optional[List[str]]
+    duration_ms: Optional[int]
+
+
+def _call_and_validate(
+    *,
+    provider: Callable[..., LlmResponse],
+    timeout_seconds: Optional[float],
+    model_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    response_schema: dict,
+    metadata: Optional[Mapping[str, Any]],
+    validate: Callable[[object], Dict[str, Any]],
+) -> _PassCallOutcome:
+    """Call a provider (with the existing timeout enforcement) and validate
+    its response, without persisting anything. This is the shared telemetry
+    /error-handling primitive underneath both ``_invoke_and_record_pass``
+    (single-call Pass A/C) and the two sequential sub-calls that compose
+    Pass B (V60): every provider call -- specialist or general -- goes
+    through this exact path, so none can bypass bounded timeout, structured
+    -output validation, or sanitized error capture.
+    """
+    started = time.monotonic()
+    try:
+        response = _call_provider_with_timeout(
+            provider,
+            timeout_seconds=timeout_seconds,
+            model_name=model_name,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_schema=response_schema,
+            metadata=metadata,
+        )
+    except LlmProviderError as exc:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        return _PassCallOutcome(
+            response=None,
+            validated=None,
+            status="failed",
+            raw_response_text=None,
+            schema_validation_errors=None,
+            last_error={
+                "error_code": "LLM_PROVIDER_ERROR",
+                "message": str(exc),
+                "error_type": type(exc).__name__,
+            },
+            errors=None,
+            duration_ms=duration_ms,
+        )
+    except LlmAuditValidationError as exc:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        errors = [str(exc)]
+        return _PassCallOutcome(
+            response=None,
+            validated=None,
+            status="schema_invalid",
+            raw_response_text=_safe_truncate_raw_response(
+                getattr(exc, "parsed_response", None)
+            ),
+            schema_validation_errors={"errors": errors},
+            last_error=None,
+            errors=errors,
+            duration_ms=duration_ms,
+        )
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    raw_text = _safe_truncate_raw_response(response.parsed_response)
+
+    try:
+        validated = validate(response.parsed_response)
+    except AiQualityAuditValidationError as exc:
+        errors = [str(exc)]
+        return _PassCallOutcome(
+            response=response,
+            validated=None,
+            status="schema_invalid",
+            raw_response_text=raw_text,
+            schema_validation_errors={"errors": errors},
+            last_error=None,
+            errors=errors,
+            duration_ms=duration_ms,
+        )
+
+    return _PassCallOutcome(
+        response=response,
+        validated=validated,
+        status=None,
+        raw_response_text=raw_text,
+        schema_validation_errors=None,
+        last_error=None,
+        errors=None,
+        duration_ms=duration_ms,
+    )
+
+
+def _telemetry_from_outcome(outcome: _PassCallOutcome, *, label: str) -> Dict[str, Any]:
+    """Sanitized sub-call telemetry record (V60) for embedding in Pass B's
+    ``p_metadata`` -- provider/model, request id, duration, token counts,
+    status, and a sanitized error, for either the specialist or the general
+    judge sub-call.
+    """
+    response = outcome.response
+    record: Dict[str, Any] = {
+        "call": label,
+        "status": "completed" if outcome.status is None else outcome.status,
+        "duration_ms": outcome.duration_ms,
+        "provider_request_id": response.provider_request_id if response else None,
+        "model_name": response.model_name if response else None,
+        "provider_name": response.provider_name if response else None,
+        "input_tokens": response.input_tokens if response else None,
+        "output_tokens": response.output_tokens if response else None,
+        "actual_cost_usd": response.actual_cost_usd if response else None,
+    }
+    if outcome.last_error is not None:
+        record["error"] = outcome.last_error
+    elif outcome.errors:
+        record["error"] = {"error_code": "SCHEMA_INVALID", "message": outcome.errors[0]}
+    return record
+
+
 def _invoke_and_record_pass(
     client,
     *,
@@ -521,74 +856,39 @@ def _invoke_and_record_pass(
     lease_token = claim.get("lease_token")
     model_name = str(claim.get("model_name") or "")
 
-    try:
-        response = _call_provider_with_timeout(
-            provider,
-            timeout_seconds=timeout_seconds,
-            model_name=model_name,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            response_schema=response_schema,
-            metadata={
-                "audit_run_id": audit_run_id,
-                "pass_code": pass_code,
-            },
-        )
-    except LlmProviderError as exc:
-        _record_pass_result(
-            client,
-            audit_run_id=audit_run_id,
-            pass_code=pass_code,
-            lease_token=lease_token,
-            status="failed",
-            schema_version=schema_version,
-            input_hash=input_hash,
-            last_error={
-                "error_code": "LLM_PROVIDER_ERROR",
-                "message": str(exc),
-                "error_type": type(exc).__name__,
-            },
-        )
-        return None, None
-    except LlmAuditValidationError as exc:
-        errors = [str(exc)]
-        _record_pass_result(
-            client,
-            audit_run_id=audit_run_id,
-            pass_code=pass_code,
-            lease_token=lease_token,
-            status="schema_invalid",
-            schema_version=schema_version,
-            input_hash=input_hash,
-            raw_response_text=_safe_truncate_raw_response(
-                getattr(exc, "parsed_response", None)
-            ),
-            schema_validation_errors={"errors": errors},
-        )
-        return None, errors
+    outcome = _call_and_validate(
+        provider=provider,
+        timeout_seconds=timeout_seconds,
+        model_name=model_name,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        response_schema=response_schema,
+        metadata={
+            "audit_run_id": audit_run_id,
+            "pass_code": pass_code,
+        },
+        validate=validate,
+    )
 
-    raw_text = _safe_truncate_raw_response(response.parsed_response)
-
-    try:
-        validated = validate(response.parsed_response)
-    except AiQualityAuditValidationError as exc:
-        errors = [str(exc)]
+    response = outcome.response
+    if outcome.status is not None:
         _record_pass_result(
             client,
             audit_run_id=audit_run_id,
             pass_code=pass_code,
             lease_token=lease_token,
-            status="schema_invalid",
+            status=outcome.status,
             schema_version=schema_version,
             input_hash=input_hash,
-            raw_response_text=raw_text,
-            schema_validation_errors={"errors": errors},
-            provider_request_id=response.provider_request_id,
-            input_tokens=response.input_tokens,
-            output_tokens=response.output_tokens,
-            actual_cost_usd=response.actual_cost_usd,
+            raw_response_text=outcome.raw_response_text,
+            schema_validation_errors=outcome.schema_validation_errors,
+            last_error=outcome.last_error,
+            provider_request_id=response.provider_request_id if response else None,
+            input_tokens=response.input_tokens if response else None,
+            output_tokens=response.output_tokens if response else None,
+            actual_cost_usd=response.actual_cost_usd if response else None,
         )
-        return None, errors
+        return None, outcome.errors
 
     _record_pass_result(
         client,
@@ -596,16 +896,16 @@ def _invoke_and_record_pass(
         pass_code=pass_code,
         lease_token=lease_token,
         status="completed",
-        result_json=validated,
+        result_json=outcome.validated,
         schema_version=schema_version,
         input_hash=input_hash,
-        raw_response_text=raw_text,
+        raw_response_text=outcome.raw_response_text,
         provider_request_id=response.provider_request_id,
         input_tokens=response.input_tokens,
         output_tokens=response.output_tokens,
         actual_cost_usd=response.actual_cost_usd,
     )
-    return validated, None
+    return outcome.validated, None
 
 
 def _call_provider_with_timeout(
@@ -837,6 +1137,7 @@ def _record_pass_result(
     input_tokens: Optional[int] = None,
     output_tokens: Optional[int] = None,
     actual_cost_usd: Optional[float] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     params = {
         "p_audit_run_id": audit_run_id,
@@ -853,7 +1154,7 @@ def _record_pass_result(
         "p_actual_cost_usd": actual_cost_usd,
         "p_schema_version": schema_version,
         "p_input_hash": input_hash,
-        "p_metadata": {},
+        "p_metadata": metadata or {},
     }
     try:
         _call_rpc(client, "record_audit_pass_result_v1", params)
