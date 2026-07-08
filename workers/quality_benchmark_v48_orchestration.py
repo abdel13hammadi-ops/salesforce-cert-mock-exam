@@ -59,7 +59,7 @@ import re
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 from workers.ai_quality_audit_evidence import (
@@ -694,16 +694,52 @@ def create_v48_audit_run(
 
 
 def read_v48_findings(client: PsycopgV48Client, audit_run_id: str) -> List[Dict[str, Any]]:
-    """Read back the real, RPC-persisted findings for a completed audit run."""
+    """Read back the real, RPC-persisted findings for an audit run.
+
+    ``finding_status`` is included (in addition to the fields a completed
+    run's confirmed findings already needed) so callers can distinguish a
+    disputed-but-unconfirmed finding persisted under the ``inconclusive``
+    UNRESOLVED branch (``finding_status='open'``) from a normally confirmed
+    one; see ``_disputed_blocking_findings`` below.
+    """
     result = (
         client.table("audit_findings")
-        .select("finding_code, finding_type, severity, materiality, title, description, metadata")
+        .select(
+            "finding_code, finding_type, severity, materiality, "
+            "finding_status, title, description, metadata"
+        )
         .eq("audit_run_id", audit_run_id)
         .execute()
     )
     if result.error:
         raise V48DisposableDatabaseError(f"failed to read audit_findings: {result.error}")
     return list(result.data or [])
+
+
+def _disputed_blocking_findings(findings: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    """Return only the findings persisted by the UNRESOLVED branch of
+    ``complete_ai_quality_audit_run_v1`` (migration
+    ``20260707000000_v48_persist_disputed_blocking_finding_on_unresolved``):
+    a disputed Pass B blocking proposal that Pass C did not confirm, kept
+    ``finding_status='open'`` and tagged ``requires_human_review=true`` /
+    ``pass_c_confirmed=false`` so it is never mistaken for model consensus
+    or an approved question.
+    """
+    disputed = []
+    for item in findings:
+        if item.get("finding_status") != "open":
+            continue
+        if item.get("materiality") != "blocking":
+            continue
+        metadata = item.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        if metadata.get("requires_human_review") is not True:
+            continue
+        if metadata.get("pass_c_confirmed") is not False:
+            continue
+        disputed.append(dict(item))
+    return disputed
 
 
 # ---------------------------------------------------------------------------
@@ -765,27 +801,54 @@ def run_v48_benchmark_case(
                 providers,
                 worker_id=worker_id,
             )
+            run_status = summary.get("run_status")
             findings: List[Dict[str, Any]] = []
-            if summary.get("run_status") == "completed" and summary.get("finding_count"):
+            requires_human_review = False
+            if run_status == "completed" and summary.get("finding_count"):
                 findings = read_v48_findings(client, audit_run_id)
+            elif run_status == "inconclusive" and summary.get("finding_count"):
+                # V58-DAY7-IMPROVE-08: an UNRESOLVED Pass C dispute persists
+                # the disputed Pass B blocking proposal (migration
+                # 20260707000000_v48_persist_disputed_blocking_finding_on_
+                # unresolved) instead of discarding it. Surface exactly that
+                # finding here so the artifact reflects reality rather than
+                # an empty, uninformative execution error. This never makes
+                # the case "successful": ``error`` below is still always set
+                # for a non-completed run, so scoring continues to treat it
+                # as unscored, and the finding is never represented as
+                # Pass C-confirmed or model consensus.
+                disputed = _disputed_blocking_findings(
+                    read_v48_findings(client, audit_run_id)
+                )
+                if disputed:
+                    findings = disputed
+                    requires_human_review = True
         except Exception as exc:  # noqa: BLE001 - never silently drop a case
             return CasePrediction(case_id=case_id, error=f"{type(exc).__name__}: {exc}")
+
+        if run_status == "completed":
+            error = None
+        elif requires_human_review:
+            error = (
+                f"V48 run is inconclusive and requires human review: "
+                f"{len(findings)} disputed blocking finding(s) persisted but not "
+                f"confirmed by Pass C (run_status={run_status!r})"
+            )
+        else:
+            error = f"V48 run did not complete (run_status={run_status!r})"
 
         return _prediction_from_findings(
             case_id,
             findings,
             raw_output_extra={
-                "run_status": summary.get("run_status"),
+                "run_status": run_status,
                 "passes_executed": summary.get("passes_executed"),
                 "completion_shape": summary.get("completion_shape"),
                 "audit_run_id": audit_run_id,
                 "evidence_chunk_count": seeded.evidence_chunk_count,
+                "requires_human_review": requires_human_review,
             },
-            error=(
-                None
-                if summary.get("run_status") == "completed"
-                else f"V48 run did not complete (run_status={summary.get('run_status')!r})"
-            ),
+            error=error,
         )
 
 

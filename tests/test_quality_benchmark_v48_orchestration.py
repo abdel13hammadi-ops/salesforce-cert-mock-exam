@@ -106,6 +106,139 @@ def _no_dispute_providers() -> AiQualityAuditProviders:
     return AiQualityAuditProviders(primary=_always_a_provider, dispute=_always_a_provider)
 
 
+def _first_chunk_id(case: dict) -> str:
+    return str(case["resource_snapshot"]["chunks"][0]["resource_chunk_id"]).lower()
+
+
+def _unresolved_blocking_dispute_providers(case: dict) -> AiQualityAuditProviders:
+    """Pass B proposes one blocking finding; Pass C disputes it and never
+    confirms it (resolution_status=UNRESOLVED) - the scenario the
+    UNRESOLVED branch of ``complete_ai_quality_audit_run_v1`` (migration
+    20260707000000) persists as an open, human-review-required finding.
+    """
+    chunk_id = _first_chunk_id(case)
+
+    def primary(**kwargs):
+        pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+        if pass_code == "A":
+            return LlmResponse(
+                parsed_response={"selected_option_labels": ["A"]},
+                input_tokens=1,
+                output_tokens=1,
+            )
+        return LlmResponse(
+            parsed_response={
+                "selected_option_labels": ["A"],
+                "proposed_findings": [
+                    {
+                        "finding_ref": "F1",
+                        "finding_code": "WRONG_ANSWER_KEY",
+                        "finding_type": "correctness",
+                        "severity": "high",
+                        "materiality": "blocking",
+                        "title": "Wrong key",
+                        "description": "Stored answer appears wrong.",
+                        "evidence_chunk_ids": [chunk_id],
+                        "metadata": {},
+                    }
+                ],
+            },
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+    def dispute(**kwargs):
+        return LlmResponse(
+            parsed_response={
+                "resolution_type": "NORMAL_DISPUTE",
+                "resolution_status": "UNRESOLVED",
+                "substituted_for_passes": [],
+                "confirmed_finding_refs": [],
+            },
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+    return AiQualityAuditProviders(primary=primary, dispute=dispute)
+
+
+def _pass_b_substitution_unresolved_providers() -> AiQualityAuditProviders:
+    """Pass B is permanently schema-invalid (never a valid response), which
+    exhausts the two-attempt cap and routes the run through a
+    PASS_B_SUBSTITUTION dispute that itself resolves UNRESOLVED. This shape
+    has an empty dispute-trigger finding_refs set (Pass B never produced a
+    valid proposal to reference), so the UNRESOLVED branch persists zero
+    findings - the "no persisted finding" execution-error case.
+    """
+
+    def primary(**kwargs):
+        pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+        if pass_code == "A":
+            return LlmResponse(
+                parsed_response={"selected_option_labels": ["A"]},
+                input_tokens=1,
+                output_tokens=1,
+            )
+        return LlmResponse(
+            parsed_response={"not_a_valid_field": True},
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+    def dispute(**kwargs):
+        return LlmResponse(
+            parsed_response={
+                "resolution_type": "PASS_B_SUBSTITUTION",
+                "resolution_status": "UNRESOLVED",
+                "substituted_for_passes": ["B"],
+                "confirmed_finding_refs": [],
+            },
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+    return AiQualityAuditProviders(primary=primary, dispute=dispute)
+
+
+def _normal_no_dispute_warning_providers() -> AiQualityAuditProviders:
+    """Pass B proposes one non-blocking (warning) finding; no dispute
+    trigger fires (NORMAL_NO_DISPUTE), so the run completes normally with
+    the warning finding persisted (V58-DAY7-IMPROVE-03 behavior, unaffected
+    by the artifact-mapping change under test here).
+    """
+
+    def primary(**kwargs):
+        pass_code = (kwargs.get("metadata") or {}).get("pass_code")
+        if pass_code == "A":
+            return LlmResponse(
+                parsed_response={"selected_option_labels": ["A"]},
+                input_tokens=1,
+                output_tokens=1,
+            )
+        return LlmResponse(
+            parsed_response={
+                "selected_option_labels": ["A"],
+                "proposed_findings": [
+                    {
+                        "finding_ref": "F1",
+                        "finding_code": "WEAK_DISTRACTORS",
+                        "finding_type": "answer_quality",
+                        "severity": "low",
+                        "materiality": "warning",
+                        "title": "Weak distractor",
+                        "description": "One distractor is not competitive.",
+                        "evidence_chunk_ids": [],
+                        "metadata": {},
+                    }
+                ],
+            },
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+    return AiQualityAuditProviders(primary=primary, dispute=primary)
+
+
 # ===========================================================================
 # Tier 1: pure/offline tests — no Docker, no network, no database
 # ===========================================================================
@@ -411,6 +544,105 @@ class TestV48DisposableDbOrchestration(unittest.TestCase):
         prediction = adapter.generate_prediction(case)
         self.assertEqual(prediction.case_id, case["case_id"])
         self.assertIsNone(prediction.error)
+
+    # -- Inconclusive-run artifact visibility (V58-DAY7-IMPROVE-08) --------
+
+    def test_inconclusive_run_surfaces_disputed_blocking_finding_code(self):
+        case = _one_real_case()
+        before = self._count_all_relevant_rows()
+        prediction = run_v48_benchmark_case(
+            case,
+            dsn=_dsn(),
+            allow_disposable_v48_db=True,
+            providers=_unresolved_blocking_dispute_providers(case),
+        )
+        after = self._count_all_relevant_rows()
+
+        self.assertEqual(prediction.raw_output.get("run_status"), "inconclusive")
+        self.assertEqual(prediction.finding_codes, ["WRONG_ANSWER_KEY"])
+        self.assertEqual(prediction.materiality, "blocking")
+        self.assertFalse(prediction.approved)
+        self.assertTrue(prediction.raw_output.get("requires_human_review"))
+        self.assertEqual(before, after)
+
+    def test_inconclusive_run_remains_marked_human_review_required(self):
+        case = _one_real_case()
+        prediction = run_v48_benchmark_case(
+            case,
+            dsn=_dsn(),
+            allow_disposable_v48_db=True,
+            providers=_unresolved_blocking_dispute_providers(case),
+        )
+        self.assertIsNotNone(prediction.error)
+        self.assertIn("inconclusive", prediction.error.lower())
+        self.assertIn("human review", prediction.error.lower())
+        self.assertIn("not confirmed", prediction.error.lower())
+
+    def test_inconclusive_disputed_finding_is_not_represented_as_confirmed(self):
+        case = _one_real_case()
+        prediction = run_v48_benchmark_case(
+            case,
+            dsn=_dsn(),
+            allow_disposable_v48_db=True,
+            providers=_unresolved_blocking_dispute_providers(case),
+        )
+        findings = prediction.raw_output.get("findings") or []
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding.get("finding_status"), "open")
+        self.assertNotIn(finding.get("finding_status"), ("accepted", "resolved", "overridden"))
+        metadata = finding.get("metadata") or {}
+        self.assertIs(metadata.get("pass_c_confirmed"), False)
+        self.assertIs(metadata.get("requires_human_review"), True)
+
+    def test_inconclusive_run_with_no_persisted_finding_remains_execution_error(self):
+        before = self._count_all_relevant_rows()
+        prediction = run_v48_benchmark_case(
+            _one_real_case(),
+            dsn=_dsn(),
+            allow_disposable_v48_db=True,
+            providers=_pass_b_substitution_unresolved_providers(),
+        )
+        after = self._count_all_relevant_rows()
+
+        self.assertEqual(prediction.raw_output.get("run_status"), "inconclusive")
+        self.assertEqual(prediction.finding_codes, [])
+        self.assertFalse(prediction.raw_output.get("requires_human_review"))
+        self.assertIsNotNone(prediction.error)
+        self.assertIn("did not complete", prediction.error)
+        self.assertEqual(before, after)
+
+    def test_completed_run_artifact_unaffected_by_inconclusive_visibility_change(self):
+        case = _one_real_case()
+        prediction = run_v48_benchmark_case(
+            case,
+            dsn=_dsn(),
+            allow_disposable_v48_db=True,
+            providers=_no_dispute_providers(),
+        )
+        self.assertEqual(prediction.raw_output.get("run_status"), "completed")
+        self.assertIsNone(prediction.error)
+        self.assertTrue(prediction.approved)
+        self.assertEqual(prediction.finding_codes, [])
+        self.assertFalse(prediction.raw_output.get("requires_human_review"))
+
+    def test_normal_no_dispute_warning_finding_remains_visible(self):
+        case = _one_real_case()
+        before = self._count_all_relevant_rows()
+        prediction = run_v48_benchmark_case(
+            case,
+            dsn=_dsn(),
+            allow_disposable_v48_db=True,
+            providers=_normal_no_dispute_warning_providers(),
+        )
+        after = self._count_all_relevant_rows()
+
+        self.assertEqual(prediction.raw_output.get("run_status"), "completed")
+        self.assertIsNone(prediction.error)
+        self.assertEqual(prediction.finding_codes, ["WEAK_DISTRACTORS"])
+        self.assertEqual(prediction.materiality, "warning")
+        self.assertTrue(prediction.approved)
+        self.assertEqual(before, after)
 
     # -- Evidence integrity (mandatory coverage item 8) ---------------------
 
