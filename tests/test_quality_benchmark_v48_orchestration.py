@@ -895,15 +895,15 @@ class TestV48DisposableDbOrchestration(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# V60-DERIVE-08: answer_completeness contract version identifiers
+# V60-DERIVE-12: unresolved answer-set risk contract version identifiers
 # ---------------------------------------------------------------------------
 
-_PRE_ANSWER_COMPLETENESS_PROMPT_V1 = "v60-answer-correctness-specialist-prompt-v1"
-_PRE_ANSWER_COMPLETENESS_RULESET_V1 = "v60-answer-correctness-specialist-rules-v1"
+_PRE_ANSWER_COMPLETENESS_PROMPT_V2 = "v60-answer-correctness-specialist-prompt-v2"
+_PRE_ANSWER_COMPLETENESS_RULESET_V2 = "v60-answer-correctness-specialist-rules-v2"
 
 
-class TestV60AnswerCompletenessVersionIdentifiers(unittest.TestCase):
-    def test_default_prompt_and_ruleset_versions_are_v2(self):
+class TestV60UnresolvedAnswerSetRiskVersionIdentifiers(unittest.TestCase):
+    def test_default_prompt_and_ruleset_versions_are_v3(self):
         from workers.quality_benchmark_v48_orchestration import (
             DEFAULT_PROMPT_VERSION,
             DEFAULT_RULESET_VERSION,
@@ -911,21 +911,21 @@ class TestV60AnswerCompletenessVersionIdentifiers(unittest.TestCase):
 
         self.assertEqual(
             DEFAULT_PROMPT_VERSION,
-            "v60-answer-correctness-specialist-prompt-v2",
+            "v60-answer-correctness-specialist-prompt-v3",
         )
         self.assertEqual(
             DEFAULT_RULESET_VERSION,
-            "v60-answer-correctness-specialist-rules-v2",
+            "v60-answer-correctness-specialist-rules-v3",
         )
 
-    def test_v2_fingerprint_differs_from_pre_completeness_v1(self):
+    def test_v3_fingerprint_differs_from_v2(self):
         from scripts.v58_run_openai_benchmark_baseline import compute_config_fingerprint
         from workers.quality_benchmark_v48_orchestration import (
             DEFAULT_PROMPT_VERSION,
             DEFAULT_RULESET_VERSION,
         )
 
-        adapter_v2 = {
+        adapter_v3 = {
             "engine_id": "v48",
             "engine_version": "v48-disposable-db-v1",
             "provider_id": "openai",
@@ -934,9 +934,9 @@ class TestV60AnswerCompletenessVersionIdentifiers(unittest.TestCase):
             "ruleset_version": DEFAULT_RULESET_VERSION,
             "evidence_config_id": "official_evidence_seed_v1",
         }
-        adapter_v1 = dict(adapter_v2)
-        adapter_v1["prompt_version"] = _PRE_ANSWER_COMPLETENESS_PROMPT_V1
-        adapter_v1["ruleset_version"] = _PRE_ANSWER_COMPLETENESS_RULESET_V1
+        adapter_v2 = dict(adapter_v3)
+        adapter_v2["prompt_version"] = _PRE_ANSWER_COMPLETENESS_PROMPT_V2
+        adapter_v2["ruleset_version"] = _PRE_ANSWER_COMPLETENESS_RULESET_V2
 
         common = dict(
             fixture_sha256="fixturehash",
@@ -946,12 +946,12 @@ class TestV60AnswerCompletenessVersionIdentifiers(unittest.TestCase):
             openai_max_output_tokens=4096,
             pass_b_sub_call_timeout_seconds_effective=120.0,
         )
+        fp_v3 = compute_config_fingerprint(adapter_config=adapter_v3, **common)
         fp_v2 = compute_config_fingerprint(adapter_config=adapter_v2, **common)
-        fp_v1 = compute_config_fingerprint(adapter_config=adapter_v1, **common)
 
-        self.assertNotEqual(fp_v2, fp_v1)
-        self.assertEqual(fp_v2["prompt_version"], "v60-answer-correctness-specialist-prompt-v2")
-        self.assertEqual(fp_v2["ruleset_version"], "v60-answer-correctness-specialist-rules-v2")
+        self.assertNotEqual(fp_v3, fp_v2)
+        self.assertEqual(fp_v3["prompt_version"], "v60-answer-correctness-specialist-prompt-v3")
+        self.assertEqual(fp_v3["ruleset_version"], "v60-answer-correctness-specialist-rules-v3")
 
 
 if __name__ == "__main__":

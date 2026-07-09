@@ -400,6 +400,25 @@ class TestPassBCorrectnessPrompt(unittest.TestCase):
             set(ANSWER_COMPLETENESS_VALUES),
         )
 
+    def test_includes_unresolved_answer_set_risk_instruction(self):
+        _, user_prompt = build_pass_b_correctness_prompt(_comparison_context())
+
+        self.assertIn("unresolved_options_could_change_answer_set", user_prompt)
+        self.assertIn("could plausibly be part of a different correct answer set", user_prompt)
+        self.assertIn("Do not infer this merely from words", user_prompt)
+        self.assertIn("both, either, all, or neither", user_prompt)
+
+    def test_openai_normalization_requires_unresolved_risk_field(self):
+        normalized = normalize_schema_for_openai(PASS_B_CORRECTNESS_RESPONSE_SCHEMA)
+        self.assertIn(
+            "unresolved_options_could_change_answer_set",
+            normalized["required"],
+        )
+        self.assertEqual(
+            normalized["properties"]["unresolved_options_could_change_answer_set"],
+            {"type": "boolean"},
+        )
+
 
 class TestPassBPromptExcludeFindingCodes(unittest.TestCase):
     """V60-IMPL-01: general Pass B judge narrowed to exclude correctness codes."""

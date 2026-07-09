@@ -855,6 +855,7 @@ def _correctness_payload(
     evidence_sufficient=True,
     abstention_reason=None,
     citation_chunk_id=_CHUNK_1,
+    unresolved_risk=None,
 ) -> dict:
     citation_ids = [citation_chunk_id] if citation_chunk_id else []
     judgments = []
@@ -868,11 +869,14 @@ def _correctness_payload(
         )
     for label in insufficient:
         judgments.append(_option_judgment(label, "INSUFFICIENT_EVIDENCE"))
-    return {
+    payload = {
         "option_judgments": judgments,
         "evidence_sufficient_for_decision": evidence_sufficient,
         "abstention_reason": abstention_reason,
     }
+    if unresolved_risk is not None:
+        payload["unresolved_options_could_change_answer_set"] = unresolved_risk
+    return payload
 
 
 class TestPassBCorrectnessValidation(unittest.TestCase):
@@ -1634,6 +1638,189 @@ class TestAnswerCompletenessValidation(unittest.TestCase):
         )
         for item in result["option_judgments"]:
             self.assertEqual(item["answer_completeness"], "NOT_APPLICABLE")
+
+
+class TestUnresolvedAnswerSetRiskValidation(unittest.TestCase):
+    """V60-DERIVE-12: unresolved_options_could_change_answer_set validation."""
+
+    def test_true_accepted_when_insufficient_and_not_sufficient(self):
+        payload = _correctness_payload(
+            supported=("A",),
+            not_supported=("D",),
+            insufficient=("B", "C"),
+            evidence_sufficient=False,
+            abstention_reason="Cannot rule out B as an alternative correct answer.",
+            unresolved_risk=True,
+        )
+        result = validate_pass_b_correctness_result(
+            payload,
+            allowed_option_labels=_OPTIONS,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        self.assertIs(result["unresolved_options_could_change_answer_set"], True)
+
+    def test_false_accepted(self):
+        payload = _correctness_payload(
+            supported=("A",),
+            not_supported=("B", "C"),
+            insufficient=("D",),
+            evidence_sufficient=False,
+            abstention_reason="Option D could not be fully judged.",
+            unresolved_risk=False,
+        )
+        result = validate_pass_b_correctness_result(
+            payload,
+            allowed_option_labels=_OPTIONS,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        self.assertIs(result["unresolved_options_could_change_answer_set"], False)
+
+    def test_missing_field_normalized_to_false(self):
+        result = validate_pass_b_correctness_result(
+            _correctness_payload(),
+            allowed_option_labels=_OPTIONS,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        self.assertIs(result["unresolved_options_could_change_answer_set"], False)
+
+    def test_non_boolean_rejected(self):
+        payload = _correctness_payload()
+        payload["unresolved_options_could_change_answer_set"] = "yes"
+        with self.assertRaisesRegex(
+            AiQualityAuditValidationError,
+            "unresolved_options_could_change_answer_set",
+        ):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_true_with_evidence_sufficient_rejected(self):
+        payload = _correctness_payload(
+            supported=("A",),
+            not_supported=("B", "C", "D"),
+            unresolved_risk=True,
+        )
+        with self.assertRaisesRegex(
+            AiQualityAuditValidationError,
+            "must be false when evidence_sufficient_for_decision is true",
+        ):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_true_with_no_insufficient_option_rejected(self):
+        payload = _correctness_payload(
+            supported=("A",),
+            not_supported=("B", "C", "D"),
+            evidence_sufficient=False,
+            abstention_reason="Global insufficiency despite decisive per-option verdicts.",
+            unresolved_risk=True,
+        )
+        with self.assertRaisesRegex(
+            AiQualityAuditValidationError,
+            "must be false when no option_judgments entry has "
+            "verdict=INSUFFICIENT_EVIDENCE",
+        ):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+
+class TestDeriveCorrectnessFindingUnresolvedAnswerSetRisk(unittest.TestCase):
+    """V60-DERIVE-12: Rule 1 abstain when unresolved options could change answer set."""
+
+    def _validated(self, payload: dict) -> dict:
+        return validate_pass_b_correctness_result(
+            payload,
+            allowed_option_labels=_OPTIONS,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+
+    def _qbv1_037_payload(self) -> dict:
+        return {
+            "option_judgments": [
+                _option_judgment(
+                    "A", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="FULLY_RESPONSIVE",
+                ),
+                _option_judgment("B", "INSUFFICIENT_EVIDENCE"),
+                _option_judgment("C", "INSUFFICIENT_EVIDENCE"),
+                _option_judgment(
+                    "D", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+            ],
+            "evidence_sufficient_for_decision": False,
+            "abstention_reason": (
+                "The evidence does not establish why option A is uniquely correct "
+                "over option B or whether both are equally appropriate."
+            ),
+            "unresolved_options_could_change_answer_set": True,
+        }
+
+    def test_supported_equals_stored_with_risk_abstains(self):
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(self._qbv1_037_payload()),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+        self.assertEqual(finding["materiality"], "blocking")
+        self.assertIs(finding["metadata"]["correctness_detector_abstained"], True)
+        self.assertIs(finding["metadata"]["derived_correctness_finding"], True)
+
+    def test_harmless_unresolved_distractor_returns_none(self):
+        payload = _correctness_payload(
+            supported=("A",),
+            not_supported=("B", "C"),
+            insufficient=("D",),
+            evidence_sufficient=False,
+            abstention_reason="Option D could not be fully judged from evidence.",
+            unresolved_risk=False,
+        )
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNone(finding)
+
+    def test_supported_equals_stored_no_insufficient_returns_none(self):
+        payload = _correctness_payload(
+            supported=("A",),
+            not_supported=("B", "C", "D"),
+        )
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNone(finding)
+
+    def test_historical_missing_field_preserves_none_behavior(self):
+        payload = self._qbv1_037_payload()
+        del payload["unresolved_options_could_change_answer_set"]
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNone(finding)
+
+    def test_qbv1_037_equivalent_shape_abstains(self):
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(self._qbv1_037_payload()),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+        self.assertIn("uniquely correct", finding["description"].lower())
 
 
 class TestDeriveCorrectnessFindingAnswerCompleteness(unittest.TestCase):

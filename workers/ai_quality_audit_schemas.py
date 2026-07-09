@@ -320,10 +320,34 @@ def validate_pass_b_correctness_result(
             "evidence_sufficient_for_decision is true"
         )
 
+    risk_raw = obj.get("unresolved_options_could_change_answer_set")
+    if risk_raw is None:
+        unresolved_risk = False
+    elif not isinstance(risk_raw, bool):
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.unresolved_options_could_change_answer_set "
+            "must be a boolean"
+        )
+    else:
+        unresolved_risk = risk_raw
+
+    if evidence_sufficient and unresolved_risk:
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.unresolved_options_could_change_answer_set "
+            "must be false when evidence_sufficient_for_decision is true"
+        )
+    if not any_insufficient and unresolved_risk:
+        raise AiQualityAuditValidationError(
+            "pass B correctness result.unresolved_options_could_change_answer_set "
+            "must be false when no option_judgments entry has "
+            "verdict=INSUFFICIENT_EVIDENCE"
+        )
+
     return {
         "option_judgments": normalized_judgments,
         "evidence_sufficient_for_decision": evidence_sufficient,
         "abstention_reason": abstention_reason,
+        "unresolved_options_could_change_answer_set": unresolved_risk,
     }
 
 
@@ -476,8 +500,20 @@ def derive_correctness_finding(
 
     # Rule 1 -- stored answer confirmed, nothing else supported. A
     # non-stored distractor being INSUFFICIENT_EVIDENCE is never, by
-    # itself, a reason to abstain.
+    # itself, a reason to abstain -- unless the specialist explicitly
+    # flags that an unresolved option could change the correct answer set
+    # (V60-DERIVE-12).
     if supported == stored:
+        evidence_sufficient = correctness_result.get("evidence_sufficient_for_decision")
+        unresolved_risk = correctness_result.get(
+            "unresolved_options_could_change_answer_set", False
+        )
+        if (
+            insufficient
+            and not evidence_sufficient
+            and unresolved_risk
+        ):
+            return _abstain()
         return None
 
     # Rule 2 -- more options supported than required.

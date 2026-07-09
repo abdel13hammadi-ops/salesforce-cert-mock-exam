@@ -97,8 +97,8 @@ DEFAULT_WORKER_ID = "v58-quality-04c-benchmark"
 # Pass B predictions. Bump this value again for any future change to the
 # specialist prompt, the specialist response schema, the general Pass B
 # prompt's exclude_finding_codes narrowing, or the codes ANSWER_CORRECTNESS_CODES.
-DEFAULT_PROMPT_VERSION = "v60-answer-correctness-specialist-prompt-v2"
-DEFAULT_RULESET_VERSION = "v60-answer-correctness-specialist-rules-v2"
+DEFAULT_PROMPT_VERSION = "v60-answer-correctness-specialist-prompt-v3"
+DEFAULT_RULESET_VERSION = "v60-answer-correctness-specialist-rules-v3"
 DEFAULT_PRIMARY_MODEL_NAME = "benchmark-primary"
 DEFAULT_DISPUTE_MODEL_NAME = "benchmark-dispute"
 DEFAULT_PILOT_BATCH_ID = "v58-quality-04c-benchmark"

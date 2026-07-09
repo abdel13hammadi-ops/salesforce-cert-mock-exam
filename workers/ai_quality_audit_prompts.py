@@ -512,6 +512,16 @@ def build_pass_b_correctness_prompt(
             "NOT_APPLICABLE. Do not infer completeness merely from words such "
             "as both, either, all, or neither -- use only the frozen evidence "
             "and the exact stem. Do not alter the verdict meanings above.",
+            "10. Set unresolved_options_could_change_answer_set=true only when "
+            "at least one option judged INSUFFICIENT_EVIDENCE could plausibly "
+            "be part of a different correct answer set, so the stored answer "
+            "cannot yet be confirmed as uniquely correct. Set it false when no "
+            "option is INSUFFICIENT_EVIDENCE, when unresolved options cannot "
+            "affect the correct answer set, or when unresolved details are "
+            "irrelevant to selecting the correct answer. Do not infer this "
+            "merely from words such as both, either, all, or neither -- use "
+            "only the exact stem, required selection count, frozen evidence, "
+            "and unresolved option semantics.",
             "",
             "Rules:",
             "- Provide exactly one judgment per listed option label, no more, no "
@@ -548,7 +558,8 @@ def build_pass_b_correctness_prompt(
             "",
             "Return JSON with option_judgments (one entry per option label, each "
             "including answer_completeness), evidence_sufficient_for_decision, "
-            "and abstention_reason (string or null).",
+            "unresolved_options_could_change_answer_set, and abstention_reason "
+            "(string or null).",
         ]
     )
     return _PASS_B_CORRECTNESS_SYSTEM, "\n".join(lines)
@@ -766,7 +777,11 @@ def _option_judgment_schema() -> dict:
 
 PASS_B_CORRECTNESS_RESPONSE_SCHEMA: dict = {
     "type": "object",
-    "required": ["option_judgments", "evidence_sufficient_for_decision"],
+    "required": [
+        "option_judgments",
+        "evidence_sufficient_for_decision",
+        "unresolved_options_could_change_answer_set",
+    ],
     "additionalProperties": False,
     "properties": {
         "option_judgments": {
@@ -775,6 +790,7 @@ PASS_B_CORRECTNESS_RESPONSE_SCHEMA: dict = {
             "minItems": 1,
         },
         "evidence_sufficient_for_decision": {"type": "boolean"},
+        "unresolved_options_could_change_answer_set": {"type": "boolean"},
         "abstention_reason": {"type": ["string", "null"]},
     },
 }
