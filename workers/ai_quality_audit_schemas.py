@@ -66,6 +66,16 @@ ANSWER_CORRECTNESS_VERDICTS = frozenset({
     "INSUFFICIENT_EVIDENCE",
 })
 
+# V60-DERIVE-06: per-option stem-responsiveness classification emitted by the
+# Pass B correctness specialist alongside each verdict. Distinct from the
+# verdict itself -- a SUPPORTED_AS_CORRECT option may still be only a partial
+# component relative to another fully responsive option.
+ANSWER_COMPLETENESS_VALUES = frozenset({
+    "FULLY_RESPONSIVE",
+    "PARTIAL_COMPONENT",
+    "NOT_APPLICABLE",
+})
+
 ALLOWED_RESOLUTION_TYPES = frozenset({
     "NORMAL_DISPUTE",
     "PASS_A_SUBSTITUTION",
@@ -244,11 +254,42 @@ def validate_pass_b_correctness_result(
         if verdict == "INSUFFICIENT_EVIDENCE":
             any_insufficient = True
 
+        completeness_raw = item.get("answer_completeness")
+        if completeness_raw is None:
+            completeness = "NOT_APPLICABLE"
+        elif not isinstance(completeness_raw, str):
+            raise AiQualityAuditValidationError(
+                f"{prefix}.answer_completeness must be a string"
+            )
+        else:
+            completeness = completeness_raw.strip()
+            if completeness not in ANSWER_COMPLETENESS_VALUES:
+                raise AiQualityAuditValidationError(
+                    f"{prefix}.answer_completeness={completeness!r} is not one of "
+                    f"{sorted(ANSWER_COMPLETENESS_VALUES)}"
+                )
+
+        if verdict != "SUPPORTED_AS_CORRECT" and completeness != "NOT_APPLICABLE":
+            raise AiQualityAuditValidationError(
+                f"{prefix}.answer_completeness must be NOT_APPLICABLE when "
+                f"verdict is {verdict!r}, got {completeness!r}"
+            )
+        if verdict == "SUPPORTED_AS_CORRECT" and completeness not in (
+            "FULLY_RESPONSIVE",
+            "PARTIAL_COMPONENT",
+            "NOT_APPLICABLE",
+        ):
+            raise AiQualityAuditValidationError(
+                f"{prefix}.answer_completeness={completeness!r} is invalid for "
+                "verdict=SUPPORTED_AS_CORRECT"
+            )
+
         normalized_judgments.append({
             "option_label": label,
             "verdict": verdict,
             "citation_chunk_ids": citations,
             "evidence_rationale": rationale,
+            "answer_completeness": completeness,
         })
 
     missing = allowed - seen_labels
@@ -327,7 +368,16 @@ def derive_correctness_finding(
              true) and is correctly ``MULTIPLE_DEFENSIBLE_ANSWERS`` --
              the two captured-telemetry examples are only distinguishable
              by ``U``, not by the ``S ⊆ E`` relationship alone.
-         2b. Otherwise: ``MULTIPLE_DEFENSIBLE_ANSWERS``.
+         2b. If ``U`` is empty, ``|F| == R`` (where ``F`` = labels judged
+             ``SUPPORTED_AS_CORRECT`` with ``answer_completeness ==
+             FULLY_RESPONSIVE``), ``S`` is non-empty, and ``S`` does not
+             intersect ``F``: the stored answer is an incomplete component
+             while a fully responsive answer set exists --
+             ``WRONG_ANSWER_KEY`` (V60-DERIVE-06 meta-option completeness).
+             Requires an explicit completeness signal from the specialist;
+             absent or ``NOT_APPLICABLE`` completeness on all supported
+             labels leaves ``F`` empty and preserves the prior 2c fallback.
+         2c. Otherwise: ``MULTIPLE_DEFENSIBLE_ANSWERS``.
       3. ``len(E) == R`` and ``E != S`` (guaranteed once rule 1 does not
          apply and ``|S| == R``): an alternative, exact-size answer set
          replaces the stored one.
@@ -369,6 +419,23 @@ def derive_correctness_finding(
     supported = {label for label, v in verdict_by_label.items() if v == "SUPPORTED_AS_CORRECT"}
     contradicted = {label for label, v in verdict_by_label.items() if v == "NOT_SUPPORTED_AS_CORRECT"}
     insufficient = {label for label, v in verdict_by_label.items() if v == "INSUFFICIENT_EVIDENCE"}
+
+    completeness_by_label: Dict[str, str] = {}
+    for judgment in judgments:
+        label = judgment.get("option_label")
+        if label is None:
+            continue
+        completeness_by_label[str(label)] = str(
+            judgment.get("answer_completeness") or "NOT_APPLICABLE"
+        )
+    fully_responsive = {
+        label for label in supported
+        if completeness_by_label.get(label) == "FULLY_RESPONSIVE"
+    }
+    partial_components = {
+        label for label in supported
+        if completeness_by_label.get(label) == "PARTIAL_COMPONENT"
+    }
 
     cited_chunks: List[str] = []
     seen_chunks: Set[str] = set()
@@ -417,6 +484,37 @@ def derive_correctness_finding(
     if len(supported) > required_selection_count:
         if stored <= supported and insufficient:
             return _abstain()
+        if (
+            not insufficient
+            and len(fully_responsive) == required_selection_count
+            and partial_components
+            and stored
+            and stored <= partial_components
+            and (supported - fully_responsive) == partial_components
+        ):
+            fr_sorted = sorted(fully_responsive)
+            return {
+                "finding_ref": finding_ref,
+                "finding_code": "WRONG_ANSWER_KEY",
+                "finding_type": "correctness",
+                "severity": "high",
+                "materiality": "blocking",
+                "title": "Stored answer key is an incomplete component of the fully responsive answer set",
+                "description": (
+                    f"The answer-correctness detector found stored key {sorted(stored)} "
+                    f"to be an incomplete component answer, while {fr_sorted} "
+                    f"fully respond to the stem for the required selection count "
+                    f"of {required_selection_count}."
+                ),
+                "evidence_chunk_ids": cited_chunks,
+                "metadata": {
+                    "correctness_detector_supported_labels": sorted(supported),
+                    "correctness_detector_stored_labels": sorted(stored),
+                    "derived_correctness_finding": True,
+                    "answer_completeness_applied": True,
+                    "fully_responsive_labels": fr_sorted,
+                },
+            }
         code = "MULTIPLE_DEFENSIBLE_ANSWERS"
         title = "Multiple options are independently supported by evidence"
         description = (

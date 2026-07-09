@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 from workers.ai_quality_audit_schemas import (
     ALLOWED_RESOLUTION_STATUS,
     ALLOWED_RESOLUTION_TYPES,
+    ANSWER_COMPLETENESS_VALUES,
     ANSWER_CORRECTNESS_VERDICTS,
     SUPPORTED_FINDING_CODES,
 )
@@ -501,6 +502,16 @@ def build_pass_b_correctness_prompt(
             "approval state. Only report per-option verdicts and the overall "
             "sufficiency judgment; any finding is derived deterministically from "
             "your verdicts.",
+            "9. For every option marked SUPPORTED_AS_CORRECT, also classify "
+            "answer_completeness:",
+            "   - FULLY_RESPONSIVE: complete enough, by itself, to satisfy the "
+            "exact stem and required selection count.",
+            "   - PARTIAL_COMPONENT: factually true and evidence-supported, but "
+            "incomplete relative to a fully responsive answer.",
+            "   For every option not marked SUPPORTED_AS_CORRECT, use "
+            "NOT_APPLICABLE. Do not infer completeness merely from words such "
+            "as both, either, all, or neither -- use only the frozen evidence "
+            "and the exact stem. Do not alter the verdict meanings above.",
             "",
             "Rules:",
             "- Provide exactly one judgment per listed option label, no more, no "
@@ -535,9 +546,9 @@ def build_pass_b_correctness_prompt(
     lines.extend(
         [
             "",
-            "Return JSON with option_judgments (one entry per option label), "
-            "evidence_sufficient_for_decision, and abstention_reason (string or "
-            "null).",
+            "Return JSON with option_judgments (one entry per option label, each "
+            "including answer_completeness), evidence_sufficient_for_decision, "
+            "and abstention_reason (string or null).",
         ]
     )
     return _PASS_B_CORRECTNESS_SYSTEM, "\n".join(lines)
@@ -731,6 +742,7 @@ def _option_judgment_schema() -> dict:
             "verdict",
             "citation_chunk_ids",
             "evidence_rationale",
+            "answer_completeness",
         ],
         "additionalProperties": False,
         "properties": {
@@ -744,6 +756,10 @@ def _option_judgment_schema() -> dict:
                 "items": {"type": "string"},
             },
             "evidence_rationale": {"type": "string"},
+            "answer_completeness": {
+                "type": "string",
+                "enum": sorted(ANSWER_COMPLETENESS_VALUES),
+            },
         },
     }
 

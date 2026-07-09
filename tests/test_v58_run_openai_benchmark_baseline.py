@@ -379,8 +379,8 @@ class _FakeAdapter:
             "engine_version": "v48-disposable-db-v1",
             "provider_id": "openai",
             "model_id": "gpt-5.5",
-            "prompt_version": "v60-answer-correctness-specialist-prompt-v1",
-            "ruleset_version": "v60-answer-correctness-specialist-rules-v1",
+            "prompt_version": "v60-answer-correctness-specialist-prompt-v2",
+            "ruleset_version": "v60-answer-correctness-specialist-rules-v2",
             "evidence_config_id": "official_evidence_seed_v1",
         }
 
@@ -1067,6 +1067,8 @@ class TestCheckpointFingerprintOpenAiSettings(EnvIsolatedTestCase):
 
 _PRE_V60_PROMPT_VERSION = "v58-quality-04c-benchmark-prompt"
 _PRE_V60_RULESET_VERSION = "v58-quality-04c-benchmark-rules"
+_PRE_ANSWER_COMPLETENESS_PROMPT_V1 = "v60-answer-correctness-specialist-prompt-v1"
+_PRE_ANSWER_COMPLETENESS_RULESET_V1 = "v60-answer-correctness-specialist-rules-v1"
 
 
 class TestV60IdentityAndTimeoutFingerprint(EnvIsolatedTestCase):
@@ -1134,6 +1136,30 @@ class TestV60IdentityAndTimeoutFingerprint(EnvIsolatedTestCase):
         self.assertNotEqual(DEFAULT_RULESET_VERSION, _PRE_V60_RULESET_VERSION)
         self.assertIn("v60", DEFAULT_PROMPT_VERSION.lower())
         self.assertIn("v60", DEFAULT_RULESET_VERSION.lower())
+        self.assertEqual(DEFAULT_PROMPT_VERSION, "v60-answer-correctness-specialist-prompt-v2")
+        self.assertEqual(DEFAULT_RULESET_VERSION, "v60-answer-correctness-specialist-rules-v2")
+
+    def test_pre_answer_completeness_v1_fingerprint_is_rejected(self):
+        """A checkpoint from before answer_completeness (v1 identifiers) must
+        not resume against the current v2 contract."""
+        fixture = _fixture_with_cases(2)
+        from workers.quality_benchmark_v48_orchestration import DEFAULT_RULESET_VERSION
+
+        pre_completeness_fingerprint = self._fingerprint(
+            adapter_config=self._adapter_config(
+                prompt_version=_PRE_ANSWER_COMPLETENESS_PROMPT_V1,
+                ruleset_version=_PRE_ANSWER_COMPLETENESS_RULESET_V1,
+            )
+        )
+        self._write_completed_checkpoint(fixture, pre_completeness_fingerprint)
+
+        current_fingerprint = self._fingerprint()
+        self.assertNotEqual(pre_completeness_fingerprint, current_fingerprint)
+        with self.assertRaises(baseline.BaselineRunnerRefusal):
+            baseline.resume_or_start_run(
+                resume_dir=self._run_dir,
+                config_fingerprint=current_fingerprint,
+            )
 
     def test_pre_v60_prompt_version_checkpoint_is_rejected(self):
         """Resume test 1: a pre-V60 checkpoint (old prompt_version, current

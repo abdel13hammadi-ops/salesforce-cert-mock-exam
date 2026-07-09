@@ -828,13 +828,23 @@ class TestCanonicalMaterialityEnforcement(unittest.TestCase):
         self.assertTrue(publication_blocked)
 
 
-def _option_judgment(label: str, verdict: str, *, chunk_ids=None, rationale=None) -> dict:
-    return {
+def _option_judgment(
+    label: str,
+    verdict: str,
+    *,
+    chunk_ids=None,
+    rationale=None,
+    answer_completeness=None,
+) -> dict:
+    item = {
         "option_label": label,
         "verdict": verdict,
         "citation_chunk_ids": list(chunk_ids or []),
         "evidence_rationale": rationale or f"Evidence assessment for option {label}.",
     }
+    if answer_completeness is not None:
+        item["answer_completeness"] = answer_completeness
+    return item
 
 
 def _correctness_payload(
@@ -1551,6 +1561,361 @@ class TestDeriveCorrectnessFinding(unittest.TestCase):
                     "correctness_detector_stored_labels": sorted(stored),
                 },
             )
+
+
+class TestAnswerCompletenessValidation(unittest.TestCase):
+    """V60-DERIVE-06: per-option answer_completeness validation."""
+
+    def test_valid_fully_responsive_classification(self):
+        payload = _correctness_payload(
+            supported=("C",),
+            not_supported=("A", "B", "D"),
+        )
+        payload["option_judgments"][0]["answer_completeness"] = "FULLY_RESPONSIVE"
+        for item in payload["option_judgments"][1:]:
+            item["answer_completeness"] = "NOT_APPLICABLE"
+        result = validate_pass_b_correctness_result(
+            payload,
+            allowed_option_labels=_OPTIONS,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        by_label = {item["option_label"]: item for item in result["option_judgments"]}
+        self.assertEqual(by_label["C"]["answer_completeness"], "FULLY_RESPONSIVE")
+
+    def test_valid_partial_component_classification(self):
+        payload = _correctness_payload(
+            supported=("A", "C"),
+            not_supported=("B", "D"),
+        )
+        for item in payload["option_judgments"]:
+            if item["option_label"] == "A":
+                item["answer_completeness"] = "PARTIAL_COMPONENT"
+            elif item["option_label"] == "C":
+                item["answer_completeness"] = "FULLY_RESPONSIVE"
+            else:
+                item["answer_completeness"] = "NOT_APPLICABLE"
+        result = validate_pass_b_correctness_result(
+            payload,
+            allowed_option_labels=_OPTIONS,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        by_label = {item["option_label"]: item for item in result["option_judgments"]}
+        self.assertEqual(by_label["A"]["answer_completeness"], "PARTIAL_COMPONENT")
+        self.assertEqual(by_label["C"]["answer_completeness"], "FULLY_RESPONSIVE")
+
+    def test_non_supported_verdict_requires_not_applicable(self):
+        payload = _correctness_payload(supported=("A",), not_supported=("B", "C", "D"))
+        payload["option_judgments"][1]["answer_completeness"] = "FULLY_RESPONSIVE"
+        with self.assertRaisesRegex(
+            AiQualityAuditValidationError,
+            "answer_completeness must be NOT_APPLICABLE",
+        ):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_unknown_completeness_enum_rejected(self):
+        payload = _correctness_payload(supported=("A",), not_supported=("B", "C", "D"))
+        payload["option_judgments"][0]["answer_completeness"] = "MAYBE_COMPLETE"
+        with self.assertRaisesRegex(AiQualityAuditValidationError, "answer_completeness"):
+            validate_pass_b_correctness_result(
+                payload,
+                allowed_option_labels=_OPTIONS,
+                frozen_evidence_chunk_ids=_FROZEN,
+            )
+
+    def test_missing_field_normalized_to_not_applicable(self):
+        result = validate_pass_b_correctness_result(
+            _correctness_payload(),
+            allowed_option_labels=_OPTIONS,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+        for item in result["option_judgments"]:
+            self.assertEqual(item["answer_completeness"], "NOT_APPLICABLE")
+
+
+class TestDeriveCorrectnessFindingAnswerCompleteness(unittest.TestCase):
+    """V60-DERIVE-06: Rule 2b meta-option completeness via answer_completeness."""
+
+    def _validated(self, payload: dict) -> dict:
+        return validate_pass_b_correctness_result(
+            payload,
+            allowed_option_labels=_OPTIONS,
+            frozen_evidence_chunk_ids=_FROZEN,
+        )
+
+    def _qbv1_026_payload(self) -> dict:
+        return {
+            "option_judgments": [
+                _option_judgment(
+                    "A", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="PARTIAL_COMPONENT",
+                ),
+                _option_judgment(
+                    "B", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="PARTIAL_COMPONENT",
+                ),
+                _option_judgment(
+                    "C", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="FULLY_RESPONSIVE",
+                ),
+                _option_judgment(
+                    "D", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+            ],
+            "evidence_sufficient_for_decision": True,
+            "abstention_reason": None,
+        }
+
+    def test_qbv1_026_shape_returns_wrong_answer_key(self):
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(self._qbv1_026_payload()),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "WRONG_ANSWER_KEY")
+        self.assertIs(finding["metadata"]["derived_correctness_finding"], True)
+        self.assertIs(finding["metadata"]["answer_completeness_applied"], True)
+        self.assertEqual(finding["metadata"]["fully_responsive_labels"], ["C"])
+
+    def test_qbv1_036_genuine_multi_defensible_unchanged(self):
+        payload = _correctness_payload(supported=("A", "B"), not_supported=("C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+
+    def test_both_either_wording_without_completeness_signal_no_forced_wrong_key(self):
+        """Without explicit completeness signals, supported>required still falls
+        through to MULTIPLE_DEFENSIBLE_ANSWERS -- no lexical heuristic."""
+        payload = _correctness_payload(
+            supported=("A", "B", "C"), not_supported=("D",),
+        )
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+
+    def test_insufficient_evidence_rule_2a_still_takes_precedence(self):
+        """qbv1-037 control: unresolved option -> OTHER_REVIEW_NEEDED even when
+        a supported label is marked FULLY_RESPONSIVE."""
+        payload = {
+            "option_judgments": [
+                _option_judgment(
+                    "A", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="FULLY_RESPONSIVE",
+                ),
+                _option_judgment(
+                    "B", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="PARTIAL_COMPONENT",
+                ),
+                _option_judgment("C", "INSUFFICIENT_EVIDENCE"),
+                _option_judgment(
+                    "D", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+            ],
+            "evidence_sufficient_for_decision": False,
+            "abstention_reason": "Option C could not be judged from evidence.",
+        }
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+
+    def test_more_fully_responsive_than_required_falls_through_safely(self):
+        payload = {
+            "option_judgments": [
+                _option_judgment(
+                    "A", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="FULLY_RESPONSIVE",
+                ),
+                _option_judgment(
+                    "B", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="FULLY_RESPONSIVE",
+                ),
+                _option_judgment(
+                    "C", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+                _option_judgment(
+                    "D", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+            ],
+            "evidence_sufficient_for_decision": True,
+            "abstention_reason": None,
+        }
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+
+    def test_stored_overlaps_fully_responsive_set_does_not_trigger_conversion(self):
+        payload = {
+            "option_judgments": [
+                _option_judgment(
+                    "A", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="FULLY_RESPONSIVE",
+                ),
+                _option_judgment(
+                    "B", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="PARTIAL_COMPONENT",
+                ),
+                _option_judgment(
+                    "C", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+                _option_judgment(
+                    "D", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+            ],
+            "evidence_sufficient_for_decision": True,
+            "abstention_reason": None,
+        }
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+
+    def test_qbv1_016_rule_3_control_unchanged(self):
+        payload = _correctness_payload(
+            supported=("C",), not_supported=("A", "B", "D"),
+        )
+        for item in payload["option_judgments"]:
+            if item["option_label"] == "C":
+                item["answer_completeness"] = "FULLY_RESPONSIVE"
+            else:
+                item["answer_completeness"] = "NOT_APPLICABLE"
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "WRONG_ANSWER_KEY")
+        self.assertNotIn("answer_completeness_applied", finding["metadata"])
+
+    def test_qbv1_008_rule_3_control_unchanged(self):
+        payload = _correctness_payload(
+            supported=("C",), not_supported=("A", "B", "D"),
+        )
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "WRONG_ANSWER_KEY")
+        self.assertNotIn("answer_completeness_applied", finding["metadata"])
+
+    def test_stored_supported_not_applicable_does_not_convert(self):
+        """Counterexample 1: stored SUPPORTED+NOT_APPLICABLE must not convert."""
+        payload = {
+            "option_judgments": [
+                _option_judgment(
+                    "A", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+                _option_judgment(
+                    "B", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="FULLY_RESPONSIVE",
+                ),
+                _option_judgment(
+                    "C", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+                _option_judgment(
+                    "D", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+            ],
+            "evidence_sufficient_for_decision": True,
+            "abstention_reason": None,
+        }
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+        self.assertNotIn("answer_completeness_applied", finding["metadata"])
+
+    def test_extra_supported_not_applicable_prevents_conversion(self):
+        """Counterexample 2: unclassified supported option blocks conversion."""
+        payload = {
+            "option_judgments": [
+                _option_judgment(
+                    "A", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="PARTIAL_COMPONENT",
+                ),
+                _option_judgment(
+                    "B", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="FULLY_RESPONSIVE",
+                ),
+                _option_judgment(
+                    "C", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+                _option_judgment(
+                    "D", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+            ],
+            "evidence_sufficient_for_decision": True,
+            "abstention_reason": None,
+        }
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+        self.assertNotIn("answer_completeness_applied", finding["metadata"])
+
+    def test_stored_must_be_subset_of_explicit_partial_components(self):
+        """Stored answer not explicitly PARTIAL_COMPONENT must not convert."""
+        payload = {
+            "option_judgments": [
+                _option_judgment(
+                    "A", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+                _option_judgment(
+                    "B", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="FULLY_RESPONSIVE",
+                ),
+                _option_judgment(
+                    "C", "SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="PARTIAL_COMPONENT",
+                ),
+                _option_judgment(
+                    "D", "NOT_SUPPORTED_AS_CORRECT",
+                    chunk_ids=[_CHUNK_1], answer_completeness="NOT_APPLICABLE",
+                ),
+            ],
+            "evidence_sufficient_for_decision": True,
+            "abstention_reason": None,
+        }
+        finding = derive_correctness_finding(
+            correctness_result=self._validated(payload),
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+        self.assertNotIn("answer_completeness_applied", finding["metadata"])
 
 
 class TestMergePassBFindings(unittest.TestCase):

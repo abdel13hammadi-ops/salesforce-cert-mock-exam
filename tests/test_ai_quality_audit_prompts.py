@@ -15,12 +15,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from workers.ai_quality_audit_prompts import (
     _FINDING_CODE_DEFINITIONS,
+    _option_judgment_schema,
     build_pass_a_prompt,
     build_pass_b_correctness_prompt,
     build_pass_b_prompt,
     build_pass_c_prompt,
+    PASS_B_CORRECTNESS_RESPONSE_SCHEMA,
 )
-from workers.ai_quality_audit_schemas import ANSWER_CORRECTNESS_CODES, SUPPORTED_FINDING_CODES
+from workers.ai_quality_audit_schemas import (
+    ANSWER_COMPLETENESS_VALUES,
+    ANSWER_CORRECTNESS_CODES,
+    SUPPORTED_FINDING_CODES,
+)
+from workers.openai_provider import normalize_schema_for_openai
 
 _HELD_OUT_FIXTURE = (
     Path(__file__).resolve().parent / "fixtures" / "pass_b_taxonomy_held_out_scenarios.json"
@@ -366,6 +373,32 @@ class TestPassBCorrectnessPrompt(unittest.TestCase):
         first = build_pass_b_correctness_prompt(context)
         second = build_pass_b_correctness_prompt(context)
         self.assertEqual(first, second)
+
+    def test_includes_answer_completeness_instruction(self):
+        _, user_prompt = build_pass_b_correctness_prompt(_comparison_context())
+
+        self.assertIn("FULLY_RESPONSIVE", user_prompt)
+        self.assertIn("PARTIAL_COMPONENT", user_prompt)
+        self.assertIn("NOT_APPLICABLE", user_prompt)
+        self.assertIn("Do not infer completeness merely from words", user_prompt)
+        self.assertIn("both, either, all, or neither", user_prompt)
+
+    def test_option_judgment_schema_includes_answer_completeness(self):
+        schema = _option_judgment_schema()
+        self.assertIn("answer_completeness", schema["required"])
+        self.assertEqual(
+            set(schema["properties"]["answer_completeness"]["enum"]),
+            set(ANSWER_COMPLETENESS_VALUES),
+        )
+
+    def test_openai_normalization_requires_answer_completeness_field(self):
+        normalized = normalize_schema_for_openai(PASS_B_CORRECTNESS_RESPONSE_SCHEMA)
+        judgment_schema = normalized["properties"]["option_judgments"]["items"]
+        self.assertIn("answer_completeness", judgment_schema["required"])
+        self.assertEqual(
+            set(judgment_schema["properties"]["answer_completeness"]["enum"]),
+            set(ANSWER_COMPLETENESS_VALUES),
+        )
 
 
 class TestPassBPromptExcludeFindingCodes(unittest.TestCase):
