@@ -32,6 +32,22 @@ ANSWER_CORRECTNESS_CODES = frozenset({
     "UNSUPPORTED_ANSWER",
 })
 
+# V60-DERIVE-03: every finding ``derive_correctness_finding`` returns (the
+# three ``ANSWER_CORRECTNESS_CODES`` above, plus its ``OTHER_REVIEW_NEEDED``
+# abstention) carries ``metadata.derived_correctness_finding = true``. This
+# name is deliberately distinct from ``deterministic_explanation_check``
+# (an objective, model-independent fact) and from ``pass_c_confirmed``
+# (an explicit model confirmation): a derived correctness finding is a
+# *deterministic transformation of a probabilistic model judgment* -- the
+# derivation function is deterministic, but its input (the specialist's
+# per-option verdicts) is not an objective fact and the finding is not
+# itself model-confirmed merely by having been derived. The completion RPC
+# (see supabase/migrations/*_v60_enforce_derived_correctness_finding.sql)
+# uses this marker, together with finding_code and materiality, to ensure
+# Pass C can never silently discard a specific derived correctness finding
+# by returning RESOLVED without confirming its ref.
+DERIVED_CORRECTNESS_FINDING_METADATA_KEY = "derived_correctness_finding"
+
 # V60-EXPL-03: codes owned by the deterministic explanation-presence check
 # (``derive_explanation_finding``) *whenever it fires*. Unlike
 # ``ANSWER_CORRECTNESS_CODES`` (unconditional specialist ownership), this
@@ -381,6 +397,13 @@ def derive_correctness_finding(
             "metadata": {
                 "correctness_detector_abstained": True,
                 "abstention_reason": resolved_reason,
+                # V60-DERIVE-03: marks every derive_correctness_finding output
+                # (this branch included) as a deterministic *transformation* of
+                # the specialist's own (probabilistic) verdicts -- never an
+                # objective fact and never itself a model confirmation. See
+                # ANSWER_CORRECTNESS_CODES / DETERMINISTIC_EXPLANATION_CODES
+                # module docstrings for the distinction this name preserves.
+                "derived_correctness_finding": True,
             },
         }
 
@@ -413,6 +436,7 @@ def derive_correctness_finding(
             "metadata": {
                 "correctness_detector_supported_labels": sorted(supported),
                 "correctness_detector_stored_labels": sorted(stored),
+                "derived_correctness_finding": True,
             },
         }
 
@@ -448,6 +472,7 @@ def derive_correctness_finding(
             "metadata": {
                 "correctness_detector_supported_labels": sorted(supported),
                 "correctness_detector_stored_labels": sorted(stored),
+                "derived_correctness_finding": True,
             },
         }
 
@@ -475,6 +500,7 @@ def derive_correctness_finding(
             "metadata": {
                 "correctness_detector_supported_labels": sorted(supported),
                 "correctness_detector_stored_labels": sorted(stored),
+                "derived_correctness_finding": True,
             },
         }
 

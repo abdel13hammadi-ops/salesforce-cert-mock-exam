@@ -1412,6 +1412,146 @@ class TestDeriveCorrectnessFinding(unittest.TestCase):
         )
         self.assertEqual(first, second)
 
+    # -- V60-DERIVE-03: derived_correctness_finding provenance marker -------
+
+    def test_wrong_answer_key_includes_derived_correctness_finding_marker(self):
+        result = _correctness_payload(supported=("B",), not_supported=("A", "C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "WRONG_ANSWER_KEY")
+        self.assertIs(finding["metadata"]["derived_correctness_finding"], True)
+        # Pre-existing provenance keys must remain present and unrenamed.
+        self.assertIn("correctness_detector_supported_labels", finding["metadata"])
+        self.assertIn("correctness_detector_stored_labels", finding["metadata"])
+
+    def test_multiple_defensible_answers_includes_derived_correctness_finding_marker(self):
+        result = _correctness_payload(supported=("A", "B"), not_supported=("C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "MULTIPLE_DEFENSIBLE_ANSWERS")
+        self.assertIs(finding["metadata"]["derived_correctness_finding"], True)
+        self.assertIn("correctness_detector_supported_labels", finding["metadata"])
+        self.assertIn("correctness_detector_stored_labels", finding["metadata"])
+
+    def test_unsupported_answer_includes_derived_correctness_finding_marker(self):
+        result = _correctness_payload(supported=(), not_supported=("A", "B", "C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "UNSUPPORTED_ANSWER")
+        self.assertIs(finding["metadata"]["derived_correctness_finding"], True)
+        self.assertIn("correctness_detector_supported_labels", finding["metadata"])
+        self.assertIn("correctness_detector_stored_labels", finding["metadata"])
+
+    def test_unsupported_answer_rule_4a_includes_derived_correctness_finding_marker(self):
+        """Rule 4a (too-few-supported, all stored labels decisive) is a
+        distinct return site from rule 3b -- covered separately so every
+        UNSUPPORTED_ANSWER-producing branch is verified independently."""
+        result = _correctness_payload(
+            supported=(), not_supported=("A",), insufficient=("B", "C", "D"),
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "UNSUPPORTED_ANSWER")
+        self.assertIs(finding["metadata"]["derived_correctness_finding"], True)
+
+    def test_other_review_needed_includes_marker_and_retains_abstention_flag(self):
+        result = _correctness_payload(
+            supported=(),
+            not_supported=(),
+            insufficient=("A", "B", "C", "D"),
+            evidence_sufficient=False,
+            abstention_reason="No option could be judged from evidence.",
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+        self.assertIs(finding["metadata"]["derived_correctness_finding"], True)
+        # The new marker must never displace or rename the pre-existing
+        # abstention provenance keys.
+        self.assertIs(finding["metadata"]["correctness_detector_abstained"], True)
+        self.assertIn("abstention_reason", finding["metadata"])
+
+    def test_other_review_needed_rule_2a_includes_marker(self):
+        """The rule 2a (trap/meta-option) abstention path also calls
+        ``_abstain()`` -- covered separately from the rule 5 catch-all
+        above to verify both call sites of the shared helper."""
+        result = _correctness_payload(
+            supported=("A", "B"),
+            not_supported=("D",),
+            insufficient=("C",),
+            evidence_sufficient=False,
+            abstention_reason="Option C could not be judged from evidence.",
+        )
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertEqual(finding["finding_code"], "OTHER_REVIEW_NEEDED")
+        self.assertIs(finding["metadata"]["derived_correctness_finding"], True)
+        self.assertIs(finding["metadata"]["correctness_detector_abstained"], True)
+
+    def test_no_finding_case_is_unaffected_by_marker_change(self):
+        """Rule 1 (exact stored set confirmed) still returns None -- the
+        marker change touches only the metadata of returned findings, never
+        whether a finding is returned at all."""
+        result = _correctness_payload(supported=("A",), not_supported=("B", "C", "D"))
+        finding = derive_correctness_finding(
+            correctness_result=result,
+            stored_correct_option_labels=["A"],
+            required_selection_count=1,
+        )
+        self.assertIsNone(finding)
+
+    def test_marker_addition_does_not_alter_finding_codes_or_other_fields(self):
+        """V60-DERIVE-03 acceptance: existing derivation outputs and finding
+        codes are otherwise unchanged -- every field except metadata is
+        byte-for-byte identical to the pre-V60-DERIVE-03 shape, and the only
+        metadata change is the additive derived_correctness_finding key."""
+        cases = (
+            (("B",), ("A", "C", "D"), (), ["A"], "WRONG_ANSWER_KEY"),
+            (("A", "B"), ("C", "D"), (), ["A"], "MULTIPLE_DEFENSIBLE_ANSWERS"),
+            ((), ("A", "B", "C", "D"), (), ["A"], "UNSUPPORTED_ANSWER"),
+        )
+        for supported, not_supported, insufficient, stored, expected_code in cases:
+            result = _correctness_payload(
+                supported=supported, not_supported=not_supported, insufficient=insufficient,
+            )
+            finding = derive_correctness_finding(
+                correctness_result=result,
+                stored_correct_option_labels=stored,
+                required_selection_count=1,
+            )
+            self.assertEqual(finding["finding_code"], expected_code)
+            self.assertEqual(finding["finding_type"], "correctness")
+            self.assertEqual(finding["severity"], "high")
+            self.assertEqual(finding["materiality"], "blocking")
+            self.assertEqual(finding["finding_ref"], "FC1")
+            metadata_without_marker = dict(finding["metadata"])
+            self.assertEqual(metadata_without_marker.pop("derived_correctness_finding"), True)
+            self.assertEqual(
+                metadata_without_marker,
+                {
+                    "correctness_detector_supported_labels": sorted(supported),
+                    "correctness_detector_stored_labels": sorted(stored),
+                },
+            )
+
 
 class TestMergePassBFindings(unittest.TestCase):
     """V60-IMPL-01: deterministic Pass B specialist/general merge boundary."""
