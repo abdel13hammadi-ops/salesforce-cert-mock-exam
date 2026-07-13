@@ -1,0 +1,439 @@
+"""Tests for workers.certification_registry and certification validation wiring."""
+
+from __future__ import annotations
+
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import workers.certification_registry as certification_registry
+from workers.ai_quality_audit_context import (
+    AiQualityAuditContextError,
+    load_blind_audit_context,
+)
+from workers.certification_registry import (
+    ADM_EXAM_NAME,
+    BA_EXAM_NAME,
+    CERTIFICATION_CODES,
+    LEGACY_AUTOMATION_GUARDRAIL,
+    PAB_EXAM_NAME,
+    CertificationDefinition,
+    CertificationRegistryError,
+    get_certification_definition,
+    get_platform_app_builder_definition,
+    normalize_certification_exam_name,
+    validate_audit_retry_context_certification,
+    validate_certification_domain,
+    validate_frozen_audit_context_certification,
+    validate_generation_request_certification,
+    validate_supported_certification_exam_name,
+)
+from workers.question_candidate_generation import (
+    AuditRetryContext,
+    CandidateValidationError,
+    GenerationRequest,
+    enqueue_candidate_audits,
+    load_audit_retry_context,
+    validate_generation_request,
+)
+
+
+class TestPlatformAppBuilderRegistry(unittest.TestCase):
+    def test_registry_lookup_returns_canonical_definition(self):
+        definition = get_certification_definition("Salesforce Platform App Builder")
+        self.assertIsNotNone(definition)
+        assert definition is not None
+        self.assertEqual(definition.exam_name, PAB_EXAM_NAME)
+
+    def test_exact_domain_names(self):
+        definition = get_platform_app_builder_definition()
+        self.assertEqual(
+            tuple(domain.domain_name for domain in definition.domains),
+            (
+                "Salesforce Fundamentals",
+                "User Interface",
+                "Data Modeling and Management",
+                "Business Logic and Process Automation",
+                "App Deployment",
+            ),
+        )
+
+    def test_exact_domain_weights(self):
+        definition = get_platform_app_builder_definition()
+        self.assertEqual(
+            [domain.weight for domain in definition.domains],
+            [23, 17, 22, 28, 10],
+        )
+
+    def test_domain_weight_total_equals_100(self):
+        definition = get_platform_app_builder_definition()
+        self.assertEqual(definition.total_domain_weight, 100)
+
+    def test_stable_unique_domain_identifiers(self):
+        definition = get_platform_app_builder_definition()
+        domain_ids = [domain.domain_id for domain in definition.domains]
+        self.assertEqual(
+            domain_ids,
+            [
+                "salesforce_fundamentals",
+                "user_interface",
+                "data_modeling_and_management",
+                "business_logic_and_process_automation",
+                "app_deployment",
+            ],
+        )
+        self.assertEqual(len(domain_ids), len(set(domain_ids)))
+
+    def test_legacy_automation_guardrail_present(self):
+        definition = get_platform_app_builder_definition()
+        automation_domain = definition.domains[3]
+        self.assertIn(LEGACY_AUTOMATION_GUARDRAIL, automation_domain.policy_guidance)
+
+    def test_canonical_exam_name_matches_repo_db_row_naming_convention(self):
+        # Matches the "Salesforce Certified <X>" pattern used by
+        # ADM_EXAM_NAME / BA_EXAM_NAME throughout the repo (e.g.
+        # workers/structural_audit_launcher.py), not the bare
+        # "Salesforce Platform App Builder" form, which is an alias only.
+        self.assertEqual(PAB_EXAM_NAME, "Salesforce Certified Platform App Builder")
+
+    def test_all_certification_domain_weights_total_100(self):
+        for definition in certification_registry.CERTIFICATION_DEFINITIONS:
+            self.assertEqual(
+                definition.total_domain_weight,
+                100,
+                msg=f"{definition.exam_name} domain weights do not total 100",
+            )
+
+    def test_domain_ids_are_globally_unique_across_certifications(self):
+        all_domain_ids = [
+            domain.domain_id
+            for definition in certification_registry.CERTIFICATION_DEFINITIONS
+            for domain in definition.domains
+        ]
+        self.assertEqual(len(all_domain_ids), len(set(all_domain_ids)))
+
+
+class TestCertificationCodeIdentifierDecision(unittest.TestCase):
+    """PAB-EXP-02: APP-401 had no repository evidence and was removed."""
+
+    def test_app_401_is_not_used_as_platform_app_builder_internal_code(self):
+        self.assertNotEqual(CERTIFICATION_CODES[PAB_EXAM_NAME], "APP-401")
+        self.assertEqual(CERTIFICATION_CODES[PAB_EXAM_NAME], "platform_app_builder")
+
+    def test_app_401_alias_no_longer_normalizes(self):
+        self.assertIsNone(normalize_certification_exam_name("app-401"))
+        self.assertIsNone(normalize_certification_exam_name("APP-401"))
+
+    def test_established_codes_for_existing_certifications_are_unchanged(self):
+        # ADM-201 / BA-201 remain: evidenced by workers/official_evidence_seed.py.
+        self.assertEqual(CERTIFICATION_CODES[ADM_EXAM_NAME], "ADM-201")
+        self.assertEqual(CERTIFICATION_CODES[BA_EXAM_NAME], "BA-201")
+
+
+class TestEngineProfileVersusPersistenceCatalogSeparation(unittest.TestCase):
+    """Guards against the registry becoming a second persistence source of truth."""
+
+    def test_registry_module_has_no_database_client_dependency(self):
+        self.assertFalse(hasattr(certification_registry, "client"))
+        self.assertFalse(hasattr(certification_registry, "certification_domain_exists"))
+        self.assertFalse(hasattr(certification_registry, "supabase"))
+
+    def test_registry_functions_do_not_accept_a_client_argument(self):
+        import inspect
+
+        for name in (
+            "validate_supported_certification_exam_name",
+            "validate_certification_domain",
+            "validate_generation_request_certification",
+            "validate_audit_retry_context_certification",
+            "validate_frozen_audit_context_certification",
+        ):
+            func = getattr(certification_registry, name)
+            params = inspect.signature(func).parameters
+            self.assertNotIn("client", params)
+
+
+class TestCertificationNormalization(unittest.TestCase):
+    def test_platform_app_builder_aliases_normalize(self):
+        self.assertEqual(
+            normalize_certification_exam_name("Salesforce Platform App Builder"),
+            PAB_EXAM_NAME,
+        )
+        self.assertEqual(
+            normalize_certification_exam_name("pab"),
+            PAB_EXAM_NAME,
+        )
+
+    def test_administrator_aliases_normalize(self):
+        self.assertEqual(
+            normalize_certification_exam_name("Salesforce Administrator"),
+            ADM_EXAM_NAME,
+        )
+        self.assertEqual(
+            normalize_certification_exam_name("adm-201"),
+            ADM_EXAM_NAME,
+        )
+
+    def test_business_analyst_aliases_normalize(self):
+        self.assertEqual(
+            normalize_certification_exam_name("Salesforce Business Analyst"),
+            BA_EXAM_NAME,
+        )
+
+    def test_unexpected_certification_string_is_not_guessed(self):
+        self.assertIsNone(
+            normalize_certification_exam_name("Salesforce Certified Data Cloud Consultant")
+        )
+
+
+class TestGenerationRequestValidation(unittest.TestCase):
+    def _pab_request(self, *, domain: str) -> GenerationRequest:
+        return GenerationRequest(
+            certification_exam_name="Salesforce Certified Platform App Builder",
+            domain=domain,
+            prompt_template_id="certbound-question-gen",
+            prompt_version="v1.0.0",
+            model_name="claude-test",
+            created_by="tester@certbound.internal",
+            source_evidence={"resource_reference": "Salesforce Help"},
+        )
+
+    def test_generation_request_accepts_platform_app_builder(self):
+        validate_generation_request(self._pab_request(domain="User Interface"))
+
+    def test_generation_request_rejects_unknown_platform_app_builder_domain(self):
+        request = self._pab_request(domain="Security and Access")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_generation_request_rejects_unsupported_certification(self):
+        request = GenerationRequest(
+            certification_exam_name="Salesforce Certified Data Cloud Consultant",
+            domain="Any Domain",
+            prompt_template_id="certbound-question-gen",
+            prompt_version="v1.0.0",
+            model_name="claude-test",
+            created_by="tester@certbound.internal",
+            source_evidence={"resource_reference": "Salesforce Help"},
+        )
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_administrator_regression_still_accepted(self):
+        request = GenerationRequest(
+            certification_exam_name="Salesforce Administrator",
+            domain="Security and Access",
+            prompt_template_id="certbound-question-gen",
+            prompt_version="v1.0.0",
+            model_name="claude-test",
+            created_by="tester@certbound.internal",
+            source_evidence={"resource_reference": "Salesforce Help"},
+        )
+        validate_generation_request(request)
+
+
+class TestAuditRetryAndFrozenContextValidation(unittest.TestCase):
+    def test_audit_retry_context_accepts_platform_app_builder(self):
+        canonical = validate_audit_retry_context_certification(
+            certification_exam_name="Salesforce Platform App Builder",
+            domain="App Deployment",
+        )
+        self.assertEqual(canonical, PAB_EXAM_NAME)
+
+    def test_frozen_audit_context_accepts_administrator_alias(self):
+        canonical = validate_frozen_audit_context_certification(
+            certification_exam_name="adm-201",
+            domain_name="Configuration",
+        )
+        self.assertEqual(canonical, ADM_EXAM_NAME)
+
+    def test_frozen_audit_context_rejects_unsupported_certification(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_frozen_audit_context_certification(
+                certification_exam_name="Salesforce Certified Data Cloud Consultant",
+                domain_name="Any Domain",
+            )
+
+    def test_validate_certification_domain_for_platform_app_builder(self):
+        canonical = validate_certification_domain(
+            "Salesforce Certified Platform App Builder",
+            "Business Logic and Process Automation",
+        )
+        self.assertEqual(canonical, PAB_EXAM_NAME)
+
+
+class TestDomainBoundaryEnforcement(unittest.TestCase):
+    """Internal domain_id values must never be accepted as a request domain."""
+
+    def test_domain_id_is_rejected_as_a_domain_value_for_platform_app_builder(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=PAB_EXAM_NAME,
+                domain="user_interface",  # domain_id, not domain_name
+            )
+
+    def test_cross_certification_domain_is_rejected(self):
+        # Administrator's "Configuration and Setup" is not a Platform App
+        # Builder domain and must not be silently accepted.
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=PAB_EXAM_NAME,
+                domain="Configuration and Setup",
+            )
+
+    def test_blank_domain_is_rejected_for_platform_app_builder(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=PAB_EXAM_NAME,
+                domain="   ",
+            )
+
+    def test_administrator_accepts_any_non_blank_domain_unchanged(self):
+        # Administrator/Business Analyst never enforced a domain contract at
+        # request-validation time; real existence is left entirely to
+        # certification_domain_exists(). This must remain true after
+        # PAB-EXP-02 so historical generation callers are unaffected.
+        canonical = validate_generation_request_certification(
+            certification_exam_name=ADM_EXAM_NAME,
+            domain="Some Domain Never Enumerated In The Registry",
+        )
+        self.assertEqual(canonical, ADM_EXAM_NAME)
+
+    def test_business_analyst_accepts_any_non_blank_domain_unchanged(self):
+        canonical = validate_generation_request_certification(
+            certification_exam_name=BA_EXAM_NAME,
+            domain="Some Domain Never Enumerated In The Registry",
+        )
+        self.assertEqual(canonical, BA_EXAM_NAME)
+
+
+class TestNoMutationOfFrozenOrHistoricalValues(unittest.TestCase):
+    """Registry validation must never rewrite caller-supplied strings."""
+
+    def test_frozen_blind_context_certification_and_domain_are_not_rewritten(self):
+        from tests.test_ai_quality_audit_context import FakeSupabase, _QVID, _blind_row
+
+        client = FakeSupabase()
+        client.set_rpc_response(
+            "get_question_version_blind_context_v1",
+            [_blind_row(certification_exam_name="adm-201", domain_name="Configuration")],
+        )
+        context = load_blind_audit_context(client, _QVID)
+        # Must round-trip verbatim, not get canonicalized to ADM_EXAM_NAME.
+        self.assertEqual(context["certification_exam_name"], "adm-201")
+        self.assertEqual(context["domain_name"], "Configuration")
+
+    def test_audit_retry_context_certification_and_domain_are_not_rewritten(self):
+        from tests.test_question_candidate_generation import FakeSupabase
+
+        fake = FakeSupabase()
+        fake.tables["question_candidates"] = [
+            {
+                "id": "candidate-1",
+                "content_hash": "abc123",
+                "certification_exam_name": "adm-201",
+                "category": "Some Historical Domain",
+                "question_text": "Sample?",
+                "explanation": "Because.",
+                "question_type": "single",
+                "select_count": 1,
+                "candidate_payload": {
+                    "options": [
+                        {"option_label": "A", "option_text": "One", "display_order": 1},
+                        {"option_label": "B", "option_text": "Two", "display_order": 2},
+                    ],
+                    "provenance": {
+                        "source_evidence": {"resource_reference": "Salesforce Help"},
+                        "prompt_template_id": "certbound-question-gen",
+                        "prompt_version": "v1.0.0",
+                        "model_name": "claude-test",
+                    },
+                },
+                "metadata": {"domain": "Some Historical Domain"},
+            }
+        ]
+        context = load_audit_retry_context(fake, "candidate-1")
+        self.assertEqual(context.request.certification_exam_name, "adm-201")
+        self.assertEqual(context.request.domain, "Some Historical Domain")
+
+
+class TestAuditEnqueueValidation(unittest.TestCase):
+    def test_enqueue_candidate_audits_rejects_unsupported_certification_before_any_insert(self):
+        from tests.test_question_candidate_generation import FakeSupabase
+
+        fake = FakeSupabase()
+        request = GenerationRequest(
+            certification_exam_name="Salesforce Certified Data Cloud Consultant",
+            domain="Any Domain",
+            prompt_template_id="certbound-question-gen",
+            prompt_version="v1.0.0",
+            model_name="claude-test",
+            created_by="tester@certbound.internal",
+            source_evidence={"resource_reference": "Salesforce Help"},
+        )
+        with self.assertRaises(CandidateValidationError):
+            enqueue_candidate_audits(
+                fake,
+                candidate_id="candidate-1",
+                question_snapshot={"question_text": "Sample?", "options": []},
+                request=request,
+                content_hash="abc123",
+            )
+        self.assertEqual(fake.insert_calls, [])
+
+
+class TestBlindContextRegistryIntegration(unittest.TestCase):
+    def test_load_blind_audit_context_rejects_unsupported_certification(self):
+        from tests.test_ai_quality_audit_context import FakeSupabase, _QVID, _blind_row
+
+        client = FakeSupabase()
+        client.set_rpc_response(
+            "get_question_version_blind_context_v1",
+            [
+                _blind_row(
+                    certification_exam_name="Salesforce Certified Data Cloud Consultant"
+                )
+            ],
+        )
+        with self.assertRaises(AiQualityAuditContextError):
+            load_blind_audit_context(client, _QVID)
+
+
+class TestAuditRetryContextLoader(unittest.TestCase):
+    def test_load_audit_retry_context_rejects_unsupported_certification(self):
+        from tests.test_question_candidate_generation import FakeSupabase
+
+        fake = FakeSupabase()
+        fake.tables["question_candidates"] = [
+            {
+                "id": "candidate-1",
+                "content_hash": "abc123",
+                "certification_exam_name": "Salesforce Certified Data Cloud Consultant",
+                "category": "Any Domain",
+                "question_text": "Sample?",
+                "explanation": "Because.",
+                "question_type": "single",
+                "select_count": 1,
+                "candidate_payload": {
+                    "options": [
+                        {"option_label": "A", "option_text": "One", "display_order": 1},
+                        {"option_label": "B", "option_text": "Two", "display_order": 2},
+                    ],
+                    "provenance": {
+                        "source_evidence": {"resource_reference": "Salesforce Help"},
+                        "prompt_template_id": "certbound-question-gen",
+                        "prompt_version": "v1.0.0",
+                        "model_name": "claude-test",
+                    },
+                },
+                "metadata": {"domain": "Any Domain"},
+            }
+        ]
+        with self.assertRaises(CandidateValidationError):
+            load_audit_retry_context(fake, "candidate-1")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -74,6 +74,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from workers.certification_registry import (
+    CertificationRegistryError,
+    validate_audit_retry_context_certification,
+    validate_generation_request_certification,
+)
 from workers.llm_providers import SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY
 
 logger = logging.getLogger(__name__)
@@ -340,6 +345,14 @@ def validate_generation_request(request: GenerationRequest) -> None:
             raise CandidateValidationError("request_metadata must be a JSON object")
         _require_json_serializable(request.request_metadata, "request_metadata")
 
+    try:
+        validate_generation_request_certification(
+            certification_exam_name=request.certification_exam_name,
+            domain=request.domain,
+        )
+    except CertificationRegistryError as exc:
+        raise CandidateValidationError(str(exc)) from exc
+
 
 # ===========================================================================
 # Structured generation-output validation
@@ -554,6 +567,17 @@ class QuestionCandidateRepository:
         self._client = client
 
     def certification_domain_exists(self, exam_name: str, domain_name: str) -> bool:
+        """Authoritative persistence-existence check against ``public.certification_domains``.
+
+        This is the database catalog gate — the only source of truth for
+        whether ``(exam_name, domain_name)`` may currently be persisted. It
+        intentionally queries with the caller-supplied strings verbatim
+        (no normalization/canonicalization via
+        ``workers.certification_registry``), so a request that passes the
+        engine-profile capability check in that module can still correctly
+        fail here (e.g. Platform App Builder, which has an engine profile
+        but no ``certification_domains`` rows yet).
+        """
         try:
             result = (
                 self._client.table("certification_domains")
@@ -956,6 +980,14 @@ def enqueue_candidate_audits(
     if unknown:
         raise CandidateValidationError(f"unsupported audit job_types: {sorted(unknown)}")
 
+    try:
+        validate_audit_retry_context_certification(
+            certification_exam_name=request.certification_exam_name,
+            domain=request.domain,
+        )
+    except CertificationRegistryError as exc:
+        raise CandidateValidationError(str(exc)) from exc
+
     shared_metadata = {
         "candidate_content_hash": content_hash,
         "certification_exam_name": request.certification_exam_name,
@@ -1055,11 +1087,19 @@ def load_audit_retry_context(
     row = repo.get_by_id(candidate_id)
     if row is None:
         raise CandidatePersistenceError(f"question_candidates row not found: {candidate_id}")
+    request = generation_request_from_candidate_row(row, created_by=created_by)
+    try:
+        validate_audit_retry_context_certification(
+            certification_exam_name=request.certification_exam_name,
+            domain=request.domain,
+        )
+    except CertificationRegistryError as exc:
+        raise CandidateValidationError(str(exc)) from exc
     return AuditRetryContext(
         candidate_id=str(row["id"]),
         content_hash=row["content_hash"],
         question_snapshot=question_snapshot_from_candidate_row(row),
-        request=generation_request_from_candidate_row(row, created_by=created_by),
+        request=request,
     )
 
 

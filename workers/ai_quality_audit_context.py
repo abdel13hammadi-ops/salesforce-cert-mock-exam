@@ -11,6 +11,11 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
 
+from workers.certification_registry import (
+    CertificationRegistryError,
+    validate_frozen_audit_context_certification,
+)
+
 BLIND_CONTEXT_RPC = "get_question_version_blind_context_v1"
 COMPARISON_CONTEXT_RPC = "get_question_version_comparison_context_v1"
 
@@ -71,6 +76,13 @@ def load_blind_audit_context(
         row,
         requested_question_version_id=requested_qvid,
     )
+    try:
+        validate_frozen_audit_context_certification(
+            certification_exam_name=normalized["certification_exam_name"],
+            domain_name=normalized["domain_name"],
+        )
+    except CertificationRegistryError as exc:
+        raise AiQualityAuditContextError(str(exc)) from exc
     if requested_run_id is not None:
         normalized["audit_run_id"] = requested_run_id
     return normalized
