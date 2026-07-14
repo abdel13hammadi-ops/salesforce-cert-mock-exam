@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover
     pgserver = None  # type: ignore
 
 from workers.ai_quality_audit_evidence import prepare_smoke_evidence_set
-from workers.certification_registry import PAB_EXAM_NAME
+from workers.certification_registry import PAB_EXAM_NAME, SCC_EXAM_NAME
 from workers.official_evidence_fixture_ingestion import (
     ALLOW_APPROVED_SUPABASE_INGEST_FLAG,
     ALLOW_FIXTURE_INGEST_FLAG,
@@ -63,6 +63,9 @@ from workers.official_evidence_seed import (
     DEFAULT_OUTPUT_PATH,
     PAB_DEFAULT_OUTPUT_PATH,
     PAB_FIXTURE_VERSION,
+    SCC_DEFAULT_OUTPUT_PATH,
+    SCC_EVIDENCE_CONFIG_ID,
+    SCC_FIXTURE_VERSION,
 )
 from workers.v48_psycopg_client import PsycopgV48Client
 
@@ -82,6 +85,13 @@ _BA_DOMAINS = (
     "Requirements",
     "User Acceptance",
     "User Stories",
+)
+_SCC_DOMAINS = (
+    "Practical Application of Sales Cloud Expertise",
+    "Sales Lifecycle",
+    "Consulting & Implementation Strategies",
+    "Data Management",
+    "Predictive and Generative AI",
 )
 
 
@@ -229,6 +239,7 @@ class PgserverFixtureIngestionTestCase(unittest.TestCase):
         self.client = PsycopgV48Client(self.conn)
         self.pab_payload, _, _ = load_fixture_for_ingestion(PAB_DEFAULT_OUTPUT_PATH)
         self.ba_payload, _, _ = load_fixture_for_ingestion(BA_DEFAULT_OUTPUT_PATH)
+        self.scc_payload, _, _ = load_fixture_for_ingestion(SCC_DEFAULT_OUTPUT_PATH)
 
     def tearDown(self):
         try:
@@ -264,6 +275,14 @@ class PgserverFixtureIngestionTestCase(unittest.TestCase):
             self.conn,
             self.ba_payload,
             fixture_path=BA_DEFAULT_OUTPUT_PATH,
+            dry_run=dry_run,
+        )
+
+    def _ingest_scc(self, *, dry_run: bool = False):
+        return ingest_official_evidence_fixture_package(
+            self.conn,
+            self.scc_payload,
+            fixture_path=SCC_DEFAULT_OUTPUT_PATH,
             dry_run=dry_run,
         )
 
@@ -664,6 +683,40 @@ class TestBaFixtureValidation(unittest.TestCase):
 
     def test_ba_wrong_record_count_rejected(self):
         payload, _, _ = load_fixture_for_ingestion(BA_DEFAULT_OUTPUT_PATH)
+        tampered = deepcopy(payload)
+        tampered["evidence_items"] = tampered["evidence_items"][:-1]
+        with self.assertRaises(OfficialEvidenceFixtureIngestionError):
+            validate_fixture_for_ingestion(tampered)
+
+
+class TestSccFixtureValidation(unittest.TestCase):
+    def test_scc_fixture_validation_passes(self):
+        payload, fixture_version, package_config = load_fixture_for_ingestion(
+            SCC_DEFAULT_OUTPUT_PATH
+        )
+        self.assertEqual(fixture_version, SCC_FIXTURE_VERSION)
+        self.assertEqual(package_config["evidence_config_id"], SCC_EVIDENCE_CONFIG_ID)
+        self.assertEqual(package_config["certification_exam_name"], SCC_EXAM_NAME)
+        self.assertEqual(package_config["expected_record_count"], 5)
+        self.assertEqual(package_config["expected_domain_count"], 5)
+        self.assertEqual(len(payload["evidence_items"]), 5)
+
+    def test_scc_unknown_fixture_identity_rejected(self):
+        payload, _, _ = load_fixture_for_ingestion(SCC_DEFAULT_OUTPUT_PATH)
+        tampered = deepcopy(payload)
+        tampered["fixture_version"] = "official-evidence-unknown-v9"
+        with self.assertRaises(OfficialEvidenceFixtureIngestionError):
+            validate_fixture_for_ingestion(tampered)
+
+    def test_scc_wrong_certification_rejected(self):
+        payload, _, _ = load_fixture_for_ingestion(SCC_DEFAULT_OUTPUT_PATH)
+        tampered = deepcopy(payload)
+        tampered["certifications_covered"] = [ADM_EXAM_NAME]
+        with self.assertRaises(OfficialEvidenceFixtureIngestionError):
+            validate_fixture_for_ingestion(tampered)
+
+    def test_scc_wrong_record_count_rejected(self):
+        payload, _, _ = load_fixture_for_ingestion(SCC_DEFAULT_OUTPUT_PATH)
         tampered = deepcopy(payload)
         tampered["evidence_items"] = tampered["evidence_items"][:-1]
         with self.assertRaises(OfficialEvidenceFixtureIngestionError):
@@ -1098,6 +1151,128 @@ class TestBaFixtureIngestion(PgserverFixtureIngestionTestCase):
         self.assertEqual(self._count_table("official_resources", certification=PAB_EXAM_NAME), 7)
 
 
+@unittest.skipUnless(_pgserver_available(), "pgserver/psycopg2 unavailable")
+class TestSccFixtureIngestion(PgserverFixtureIngestionTestCase):
+    def test_five_record_ingestion(self):
+        result = self._ingest_scc()
+        self.assertEqual(result.item_count, 5)
+        self.assertEqual(self._count_table("official_resources", certification=SCC_EXAM_NAME), 5)
+        self.assertEqual(self._count_table("resource_versions", certification=SCC_EXAM_NAME), 5)
+        self.assertEqual(self._count_table("resource_chunks", certification=SCC_EXAM_NAME), 5)
+
+    def test_all_five_domain_coverage(self):
+        self._ingest_scc()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT metadata->>'domain'
+                FROM public.official_resources
+                WHERE certification_exam_name = %s
+                ORDER BY 1
+                """,
+                (SCC_EXAM_NAME,),
+            )
+            domains = {row[0] for row in cur.fetchall()}
+        self.assertEqual(domains, set(_SCC_DOMAINS))
+
+    def test_exact_rerun_idempotency_no_duplicates(self):
+        first = self._ingest_scc()
+        second = self._ingest_scc()
+        self.assertEqual(first.item_count, 5)
+        self.assertEqual(first.resources_created, 5)
+        self.assertEqual(first.versions_created, 5)
+        self.assertEqual(second.item_count, 5)
+        self.assertEqual(second.resources_created, 0)
+        self.assertEqual(second.resources_existing, 5)
+        self.assertEqual(second.versions_created, 0)
+        self.assertEqual(second.versions_idempotent, 5)
+        self.assertEqual(second.chunks_created, 0)
+        self.assertEqual(self._count_table("official_resources", certification=SCC_EXAM_NAME), 5)
+        self.assertEqual(self._count_table("resource_versions", certification=SCC_EXAM_NAME), 5)
+        self.assertEqual(self._count_table("resource_chunks", certification=SCC_EXAM_NAME), 5)
+
+    def test_conflicting_content_hash_rejected(self):
+        item = self.scc_payload["evidence_items"][0]
+        resource_id = item["official_resource_id"]
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.official_resources (
+                    id, certification_exam_name, resource_type, title,
+                    canonical_url, publisher, metadata, is_active, created_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, true, 'seed')
+                """,
+                (
+                    resource_id,
+                    item["certification"],
+                    item["resource_type"],
+                    item["resource_title"],
+                    item["canonical_url"],
+                    item["publisher"],
+                    json.dumps(
+                        {
+                            "domain": item["domain"],
+                            "domains": item["domain_tags"],
+                            "certification_code": item["certification_code"],
+                            "evidence_package_identity": SCC_FIXTURE_VERSION,
+                            "evidence_config_id": SCC_EVIDENCE_CONFIG_ID,
+                        }
+                    ),
+                ),
+            )
+            version_id = str(uuid.uuid4())
+            cur.execute(
+                """
+                INSERT INTO public.resource_versions (
+                    id, resource_id, version_number, source_url, content_text,
+                    content_hash, created_by, metadata
+                ) VALUES (%s, %s, 1, %s, %s, %s, 'seed', '{}'::jsonb)
+                """,
+                (
+                    version_id,
+                    resource_id,
+                    item["source_url"],
+                    "different text",
+                    "deadbeef" * 8,
+                ),
+            )
+        with self.assertRaises(OfficialEvidenceFixtureIngestionConflictError):
+            self._ingest_scc()
+
+    def test_conflicting_certification_rejected(self):
+        item = self.scc_payload["evidence_items"][0]
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.official_resources (
+                    id, certification_exam_name, resource_type, title,
+                    canonical_url, publisher, metadata, is_active, created_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, true, 'seed')
+                """,
+                (
+                    item["official_resource_id"],
+                    PAB_EXAM_NAME,
+                    item["resource_type"],
+                    item["resource_title"],
+                    item["canonical_url"],
+                    item["publisher"],
+                    json.dumps({"domain": item["domain"], "domains": item["domain_tags"]}),
+                ),
+            )
+        with self.assertRaises(OfficialEvidenceFixtureIngestionConflictError):
+            self._ingest_scc()
+
+    def test_ba_ingestion_unchanged_after_scc_registration(self):
+        result = self._ingest_ba()
+        self.assertEqual(result.item_count, 6)
+        self.assertEqual(self._count_table("official_resources", certification=BA_EXAM_NAME), 6)
+
+    def test_pab_ingestion_unchanged_after_scc_registration(self):
+        result = self._ingest_pab()
+        self.assertEqual(result.item_count, 7)
+        self.assertEqual(self._count_table("official_resources", certification=PAB_EXAM_NAME), 7)
+
+
 class TestFixtureIngestionSafety(unittest.TestCase):
     def test_production_dsn_rejected_for_spoofed_hostname(self):
         with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
@@ -1153,6 +1328,11 @@ _BA_APPROVED_KWARGS = dict(
     fixture_version=BA_FIXTURE_VERSION,
     certification_exam_name=BA_EXAM_NAME,
     record_count=6,
+)
+_SCC_APPROVED_KWARGS = dict(
+    fixture_version=SCC_FIXTURE_VERSION,
+    certification_exam_name=SCC_EXAM_NAME,
+    record_count=5,
 )
 
 
@@ -1444,6 +1624,58 @@ class TestApprovedHostedSupabaseTargetOverride(unittest.TestCase):
                         allow_hosted_cli_flag=True,
                         **bad_kwargs,
                     )
+
+    def test_scc_all_required_conditions_together_permit_hosted_target(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                assert_approved_hosted_supabase_target(
+                    database_url=_HOSTED_DSN,
+                    allow_hosted_cli_flag=True,
+                    **_SCC_APPROVED_KWARGS,
+                )
+
+    def test_scc_non_scc_certification_rejected_even_with_all_flags(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                    assert_approved_hosted_supabase_target(
+                        database_url=_HOSTED_DSN,
+                        allow_hosted_cli_flag=True,
+                        fixture_version=SCC_FIXTURE_VERSION,
+                        certification_exam_name=PAB_EXAM_NAME,
+                        record_count=5,
+                    )
+
+    def test_scc_record_count_other_than_five_rejected_even_with_all_flags(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                for bad_count in (0, 1, 4, 6, 7, 100):
+                    with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                        assert_approved_hosted_supabase_target(
+                            database_url=_HOSTED_DSN,
+                            allow_hosted_cli_flag=True,
+                            fixture_version=SCC_FIXTURE_VERSION,
+                            certification_exam_name=SCC_EXAM_NAME,
+                            record_count=bad_count,
+                        )
 
     def test_enforce_dsn_target_safety_routes_local_dsn_unchanged(self):
         """Non-hosted DSNs never require any of the new hosted-target flags."""

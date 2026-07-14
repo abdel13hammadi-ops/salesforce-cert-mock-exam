@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
-from workers.certification_registry import BA_EXAM_NAME, PAB_EXAM_NAME
+from workers.certification_registry import BA_EXAM_NAME, PAB_EXAM_NAME, SCC_EXAM_NAME
 from workers.job_handlers import make_resource_ingestion_handler
 from workers.official_evidence_seed import (
     BA_DEFAULT_OUTPUT_PATH,
@@ -29,6 +29,9 @@ from workers.official_evidence_seed import (
     PAB_DEFAULT_OUTPUT_PATH,
     PAB_EVIDENCE_CONFIG_ID,
     PAB_FIXTURE_VERSION,
+    SCC_DEFAULT_OUTPUT_PATH,
+    SCC_EVIDENCE_CONFIG_ID,
+    SCC_FIXTURE_VERSION,
     filter_fixture_items_by_certification,
     load_official_evidence_fixture,
     validate_fixture_payload,
@@ -79,6 +82,10 @@ APPROVED_HOSTED_TARGETS: Dict[str, Dict[str, Any]] = {
         "certification_exam_name": BA_EXAM_NAME,
         "record_count": 6,
     },
+    SCC_FIXTURE_VERSION: {
+        "certification_exam_name": SCC_EXAM_NAME,
+        "record_count": 5,
+    },
 }
 
 # Backward-compatible PAB-only exports retained for existing tests and docs.
@@ -102,6 +109,13 @@ KNOWN_EVIDENCE_PACKAGES: Dict[str, Dict[str, Any]] = {
         "expected_record_count": 6,
         "expected_domain_count": 6,
         "default_fixture_path": BA_DEFAULT_OUTPUT_PATH,
+    },
+    SCC_FIXTURE_VERSION: {
+        "evidence_config_id": SCC_EVIDENCE_CONFIG_ID,
+        "certification_exam_name": SCC_EXAM_NAME,
+        "expected_record_count": 5,
+        "expected_domain_count": 5,
+        "default_fixture_path": SCC_DEFAULT_OUTPUT_PATH,
     },
 }
 

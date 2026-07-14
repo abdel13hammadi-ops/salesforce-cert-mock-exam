@@ -14,10 +14,11 @@ and each stays fail-closed unless *every* condition below holds:
     2. ``CERTBOUND_ALLOW_APPROVED_SUPABASE_INGEST=1``
     3. ``--allow-approved-supabase-target`` passed explicitly
     4. an explicit ``--database-url``
-    5. fixture identity exactly ``official-evidence-pab-v1`` or
-       ``official-evidence-ba-v1``
-    6. certification scope matching the fixture (PAB or Business Analyst)
-    7. exact fixture record count for that package (7 for PAB, 6 for BA)
+    5. fixture identity exactly ``official-evidence-pab-v1``,
+       ``official-evidence-ba-v1``, or ``official-evidence-scc-v1``
+    6. certification scope matching the fixture (PAB, Business Analyst, or
+       Sales Cloud Consultant)
+    7. exact fixture record count for that package (7 for PAB, 6 for BA, 5 for SCC)
 
 This script never prints or logs the database URL, credentials, or tokens.
 
