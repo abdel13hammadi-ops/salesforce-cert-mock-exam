@@ -46,6 +46,22 @@ EXAM_MINUTES_DEFAULT = 105
 QUESTION_COUNT_DEFAULT = 60
 
 
+def format_domain_weight(weight) -> str:
+    """Render a domain weight for display.
+
+    Whole-number weights (e.g. 23.0) display without a trailing ".0"
+    (as "23"); fractional weights (e.g. 23.3) display exactly as given.
+    Accepts int/float/Decimal/str and never raises on bad input.
+    """
+    try:
+        value = round(float(weight or 0), 1)
+    except (TypeError, ValueError):
+        return "0"
+    if value == int(value):
+        return str(int(value))
+    return f"{value:.1f}"
+
+
 st.set_page_config(
     page_title="Salesforce Certification Mock Exam",
     layout="wide",
@@ -469,7 +485,7 @@ def fetch_exam_setup(exam_name):
                 for d in domain_rows
             }
             setup["category_weights"] = {
-                d["domain_name"]: int(d.get("weight") or 0)
+                d["domain_name"]: float(d.get("weight") or 0)
                 for d in domain_rows
             }
     except Exception:
@@ -1813,8 +1829,8 @@ if not st.session_state.started:
     for row in DOMAIN_ROWS:
         domain = row.get("domain_name")
         count = int(row.get("question_count") or CATEGORY_COUNTS.get(domain, 0))
-        weight = int(row.get("weight") or CATEGORY_WEIGHTS.get(domain, 0))
-        st.write(f"- **{domain}** — {weight}% / {count} questions")
+        weight = row.get("weight") or CATEGORY_WEIGHTS.get(domain, 0)
+        st.write(f"- **{domain}** — {format_domain_weight(weight)}% / {count} questions")
 
     st.info(
         """
