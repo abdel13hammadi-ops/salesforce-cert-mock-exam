@@ -1,0 +1,197 @@
+{
+  "certifications_covered": [
+    "Salesforce Certified Sales Cloud Consultant"
+  ],
+  "domains_covered": [
+    "Consulting & Implementation Strategies",
+    "Data Management",
+    "Practical Application of Sales Cloud Expertise",
+    "Predictive and Generative AI",
+    "Sales Lifecycle"
+  ],
+  "evidence_config_id": "official_evidence_scc_v1",
+  "evidence_items": [
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/accounts_contacts_lightning_experience/accounts-and-contacts-lightning",
+      "certification": "Salesforce Certified Sales Cloud Consultant",
+      "certification_code": "Sales-Con-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "In Salesforce, you store information about your customers using accounts and contacts. Accounts are companies that you\u2019re doing business with, and contacts are the people who work for them.",
+      "content_hash": "574d4a40d711b2b7c91b3ae8b7e63ac56f5f68a8d6dcf3af116c54ad55c8405a",
+      "domain": "Practical Application of Sales Cloud Expertise",
+      "domain_tags": [
+        "Practical Application of Sales Cloud Expertise"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "2d1b3fa7-6cd3-5276-8482-03841d43f781",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "fd319310-956b-5837-b177-5f4caba5058e",
+      "resource_title": "Store Information About Your Customers",
+      "resource_type": "trailhead",
+      "resource_version_id": "d79998c8-48ed-5064-89c3-6e03a9b69eec",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/accounts_contacts_lightning_experience/accounts-and-contacts-lightning",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/leads_opportunities_lightning_experience/work-your-opportunities",
+      "certification": "Salesforce Certified Sales Cloud Consultant",
+      "certification_code": "Sales-Con-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "Opportunities represent potential sales. In Salesforce, you can create opportunities for existing accounts or by converting a qualified lead. Let\u2019s explore how you can use opportunities to track your deals, better understand who you\u2019re selling to, and focus your team\u2019s efforts.",
+      "content_hash": "7017f684fa53d9d28b7365f9f569a7a55ba82cd939b29f940ca7c3180ff9febb",
+      "domain": "Sales Lifecycle",
+      "domain_tags": [
+        "Sales Lifecycle"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "c9ad3d93-83a3-5260-8f67-0230d66dc8bb",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "b3bb80fe-1427-53d1-87c2-4b755e61a12c",
+      "resource_title": "Work Your Opportunities",
+      "resource_type": "trailhead",
+      "resource_version_id": "cca98587-7331-521e-b0c1-414e29f48222",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/leads_opportunities_lightning_experience/work-your-opportunities",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-adoption-strategies/accelerate-salesforce-adoption",
+      "certification": "Salesforce Certified Sales Cloud Consultant",
+      "certification_code": "Sales-Con-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "So why is adoption so important? Simply put, you won\u2019t see a return on your Salesforce investment unless your team actually uses it. Prolific adoption leads to strong ROI and positions your reps and your company for success.",
+      "content_hash": "743ad6136a8ef699130a651735cdec598a0015c9e723148d49ee0ac40a4afd49",
+      "domain": "Consulting & Implementation Strategies",
+      "domain_tags": [
+        "Consulting & Implementation Strategies"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "9e1ff23d-824a-5120-893a-a982c8fffa9c",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "05805bdb-3f48-5728-9d31-36c760204819",
+      "resource_title": "Accelerate Salesforce Adoption",
+      "resource_type": "trailhead",
+      "resource_version_id": "188ae93b-edbf-517a-99c5-0ab620030462",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-adoption-strategies/accelerate-salesforce-adoption",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/data_quality/data_quality_assess_your_data",
+      "certification": "Salesforce Certified Sales Cloud Consultant",
+      "certification_code": "Sales-Con-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "Data quality has several key attributes. It\u2019s important to understand these dimensions before you try to fix any data problems.",
+      "content_hash": "14a06bcdb0b8b7f675d802e4f0c4bef4fe83ff368846b759024d40133bc62ea1",
+      "domain": "Data Management",
+      "domain_tags": [
+        "Data Management"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "00c9ed61-3308-5089-adca-b60da8c1cfe5",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "f6045f06-950c-526a-9113-0030018303d2",
+      "resource_title": "Assess the Quality of Data",
+      "resource_type": "trailhead",
+      "resource_version_id": "873d2eed-98f9-5327-8700-80a8174ccba3",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/data_quality/data_quality_assess_your_data",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/responsible-creation-of-artificial-intelligence/create-responsible-generative-ai",
+      "certification": "Salesforce Certified Sales Cloud Consultant",
+      "certification_code": "Sales-Con-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "Until recently, most people who discussed AI were talking about predictive AI. This type of artificial intelligence focuses on looking at an existing set of data and making limited predictions about what should be true given the information at hand. Now there\u2019s a new player on the field\u2014an emerging type of AI that\u2019s generative, not predictive. The key difference? Where predictive AI analyzes trends, generative AI creates new content.",
+      "content_hash": "c0a2bae4576639af2c372478da01dc0c58fc1804ab0db651df460694fe4ad4a5",
+      "domain": "Predictive and Generative AI",
+      "domain_tags": [
+        "Predictive and Generative AI"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "5f401f64-f57d-5411-afaf-7551a0724c59",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "716ff9da-731c-502d-a73e-40eab6d508de",
+      "resource_title": "Create Responsible Generative AI",
+      "resource_type": "trailhead",
+      "resource_version_id": "72b8ed7a-a3c7-543a-949b-942b1ef49fd3",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/responsible-creation-of-artificial-intelligence/create-responsible-generative-ai",
+      "version_number": 1
+    }
+  ],
+  "export_summary": {
+    "exported_by_certification": {
+      "Salesforce Certified Sales Cloud Consultant": 5
+    },
+    "exported_by_domain": {
+      "Consulting & Implementation Strategies": 1,
+      "Data Management": 1,
+      "Practical Application of Sales Cloud Expertise": 1,
+      "Predictive and Generative AI": 1,
+      "Sales Lifecycle": 1
+    },
+    "exported_chunk_count": 5,
+    "maximum_excerpt_chars": 437
+  },
+  "fixture_version": "official-evidence-scc-v1",
+  "generated_at": "2026-07-14T00:00:00+00:00",
+  "inventory_summary": {
+    "chunk_count_by_certification": {
+      "Salesforce Certified Sales Cloud Consultant": 5
+    },
+    "domains_by_certification": {
+      "Salesforce Certified Sales Cloud Consultant": [
+        "Consulting & Implementation Strategies",
+        "Data Management",
+        "Practical Application of Sales Cloud Expertise",
+        "Predictive and Generative AI",
+        "Sales Lifecycle"
+      ]
+    },
+    "eligible_chunk_count": 5,
+    "provenance_complete_resource_count": 5,
+    "resource_count_by_certification": {
+      "Salesforce Certified Sales Cloud Consultant": 5
+    },
+    "total_chunk_count": 5,
+    "total_resource_count": 5
+  },
+  "isolated_from": [
+    "official-evidence-seed-v1",
+    "official-evidence-ba-v1",
+    "official-evidence-pab-v1"
+  ],
+  "no_synthetic_evidence": true,
+  "source_verification_method": "Each chunk_text is a verbatim, single-paragraph excerpt actually retrieved via WebFetch from an official trailhead.salesforce.com module directly linked in the official 'Prepare for your Salesforce Sales Cloud Consultant Certification' trailmix during SCC-EXP-04 (Learning Objectives / body prose only; no exam practice questions or flashcards copied). content_hash is SHA-256 of chunk_text.",
+  "sources_represented": [
+    "Accelerate Salesforce Adoption",
+    "Assess the Quality of Data",
+    "Create Responsible Generative AI",
+    "Store Information About Your Customers",
+    "Work Your Opportunities"
+  ],
+  "status": "verified_evidence_seed"
+}

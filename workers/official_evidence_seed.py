@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
-from workers.certification_registry import PAB_EXAM_NAME
+from workers.certification_registry import PAB_EXAM_NAME, SCC_EXAM_NAME
 from workers.resource_chunking import sha256_hex
 from workers.structural_audit_launcher import ADM_EXAM_NAME, BA_EXAM_NAME
 
@@ -50,6 +50,18 @@ PAB_DEFAULT_OUTPUT_PATH = (
     Path(__file__).resolve().parent / "fixtures" / "official_evidence_pab_v1.json"
 )
 
+# Sales Cloud Consultant evidence-package identity (SCC-EXP-04). Deliberately
+# isolated from FIXTURE_VERSION, BA_FIXTURE_VERSION, and PAB_FIXTURE_VERSION
+# above: adding SCC coverage must never change the hash or meaning of any
+# other certification's committed package. Only Sales Cloud Consultant
+# requests resolve to this identity -- see
+# resolve_evidence_identity_for_certification() below.
+SCC_FIXTURE_VERSION = "official-evidence-scc-v1"
+SCC_EVIDENCE_CONFIG_ID = "official_evidence_scc_v1"
+SCC_DEFAULT_OUTPUT_PATH = (
+    Path(__file__).resolve().parent / "fixtures" / "official_evidence_scc_v1.json"
+)
+
 MAX_EXCERPT_CHARS = 1500
 DEFAULT_TARGET_MIN_CHUNKS = 24
 DEFAULT_TARGET_MAX_CHUNKS = 40
@@ -62,6 +74,8 @@ CERTIFICATION_CODES = {
     # (single source of truth for the code string lives there; duplicated
     # here only because this module's dict predates that import).
     PAB_EXAM_NAME: "platform_app_builder",
+    # Must match certification_registry.CERTIFICATION_CODES[SCC_EXAM_NAME].
+    SCC_EXAM_NAME: "Sales-Con-201",
 }
 
 SUPPORTED_CERTIFICATIONS = frozenset(CERTIFICATION_CODES)
@@ -75,12 +89,14 @@ EVIDENCE_IDENTITY_BY_CERTIFICATION: Dict[str, str] = {
     ADM_EXAM_NAME: FIXTURE_VERSION,
     BA_EXAM_NAME: BA_FIXTURE_VERSION,
     PAB_EXAM_NAME: PAB_FIXTURE_VERSION,
+    SCC_EXAM_NAME: SCC_FIXTURE_VERSION,
 }
 
 FIXTURE_PATH_BY_EVIDENCE_IDENTITY: Dict[str, Path] = {
     FIXTURE_VERSION: DEFAULT_OUTPUT_PATH,
     BA_FIXTURE_VERSION: BA_DEFAULT_OUTPUT_PATH,
     PAB_FIXTURE_VERSION: PAB_DEFAULT_OUTPUT_PATH,
+    SCC_FIXTURE_VERSION: SCC_DEFAULT_OUTPUT_PATH,
 }
 
 ALLOWED_RESOURCE_TYPES = frozenset({
