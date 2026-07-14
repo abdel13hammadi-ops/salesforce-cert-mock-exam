@@ -7,16 +7,17 @@ credentials automatically. Live writes additionally require
 ``CERTBOUND_ALLOW_FIXTURE_INGEST=1``.
 
 Hosted Supabase targets (``supabase.co`` / ``supabase.in``) are rejected by
-default. Exactly one approved hosted-target override exists (PAB-EXP-04E),
-and it stays fail-closed unless *every* condition below holds:
+default. Two approved hosted-target overrides exist (PAB-EXP-04E, BA-EXP-03),
+and each stays fail-closed unless *every* condition below holds:
 
     1. ``CERTBOUND_ALLOW_FIXTURE_INGEST=1``
     2. ``CERTBOUND_ALLOW_APPROVED_SUPABASE_INGEST=1``
     3. ``--allow-approved-supabase-target`` passed explicitly
     4. an explicit ``--database-url``
-    5. fixture identity exactly ``official-evidence-pab-v1``
-    6. certification scope exactly ``Salesforce Certified Platform App Builder``
-    7. exactly seven fixture records
+    5. fixture identity exactly ``official-evidence-pab-v1`` or
+       ``official-evidence-ba-v1``
+    6. certification scope matching the fixture (PAB or Business Analyst)
+    7. exact fixture record count for that package (7 for PAB, 6 for BA)
 
 This script never prints or logs the database URL, credentials, or tokens.
 

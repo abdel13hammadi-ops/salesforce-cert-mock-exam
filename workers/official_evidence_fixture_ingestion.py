@@ -18,9 +18,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
-from workers.certification_registry import PAB_EXAM_NAME
+from workers.certification_registry import BA_EXAM_NAME, PAB_EXAM_NAME
 from workers.job_handlers import make_resource_ingestion_handler
 from workers.official_evidence_seed import (
+    BA_DEFAULT_OUTPUT_PATH,
+    BA_EVIDENCE_CONFIG_ID,
+    BA_FIXTURE_VERSION,
     FIXTURE_VERSION,
     OfficialEvidenceSeedError,
     PAB_DEFAULT_OUTPUT_PATH,
@@ -57,18 +60,33 @@ HOSTED_SUPABASE_DOMAIN_SUFFIXES = (
     ".supabase.in",
 )
 
-# PAB-EXP-04E: narrow, fail-closed override permitting exactly one approved
-# hosted Supabase ingestion target. This does NOT weaken the default
-# ``reject_production_like_dsn`` guard -- ``enforce_dsn_target_safety``
+# PAB-EXP-04E / BA-EXP-03: narrow, fail-closed overrides permitting only
+# registered hosted Supabase ingestion targets. This does NOT weaken the
+# default ``reject_production_like_dsn`` guard -- ``enforce_dsn_target_safety``
 # below is the single call site every caller must use, and it only ever
 # routes a DSN into this override when *every* condition below holds
-# simultaneously. Any missing condition falls through to (or explicitly
-# re-raises via) the same unconditional rejection used for every other
-# production-like host.
+# simultaneously for one known package identity. Any missing condition
+# falls through to (or explicitly re-raises via) the same unconditional
+# rejection used for every other production-like host.
 ALLOW_APPROVED_SUPABASE_INGEST_FLAG = "CERTBOUND_ALLOW_APPROVED_SUPABASE_INGEST"
+
+APPROVED_HOSTED_TARGETS: Dict[str, Dict[str, Any]] = {
+    PAB_FIXTURE_VERSION: {
+        "certification_exam_name": PAB_EXAM_NAME,
+        "record_count": 7,
+    },
+    BA_FIXTURE_VERSION: {
+        "certification_exam_name": BA_EXAM_NAME,
+        "record_count": 6,
+    },
+}
+
+# Backward-compatible PAB-only exports retained for existing tests and docs.
 APPROVED_HOSTED_TARGET_FIXTURE_VERSION = PAB_FIXTURE_VERSION
 APPROVED_HOSTED_TARGET_CERTIFICATION = PAB_EXAM_NAME
-APPROVED_HOSTED_TARGET_RECORD_COUNT = 7
+APPROVED_HOSTED_TARGET_RECORD_COUNT = APPROVED_HOSTED_TARGETS[PAB_FIXTURE_VERSION][
+    "record_count"
+]
 
 KNOWN_EVIDENCE_PACKAGES: Dict[str, Dict[str, Any]] = {
     PAB_FIXTURE_VERSION: {
@@ -77,6 +95,13 @@ KNOWN_EVIDENCE_PACKAGES: Dict[str, Dict[str, Any]] = {
         "expected_record_count": 7,
         "expected_domain_count": 5,
         "default_fixture_path": PAB_DEFAULT_OUTPUT_PATH,
+    },
+    BA_FIXTURE_VERSION: {
+        "evidence_config_id": BA_EVIDENCE_CONFIG_ID,
+        "certification_exam_name": BA_EXAM_NAME,
+        "expected_record_count": 6,
+        "expected_domain_count": 6,
+        "default_fixture_path": BA_DEFAULT_OUTPUT_PATH,
     },
 }
 
@@ -277,22 +302,24 @@ def assert_approved_hosted_supabase_target(
         raise OfficialEvidenceFixtureIngestionSafetyError(
             "Refusing hosted Supabase target. Pass --allow-approved-supabase-target."
         )
-    if fixture_version != APPROVED_HOSTED_TARGET_FIXTURE_VERSION:
+    approved = APPROVED_HOSTED_TARGETS.get(fixture_version)
+    if approved is None:
         raise OfficialEvidenceFixtureIngestionSafetyError(
             f"Refusing hosted Supabase target for fixture_version "
             f"{fixture_version!r}; only "
-            f"{APPROVED_HOSTED_TARGET_FIXTURE_VERSION!r} is approved."
+            f"{sorted(APPROVED_HOSTED_TARGETS)} are approved."
         )
-    if certification_exam_name != APPROVED_HOSTED_TARGET_CERTIFICATION:
+    if certification_exam_name != approved["certification_exam_name"]:
         raise OfficialEvidenceFixtureIngestionSafetyError(
             f"Refusing hosted Supabase target for certification "
-            f"{certification_exam_name!r}; only "
-            f"{APPROVED_HOSTED_TARGET_CERTIFICATION!r} is approved."
+            f"{certification_exam_name!r}; for fixture {fixture_version!r} only "
+            f"{approved['certification_exam_name']!r} is approved."
         )
-    if record_count != APPROVED_HOSTED_TARGET_RECORD_COUNT:
+    if record_count != approved["record_count"]:
         raise OfficialEvidenceFixtureIngestionSafetyError(
             f"Refusing hosted Supabase target for record_count {record_count}; "
-            f"only {APPROVED_HOSTED_TARGET_RECORD_COUNT} is approved."
+            f"for fixture {fixture_version!r} only "
+            f"{approved['record_count']} is approved."
         )
 
 
@@ -899,6 +926,7 @@ __all__ = [
     "APPROVED_HOSTED_TARGET_CERTIFICATION",
     "APPROVED_HOSTED_TARGET_FIXTURE_VERSION",
     "APPROVED_HOSTED_TARGET_RECORD_COUNT",
+    "APPROVED_HOSTED_TARGETS",
     "DEFAULT_CREATED_BY",
     "KNOWN_EVIDENCE_PACKAGES",
     "OfficialEvidenceFixtureIngestionConflictError",
