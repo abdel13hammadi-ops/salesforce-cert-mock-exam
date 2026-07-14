@@ -43,6 +43,19 @@ DEFAULT_CREATED_BY = "official-evidence-fixture-ingestion"
 
 PRODUCTION_HOST_MARKERS = ("supabase.co", "supabase.in")
 
+# PAB-EXP-04E: narrow, fail-closed override permitting exactly one approved
+# hosted Supabase ingestion target. This does NOT weaken the default
+# ``reject_production_like_dsn`` guard -- ``enforce_dsn_target_safety``
+# below is the single call site every caller must use, and it only ever
+# routes a DSN into this override when *every* condition below holds
+# simultaneously. Any missing condition falls through to (or explicitly
+# re-raises via) the same unconditional rejection used for every other
+# production-like host.
+ALLOW_APPROVED_SUPABASE_INGEST_FLAG = "CERTBOUND_ALLOW_APPROVED_SUPABASE_INGEST"
+APPROVED_HOSTED_TARGET_FIXTURE_VERSION = PAB_FIXTURE_VERSION
+APPROVED_HOSTED_TARGET_CERTIFICATION = PAB_EXAM_NAME
+APPROVED_HOSTED_TARGET_RECORD_COUNT = 7
+
 KNOWN_EVIDENCE_PACKAGES: Dict[str, Dict[str, Any]] = {
     PAB_FIXTURE_VERSION: {
         "evidence_config_id": PAB_EVIDENCE_CONFIG_ID,
@@ -168,6 +181,95 @@ def reject_production_like_dsn(database_url: str) -> None:
             raise OfficialEvidenceFixtureIngestionSafetyError(
                 f"database URL contains production marker {marker!r}; refusing"
             )
+
+
+def is_hosted_supabase_dsn(database_url: Optional[str]) -> bool:
+    """Return True if *database_url* structurally matches a hosted Supabase host.
+
+    Pure string classification only -- never treated as an approval signal by
+    itself. A True result routes the DSN into ``assert_approved_hosted_supabase_target``
+    instead of the unconditional ``reject_production_like_dsn`` rejection; it
+    never bypasses safety on its own.
+    """
+    lowered = str(database_url or "").strip().lower()
+    return any(marker in lowered for marker in PRODUCTION_HOST_MARKERS)
+
+
+def assert_approved_hosted_supabase_target(
+    *,
+    database_url: Optional[str],
+    allow_hosted_cli_flag: bool,
+    fixture_version: str,
+    certification_exam_name: str,
+    record_count: int,
+) -> None:
+    """Fail-closed gate for the one approved hosted Supabase ingestion target.
+
+    Every condition below must hold simultaneously. Missing any single one
+    raises ``OfficialEvidenceFixtureIngestionSafetyError`` -- there is no
+    partial-approval state and no default-permit fallback.
+    """
+    if not database_url or not database_url.strip():
+        raise OfficialEvidenceFixtureIngestionSafetyError(
+            "Refusing hosted Supabase target without an explicit --database-url."
+        )
+    if os.environ.get(ALLOW_FIXTURE_INGEST_FLAG) != "1":
+        raise OfficialEvidenceFixtureIngestionSafetyError(
+            f"Refusing hosted Supabase target. Set {ALLOW_FIXTURE_INGEST_FLAG}=1."
+        )
+    if os.environ.get(ALLOW_APPROVED_SUPABASE_INGEST_FLAG) != "1":
+        raise OfficialEvidenceFixtureIngestionSafetyError(
+            f"Refusing hosted Supabase target. Set "
+            f"{ALLOW_APPROVED_SUPABASE_INGEST_FLAG}=1."
+        )
+    if not allow_hosted_cli_flag:
+        raise OfficialEvidenceFixtureIngestionSafetyError(
+            "Refusing hosted Supabase target. Pass --allow-approved-supabase-target."
+        )
+    if fixture_version != APPROVED_HOSTED_TARGET_FIXTURE_VERSION:
+        raise OfficialEvidenceFixtureIngestionSafetyError(
+            f"Refusing hosted Supabase target for fixture_version "
+            f"{fixture_version!r}; only "
+            f"{APPROVED_HOSTED_TARGET_FIXTURE_VERSION!r} is approved."
+        )
+    if certification_exam_name != APPROVED_HOSTED_TARGET_CERTIFICATION:
+        raise OfficialEvidenceFixtureIngestionSafetyError(
+            f"Refusing hosted Supabase target for certification "
+            f"{certification_exam_name!r}; only "
+            f"{APPROVED_HOSTED_TARGET_CERTIFICATION!r} is approved."
+        )
+    if record_count != APPROVED_HOSTED_TARGET_RECORD_COUNT:
+        raise OfficialEvidenceFixtureIngestionSafetyError(
+            f"Refusing hosted Supabase target for record_count {record_count}; "
+            f"only {APPROVED_HOSTED_TARGET_RECORD_COUNT} is approved."
+        )
+
+
+def enforce_dsn_target_safety(
+    database_url: Optional[str],
+    *,
+    allow_hosted_cli_flag: bool = False,
+    fixture_version: Optional[str] = None,
+    certification_exam_name: Optional[str] = None,
+    record_count: Optional[int] = None,
+) -> None:
+    """Single call site for DSN target safety: reject production-like hosts
+    unless the narrow approved-hosted-target override is fully satisfied.
+
+    Every caller must use this function instead of calling
+    ``reject_production_like_dsn`` directly, so the approved-hosted-target
+    carve-out cannot be accidentally duplicated, weakened, or skipped.
+    """
+    if not is_hosted_supabase_dsn(database_url):
+        reject_production_like_dsn(str(database_url or ""))
+        return
+    assert_approved_hosted_supabase_target(
+        database_url=database_url,
+        allow_hosted_cli_flag=allow_hosted_cli_flag,
+        fixture_version=str(fixture_version or ""),
+        certification_exam_name=str(certification_exam_name or ""),
+        record_count=record_count if record_count is not None else -1,
+    )
 
 
 def resolve_package_config(fixture_version: str) -> Dict[str, Any]:
@@ -706,11 +808,26 @@ def ingest_fixture_file(
     created_by: str = DEFAULT_CREATED_BY,
     dry_run: bool = False,
     expected_fixture_version: Optional[str] = None,
+    allow_hosted_cli_flag: bool = False,
 ) -> PackageIngestionResult:
+    """Load, safety-gate, and ingest one fixture package against *database_url*.
+
+    Safety gating always runs -- including when ``dry_run=True`` -- so a
+    connected dry run against a hosted target still enforces every approved-
+    hosted-target condition before opening any connection.
+    """
     assert_fixture_ingest_allowed(database_url=database_url, dry_run=dry_run)
-    reject_production_like_dsn(database_url)
-    payload, _, _ = load_fixture_for_ingestion(
+    payload, fixture_version, package_config = load_fixture_for_ingestion(
         fixture_path, expected_fixture_version=expected_fixture_version
+    )
+    certification = str(package_config["certification_exam_name"])
+    items = filter_fixture_items_by_certification(payload, certification)
+    enforce_dsn_target_safety(
+        database_url,
+        allow_hosted_cli_flag=allow_hosted_cli_flag,
+        fixture_version=fixture_version,
+        certification_exam_name=certification,
+        record_count=len(items),
     )
     conn = psycopg2.connect(database_url)
     try:
@@ -726,19 +843,26 @@ def ingest_fixture_file(
 
 
 __all__ = [
+    "ALLOW_APPROVED_SUPABASE_INGEST_FLAG",
     "ALLOW_FIXTURE_INGEST_FLAG",
+    "APPROVED_HOSTED_TARGET_CERTIFICATION",
+    "APPROVED_HOSTED_TARGET_FIXTURE_VERSION",
+    "APPROVED_HOSTED_TARGET_RECORD_COUNT",
     "DEFAULT_CREATED_BY",
     "KNOWN_EVIDENCE_PACKAGES",
     "OfficialEvidenceFixtureIngestionConflictError",
     "OfficialEvidenceFixtureIngestionError",
     "OfficialEvidenceFixtureIngestionSafetyError",
     "PackageIngestionResult",
+    "assert_approved_hosted_supabase_target",
     "assert_fixture_ingest_allowed",
+    "enforce_dsn_target_safety",
     "fixture_item_to_catalog_row",
     "fixture_item_to_ingest_payload",
     "format_package_summary",
     "ingest_fixture_file",
     "ingest_official_evidence_fixture_package",
+    "is_hosted_supabase_dsn",
     "load_fixture_for_ingestion",
     "reject_production_like_dsn",
     "resolve_package_config",

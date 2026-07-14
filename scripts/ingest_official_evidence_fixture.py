@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 """
-Ingest a verified official-evidence fixture package into disposable runtime tables.
+Ingest a verified official-evidence fixture package into runtime tables.
 
-Requires an explicit disposable PostgreSQL DSN and never uses production
-Supabase credentials. Live writes additionally require
+Requires an explicit PostgreSQL DSN and never uses production Supabase
+credentials automatically. Live writes additionally require
 ``CERTBOUND_ALLOW_FIXTURE_INGEST=1``.
+
+Hosted Supabase targets (``supabase.co`` / ``supabase.in``) are rejected by
+default. Exactly one approved hosted-target override exists (PAB-EXP-04E),
+and it stays fail-closed unless *every* condition below holds:
+
+    1. ``CERTBOUND_ALLOW_FIXTURE_INGEST=1``
+    2. ``CERTBOUND_ALLOW_APPROVED_SUPABASE_INGEST=1``
+    3. ``--allow-approved-supabase-target`` passed explicitly
+    4. an explicit ``--database-url``
+    5. fixture identity exactly ``official-evidence-pab-v1``
+    6. certification scope exactly ``Salesforce Certified Platform App Builder``
+    7. exactly seven fixture records
+
+This script never prints or logs the database URL, credentials, or tokens.
 
 Usage::
 
@@ -17,6 +31,14 @@ Usage::
     python scripts/ingest_official_evidence_fixture.py \\
         --fixture workers/fixtures/official_evidence_pab_v1.json \\
         --database-url postgresql://postgres:postgres@127.0.0.1:54329/certbound_v48_test
+
+    REM Approved hosted Supabase target only (all flags required together):
+    set CERTBOUND_ALLOW_FIXTURE_INGEST=1
+    set CERTBOUND_ALLOW_APPROVED_SUPABASE_INGEST=1
+    python scripts/ingest_official_evidence_fixture.py \\
+        --fixture workers/fixtures/official_evidence_pab_v1.json \\
+        --database-url <operator-supplied-approved-dsn> \\
+        --allow-approved-supabase-target
 """
 
 from __future__ import annotations
@@ -35,11 +57,9 @@ from workers.official_evidence_fixture_ingestion import (  # noqa: E402
     OfficialEvidenceFixtureIngestionConflictError,
     OfficialEvidenceFixtureIngestionError,
     OfficialEvidenceFixtureIngestionSafetyError,
-    assert_fixture_ingest_allowed,
     format_package_summary,
     ingest_fixture_file,
     load_fixture_for_ingestion,
-    reject_production_like_dsn,
 )
 
 
@@ -77,6 +97,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Validate fixture and plan ingestion without writing",
     )
     parser.add_argument(
+        "--allow-approved-supabase-target",
+        action="store_true",
+        help=(
+            "Required (together with CERTBOUND_ALLOW_FIXTURE_INGEST=1 and "
+            "CERTBOUND_ALLOW_APPROVED_SUPABASE_INGEST=1) to target a hosted "
+            "Supabase database. Ignored for non-hosted (disposable/local) "
+            "targets. Fails closed if any other required condition is missing."
+        ),
+    )
+    parser.add_argument(
         "--json-summary",
         action="store_true",
         help="Print structured JSON summary instead of plain text",
@@ -89,13 +119,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        if args.dry_run:
+        if args.dry_run and not args.database_url:
+            # Fixture-only dry run: no connection attempted, existing-row
+            # disposition cannot be reported (unchanged pre-04E behavior).
             payload, fixture_version, package_config = load_fixture_for_ingestion(
                 fixture_path,
                 expected_fixture_version=args.expected_fixture_version,
             )
             summary = {
-                "mode": "dry-run",
+                "mode": "dry-run (fixture-only, no --database-url)",
                 "fixture_path": str(fixture_path),
                 "fixture_version": fixture_version,
                 "evidence_config_id": package_config["evidence_config_id"],
@@ -116,17 +148,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        assert_fixture_ingest_allowed(
-            database_url=args.database_url, dry_run=False
-        )
-        reject_production_like_dsn(args.database_url)
-
+        # Connected dry run (--dry-run + --database-url) or live ingestion.
+        # ingest_fixture_file() enforces all safety gating -- including the
+        # approved-hosted-target checks -- before opening any connection.
         result = ingest_fixture_file(
             fixture_path,
             database_url=args.database_url,
             created_by=args.created_by,
-            dry_run=False,
+            dry_run=args.dry_run,
             expected_fixture_version=args.expected_fixture_version,
+            allow_hosted_cli_flag=args.allow_approved_supabase_target,
         )
         if args.json_summary:
             print(json.dumps(result.to_summary_dict(), indent=2, sort_keys=True))

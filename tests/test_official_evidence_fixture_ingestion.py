@@ -34,12 +34,19 @@ except ImportError:  # pragma: no cover
 from workers.ai_quality_audit_evidence import prepare_smoke_evidence_set
 from workers.certification_registry import PAB_EXAM_NAME
 from workers.official_evidence_fixture_ingestion import (
+    ALLOW_APPROVED_SUPABASE_INGEST_FLAG,
     ALLOW_FIXTURE_INGEST_FLAG,
+    APPROVED_HOSTED_TARGET_CERTIFICATION,
+    APPROVED_HOSTED_TARGET_FIXTURE_VERSION,
+    APPROVED_HOSTED_TARGET_RECORD_COUNT,
     OfficialEvidenceFixtureIngestionConflictError,
     OfficialEvidenceFixtureIngestionError,
     OfficialEvidenceFixtureIngestionSafetyError,
+    assert_approved_hosted_supabase_target,
     assert_fixture_ingest_allowed,
+    enforce_dsn_target_safety,
     ingest_official_evidence_fixture_package,
+    is_hosted_supabase_dsn,
     load_fixture_for_ingestion,
     reject_production_like_dsn,
     resolve_package_config,
@@ -687,6 +694,312 @@ class TestFixtureIngestionSafety(unittest.TestCase):
         payload = json.loads(DEFAULT_OUTPUT_PATH.read_text(encoding="utf-8"))
         with self.assertRaises(OfficialEvidenceFixtureIngestionError):
             validate_fixture_for_ingestion(payload)
+
+
+_HOSTED_DSN = "postgresql://postgres:REDACTED@db.abcdefghijk.supabase.co:5432/postgres"
+_LOCAL_DSN = "postgresql://postgres:postgres@127.0.0.1:54329/certbound_v48_test"
+
+_APPROVED_KWARGS = dict(
+    fixture_version=APPROVED_HOSTED_TARGET_FIXTURE_VERSION,
+    certification_exam_name=APPROVED_HOSTED_TARGET_CERTIFICATION,
+    record_count=APPROVED_HOSTED_TARGET_RECORD_COUNT,
+)
+
+
+class TestApprovedHostedSupabaseTargetOverride(unittest.TestCase):
+    """PAB-EXP-04E: the narrow, fail-closed hosted-Supabase override."""
+
+    def _clear_hosted_flags(self):
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in (ALLOW_FIXTURE_INGEST_FLAG, ALLOW_APPROVED_SUPABASE_INGEST_FLAG)
+        }
+        return patch.dict(os.environ, env, clear=True)
+
+    def test_is_hosted_supabase_dsn_classification(self):
+        self.assertTrue(is_hosted_supabase_dsn(_HOSTED_DSN))
+        self.assertFalse(is_hosted_supabase_dsn(_LOCAL_DSN))
+        self.assertFalse(is_hosted_supabase_dsn(None))
+        self.assertFalse(is_hosted_supabase_dsn(""))
+
+    def test_hosted_target_rejected_with_zero_flags(self):
+        with self._clear_hosted_flags():
+            with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                assert_approved_hosted_supabase_target(
+                    database_url=_HOSTED_DSN,
+                    allow_hosted_cli_flag=False,
+                    **_APPROVED_KWARGS,
+                )
+
+    def test_one_environment_flag_alone_is_insufficient(self):
+        with self._clear_hosted_flags():
+            with patch.dict(os.environ, {ALLOW_FIXTURE_INGEST_FLAG: "1"}):
+                with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                    assert_approved_hosted_supabase_target(
+                        database_url=_HOSTED_DSN,
+                        allow_hosted_cli_flag=False,
+                        **_APPROVED_KWARGS,
+                    )
+
+    def test_other_environment_flag_alone_is_insufficient(self):
+        with self._clear_hosted_flags():
+            with patch.dict(os.environ, {ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1"}):
+                with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                    assert_approved_hosted_supabase_target(
+                        database_url=_HOSTED_DSN,
+                        allow_hosted_cli_flag=False,
+                        **_APPROVED_KWARGS,
+                    )
+
+    def test_both_environment_flags_without_cli_flag_is_insufficient(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                    assert_approved_hosted_supabase_target(
+                        database_url=_HOSTED_DSN,
+                        allow_hosted_cli_flag=False,
+                        **_APPROVED_KWARGS,
+                    )
+
+    def test_cli_flag_alone_without_env_flags_is_insufficient(self):
+        with self._clear_hosted_flags():
+            with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                assert_approved_hosted_supabase_target(
+                    database_url=_HOSTED_DSN,
+                    allow_hosted_cli_flag=True,
+                    **_APPROVED_KWARGS,
+                )
+
+    def test_missing_database_url_is_insufficient_even_with_all_flags(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                    assert_approved_hosted_supabase_target(
+                        database_url="",
+                        allow_hosted_cli_flag=True,
+                        **_APPROVED_KWARGS,
+                    )
+
+    def test_all_required_conditions_together_permit_hosted_target(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                # Must not raise: every required condition is satisfied.
+                assert_approved_hosted_supabase_target(
+                    database_url=_HOSTED_DSN,
+                    allow_hosted_cli_flag=True,
+                    **_APPROVED_KWARGS,
+                )
+
+    def test_unknown_fixture_identity_rejected_even_with_all_flags(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                    assert_approved_hosted_supabase_target(
+                        database_url=_HOSTED_DSN,
+                        allow_hosted_cli_flag=True,
+                        fixture_version="official-evidence-unknown-v9",
+                        certification_exam_name=APPROVED_HOSTED_TARGET_CERTIFICATION,
+                        record_count=APPROVED_HOSTED_TARGET_RECORD_COUNT,
+                    )
+
+    def test_non_pab_certification_rejected_even_with_all_flags(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                    assert_approved_hosted_supabase_target(
+                        database_url=_HOSTED_DSN,
+                        allow_hosted_cli_flag=True,
+                        fixture_version=APPROVED_HOSTED_TARGET_FIXTURE_VERSION,
+                        certification_exam_name="Salesforce Certified Administrator",
+                        record_count=APPROVED_HOSTED_TARGET_RECORD_COUNT,
+                    )
+
+    def test_record_count_other_than_seven_rejected_even_with_all_flags(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                for bad_count in (0, 1, 6, 8, 100):
+                    with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                        assert_approved_hosted_supabase_target(
+                            database_url=_HOSTED_DSN,
+                            allow_hosted_cli_flag=True,
+                            fixture_version=APPROVED_HOSTED_TARGET_FIXTURE_VERSION,
+                            certification_exam_name=APPROVED_HOSTED_TARGET_CERTIFICATION,
+                            record_count=bad_count,
+                        )
+
+    def test_enforce_dsn_target_safety_routes_local_dsn_unchanged(self):
+        """Non-hosted DSNs never require any of the new hosted-target flags."""
+        with self._clear_hosted_flags():
+            enforce_dsn_target_safety(_LOCAL_DSN)  # must not raise
+
+    def test_enforce_dsn_target_safety_still_rejects_hosted_by_default(self):
+        """No generic safety protection was removed: with zero configuration,
+        a hosted DSN is rejected exactly as it was before this override existed.
+        """
+        with self._clear_hosted_flags():
+            with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                enforce_dsn_target_safety(_HOSTED_DSN)
+
+    def test_enforce_dsn_target_safety_permits_hosted_when_fully_approved(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                enforce_dsn_target_safety(  # must not raise
+                    _HOSTED_DSN,
+                    allow_hosted_cli_flag=True,
+                    **_APPROVED_KWARGS,
+                )
+
+    def test_credentials_never_appear_in_safety_error_messages(self):
+        """Error messages must never echo back the DSN (which may embed a
+        password), even when reporting a rejection for that exact DSN.
+        """
+        secret_marker = "REDACTED"
+        with self._clear_hosted_flags():
+            try:
+                assert_approved_hosted_supabase_target(
+                    database_url=_HOSTED_DSN,
+                    allow_hosted_cli_flag=False,
+                    **_APPROVED_KWARGS,
+                )
+                self.fail("expected OfficialEvidenceFixtureIngestionSafetyError")
+            except OfficialEvidenceFixtureIngestionSafetyError as exc:
+                self.assertNotIn(secret_marker, str(exc))
+                self.assertNotIn(_HOSTED_DSN, str(exc))
+
+
+class TestIngestFixtureFileHostedGateWiring(unittest.TestCase):
+    """``ingest_fixture_file`` must invoke the hosted-target gate before
+    ever calling ``psycopg2.connect`` -- proven by patching ``connect`` to
+    fail the test if reached while the gate should have already raised.
+    """
+
+    def _clear_hosted_flags(self):
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in (ALLOW_FIXTURE_INGEST_FLAG, ALLOW_APPROVED_SUPABASE_INGEST_FLAG)
+        }
+        return patch.dict(os.environ, env, clear=True)
+
+    def test_hosted_dry_run_without_flags_never_connects(self):
+        from workers import official_evidence_fixture_ingestion as mod
+
+        with self._clear_hosted_flags():
+            with patch.object(
+                mod.psycopg2,
+                "connect",
+                side_effect=AssertionError("must not connect"),
+            ):
+                with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                    mod.ingest_fixture_file(
+                        PAB_DEFAULT_OUTPUT_PATH,
+                        database_url=_HOSTED_DSN,
+                        dry_run=True,
+                        allow_hosted_cli_flag=False,
+                    )
+
+    def test_hosted_live_run_without_cli_flag_never_connects(self):
+        from workers import official_evidence_fixture_ingestion as mod
+
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                with patch.object(
+                    mod.psycopg2,
+                    "connect",
+                    side_effect=AssertionError("must not connect"),
+                ):
+                    with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                        mod.ingest_fixture_file(
+                            PAB_DEFAULT_OUTPUT_PATH,
+                            database_url=_HOSTED_DSN,
+                            dry_run=False,
+                            allow_hosted_cli_flag=False,
+                        )
+
+
+class TestCliHostedTargetFlag(unittest.TestCase):
+    """CLI-level coverage for ``--allow-approved-supabase-target``."""
+
+    def _run_cli(self, argv):
+        import importlib
+
+        script_path = _REPO_ROOT / "scripts" / "ingest_official_evidence_fixture.py"
+        spec = importlib.util.spec_from_file_location(
+            "ingest_official_evidence_fixture_cli", script_path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.main(argv)
+
+    def test_cli_defines_hosted_target_flag(self):
+        source = (_REPO_ROOT / "scripts" / "ingest_official_evidence_fixture.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--allow-approved-supabase-target", source)
+        self.assertIn(ALLOW_APPROVED_SUPABASE_INGEST_FLAG, source)
+
+    def test_cli_fixture_only_dry_run_never_prints_database_url(self):
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            exit_code = self._run_cli(
+                ["--fixture", str(PAB_DEFAULT_OUTPUT_PATH), "--dry-run"]
+            )
+        self.assertEqual(exit_code, 0)
+        output = buf.getvalue()
+        self.assertNotIn("supabase.co", output)
+        self.assertNotIn("postgresql://", output)
 
 
 if __name__ == "__main__":
