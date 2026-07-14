@@ -21,6 +21,7 @@ from workers.certification_registry import (
     PAB_EXAM_NAME,
     CertificationDefinition,
     CertificationRegistryError,
+    get_business_analyst_definition,
     get_certification_definition,
     get_platform_app_builder_definition,
     normalize_certification_exam_name,
@@ -115,6 +116,37 @@ class TestPlatformAppBuilderRegistry(unittest.TestCase):
         self.assertEqual(len(all_domain_ids), len(set(all_domain_ids)))
 
 
+class TestBusinessAnalystRegistry(unittest.TestCase):
+    def test_registry_lookup_returns_canonical_definition(self):
+        definition = get_certification_definition("Salesforce Business Analyst")
+        self.assertIsNotNone(definition)
+        assert definition is not None
+        self.assertEqual(definition.exam_name, BA_EXAM_NAME)
+
+    def test_exact_domain_names(self):
+        definition = get_business_analyst_definition()
+        self.assertEqual(
+            tuple(domain.domain_name for domain in definition.domains),
+            (
+                "Customer Discovery",
+                "Collaboration with Stakeholders",
+                "Business Process Mapping",
+                "Requirements",
+                "User Stories",
+                "User Acceptance",
+            ),
+        )
+
+    def test_domain_weight_total_equals_100(self):
+        definition = get_business_analyst_definition()
+        self.assertEqual(definition.total_domain_weight, 100)
+
+    def test_ba_201_internal_code_resolves_to_canonical_certification(self):
+        self.assertEqual(CERTIFICATION_CODES[BA_EXAM_NAME], "BA-201")
+        self.assertEqual(normalize_certification_exam_name("BA-201"), BA_EXAM_NAME)
+        self.assertEqual(normalize_certification_exam_name("ba-201"), BA_EXAM_NAME)
+
+
 class TestCertificationCodeIdentifierDecision(unittest.TestCase):
     """PAB-EXP-02: APP-401 had no repository evidence and was removed."""
 
@@ -185,6 +217,14 @@ class TestCertificationNormalization(unittest.TestCase):
             normalize_certification_exam_name("Salesforce Business Analyst"),
             BA_EXAM_NAME,
         )
+        self.assertEqual(
+            normalize_certification_exam_name("ba-201"),
+            BA_EXAM_NAME,
+        )
+        self.assertEqual(
+            normalize_certification_exam_name("BA-201"),
+            BA_EXAM_NAME,
+        )
 
     def test_unexpected_certification_string_is_not_guessed(self):
         self.assertIsNone(
@@ -237,6 +277,25 @@ class TestGenerationRequestValidation(unittest.TestCase):
         )
         validate_generation_request(request)
 
+    def _ba_request(self, *, domain: str) -> GenerationRequest:
+        return GenerationRequest(
+            certification_exam_name=BA_EXAM_NAME,
+            domain=domain,
+            prompt_template_id="certbound-question-gen",
+            prompt_version="v1.0.0",
+            model_name="claude-test",
+            created_by="tester@certbound.internal",
+            source_evidence={"resource_reference": "Salesforce Help"},
+        )
+
+    def test_generation_request_accepts_business_analyst(self):
+        validate_generation_request(self._ba_request(domain="Requirements"))
+
+    def test_generation_request_rejects_unknown_business_analyst_domain(self):
+        request = self._ba_request(domain="Configuration and Setup")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
 
 class TestAuditRetryAndFrozenContextValidation(unittest.TestCase):
     def test_audit_retry_context_accepts_platform_app_builder(self):
@@ -267,6 +326,20 @@ class TestAuditRetryAndFrozenContextValidation(unittest.TestCase):
         )
         self.assertEqual(canonical, PAB_EXAM_NAME)
 
+    def test_audit_retry_context_accepts_business_analyst(self):
+        canonical = validate_audit_retry_context_certification(
+            certification_exam_name="ba-201",
+            domain="User Stories",
+        )
+        self.assertEqual(canonical, BA_EXAM_NAME)
+
+    def test_validate_certification_domain_for_business_analyst(self):
+        canonical = validate_certification_domain(
+            "Salesforce Certified Business Analyst",
+            "Customer Discovery",
+        )
+        self.assertEqual(canonical, BA_EXAM_NAME)
+
 
 class TestDomainBoundaryEnforcement(unittest.TestCase):
     """Internal domain_id values must never be accepted as a request domain."""
@@ -295,22 +368,58 @@ class TestDomainBoundaryEnforcement(unittest.TestCase):
             )
 
     def test_administrator_accepts_any_non_blank_domain_unchanged(self):
-        # Administrator/Business Analyst never enforced a domain contract at
-        # request-validation time; real existence is left entirely to
-        # certification_domain_exists(). This must remain true after
-        # PAB-EXP-02 so historical generation callers are unaffected.
+        # Administrator never enforced a domain contract at request-validation
+        # time; real existence is left entirely to certification_domain_exists().
+        # This must remain true so historical generation callers are unaffected.
         canonical = validate_generation_request_certification(
             certification_exam_name=ADM_EXAM_NAME,
             domain="Some Domain Never Enumerated In The Registry",
         )
         self.assertEqual(canonical, ADM_EXAM_NAME)
 
-    def test_business_analyst_accepts_any_non_blank_domain_unchanged(self):
-        canonical = validate_generation_request_certification(
-            certification_exam_name=BA_EXAM_NAME,
-            domain="Some Domain Never Enumerated In The Registry",
-        )
-        self.assertEqual(canonical, BA_EXAM_NAME)
+    def test_business_analyst_rejects_unregistered_domain(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=BA_EXAM_NAME,
+                domain="Some Domain Never Enumerated In The Registry",
+            )
+
+    def test_business_analyst_rejects_administrator_domain(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=BA_EXAM_NAME,
+                domain="Configuration and Setup",
+            )
+
+    def test_business_analyst_rejects_platform_app_builder_domain(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=BA_EXAM_NAME,
+                domain="App Deployment",
+            )
+
+    def test_business_analyst_rejects_blank_domain(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=BA_EXAM_NAME,
+                domain="   ",
+            )
+
+    def test_all_six_business_analyst_domains_are_accepted(self):
+        for domain in (
+            "Customer Discovery",
+            "Collaboration with Stakeholders",
+            "Business Process Mapping",
+            "Requirements",
+            "User Stories",
+            "User Acceptance",
+        ):
+            with self.subTest(domain=domain):
+                canonical = validate_generation_request_certification(
+                    certification_exam_name=BA_EXAM_NAME,
+                    domain=domain,
+                )
+                self.assertEqual(canonical, BA_EXAM_NAME)
 
 
 class TestNoMutationOfFrozenOrHistoricalValues(unittest.TestCase):

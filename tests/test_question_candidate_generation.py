@@ -22,8 +22,13 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from workers.certification_registry import PAB_EXAM_NAME, get_platform_app_builder_definition
-from workers.official_evidence_seed import PAB_EVIDENCE_CONFIG_ID
+from workers.certification_registry import (
+    BA_EXAM_NAME,
+    PAB_EXAM_NAME,
+    get_business_analyst_definition,
+    get_platform_app_builder_definition,
+)
+from workers.official_evidence_seed import BA_EVIDENCE_CONFIG_ID, PAB_EVIDENCE_CONFIG_ID
 from workers.anthropic_provider import AnthropicAuditProvider, AnthropicProviderConfig
 from workers.llm_audit import LlmAuditValidationError
 from workers.llm_providers import LlmResponse, SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY
@@ -1226,6 +1231,153 @@ class TestPlatformAppBuilderGeneration(unittest.TestCase):
             PAB_EXAM_NAME,
         )
         self.assertEqual(result.question_snapshot["domain"], request.domain)
+
+
+# ===========================================================================
+# Business Analyst generation vertical slice (BA-EXP-04)
+# ===========================================================================
+
+_BA_DOMAINS = tuple(
+    domain.domain_name for domain in get_business_analyst_definition().domains
+)
+
+
+def _make_ba_request(**overrides) -> GenerationRequest:
+    kwargs = dict(
+        certification_exam_name=BA_EXAM_NAME,
+        domain="Customer Discovery",
+        prompt_template_id="certbound-question-gen",
+        prompt_version="v1.0.0",
+        model_name="claude-3-5-sonnet-20241022",
+        created_by="generation-service@certbound.internal",
+        source_evidence={"resource_reference": "Salesforce Help: Stakeholders"},
+    )
+    kwargs.update(overrides)
+    return GenerationRequest(**kwargs)
+
+
+def _seed_ba_domain(fake: FakeSupabase, request: GenerationRequest) -> None:
+    fake.add_certification_domain(request.certification_exam_name, request.domain)
+
+
+class TestBusinessAnalystGeneration(unittest.TestCase):
+    """Deterministic local smoke for the BA generation vertical slice."""
+
+    def _fake_with_ba_domain(self, request: GenerationRequest) -> FakeSupabase:
+        fake = FakeSupabase()
+        _seed_ba_domain(fake, request)
+        return fake
+
+    def test_all_six_registered_domains_are_accepted(self):
+        for domain in _BA_DOMAINS:
+            with self.subTest(domain=domain):
+                request = _make_ba_request(domain=domain)
+                validate_generation_request(request)
+
+    def test_administrator_domain_is_rejected_for_business_analyst(self):
+        request = _make_ba_request(domain="Data and Analytics Management")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_platform_app_builder_domain_is_rejected_for_business_analyst(self):
+        request = _make_ba_request(domain="User Interface")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_wrong_evidence_config_id_is_rejected(self):
+        request = _make_ba_request(
+            source_evidence={
+                "evidence_config_id": "official-evidence-seed-v1",
+                "resource_reference": "Salesforce Help",
+            }
+        )
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_valid_request_resolves_official_evidence_ba_v1(self):
+        request = _make_ba_request(domain="Requirements")
+        fake = self._fake_with_ba_domain(request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        result = generate_and_persist_candidate(fake, provider, request)
+
+        row = fake.tables["question_candidates"][0]
+        provenance = row["candidate_payload"]["provenance"]
+        self.assertEqual(
+            provenance["source_evidence"]["evidence_config_id"],
+            BA_EVIDENCE_CONFIG_ID,
+        )
+        self.assertEqual(row["certification_exam_name"], BA_EXAM_NAME)
+        self.assertEqual(row["metadata"]["domain"], request.domain)
+        self.assertFalse(result.deduplicated)
+        self.assertEqual(len(fake.tables["question_candidates"]), 1)
+        self.assertEqual(len(fake.tables["question_candidate_events"]), 1)
+
+    def test_candidate_only_persistence_never_touches_live_question_tables(self):
+        request = _make_ba_request(domain="User Stories")
+        fake = self._fake_with_ba_domain(request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        generate_and_persist_candidate(fake, provider, request)
+
+        for forbidden in _FORBIDDEN_TABLES:
+            self.assertNotIn(forbidden, fake.tables)
+
+    def test_exact_duplicate_handling_unchanged(self):
+        request = _make_ba_request(domain="Business Process Mapping")
+        fake = self._fake_with_ba_domain(request)
+        provider = FakeLlmProvider(
+            responses=[_llm_response(_valid_raw_payload()), _llm_response(_valid_raw_payload())]
+        )
+
+        first = generate_and_persist_candidate(fake, provider, request)
+        second = generate_and_persist_candidate(fake, provider, request)
+
+        self.assertFalse(first.deduplicated)
+        self.assertTrue(second.deduplicated)
+        self.assertEqual(first.candidate_id, second.candidate_id)
+        self.assertEqual(len(fake.tables["question_candidates"]), 1)
+
+    def test_audit_enqueue_carries_immutable_candidate_snapshot(self):
+        request = _make_ba_request(domain="User Acceptance")
+        fake = self._fake_with_ba_domain(request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        result = generate_and_persist_candidate(fake, provider, request)
+
+        det_call, llm_call = fake.calls_for("enqueue_background_job_v1")
+        self.assertEqual(
+            det_call["params"]["p_payload"]["target_candidate_id"],
+            result.candidate_id,
+        )
+        self.assertEqual(
+            det_call["params"]["p_payload"]["question"],
+            result.question_snapshot,
+        )
+        self.assertEqual(
+            llm_call["params"]["p_payload"]["question"],
+            result.question_snapshot,
+        )
+        self.assertEqual(
+            result.question_snapshot["certification_exam_name"],
+            BA_EXAM_NAME,
+        )
+        self.assertEqual(result.question_snapshot["domain"], request.domain)
+
+    def test_platform_app_builder_generation_unchanged_after_ba_registration(self):
+        request = _make_pab_request(domain="App Deployment")
+        fake = FakeSupabase()
+        _seed_pab_domain(fake, request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        result = generate_and_persist_candidate(fake, provider, request)
+
+        provenance = fake.tables["question_candidates"][0]["candidate_payload"]["provenance"]
+        self.assertEqual(
+            provenance["source_evidence"]["evidence_config_id"],
+            PAB_EVIDENCE_CONFIG_ID,
+        )
+        self.assertFalse(result.deduplicated)
 
 
 if __name__ == "__main__":

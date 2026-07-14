@@ -188,7 +188,7 @@ def _ba_definition() -> CertificationDefinition:
             CertificationDomain("user_stories", "User Stories", 16),
             CertificationDomain("user_acceptance", "User Acceptance", 16),
         ),
-        enforce_domain_contract_at_request_validation=False,
+        enforce_domain_contract_at_request_validation=True,
     )
 
 
@@ -346,6 +346,11 @@ def get_platform_app_builder_definition() -> CertificationDefinition:
     return definition
 
 
+def get_business_analyst_definition() -> CertificationDefinition:
+    definition = _DEFINITION_BY_EXAM_NAME[BA_EXAM_NAME]
+    return definition
+
+
 def list_supported_exam_names() -> Tuple[str, ...]:
     return tuple(sorted(SUPPORTED_EXAM_NAMES))
 
@@ -394,10 +399,10 @@ def validate_generation_request_certification(
 ) -> str:
     """Validate certification and domain for a generation request.
 
-    Platform App Builder enforces the full five-domain contract at request
-    validation time. Existing Administrator and Business Analyst behavior is
-    preserved by accepting any non-blank domain once the certification itself
-    is recognized.
+    Platform App Builder and Business Analyst enforce their full domain
+    contracts at request validation time. Administrator behavior is preserved
+    by accepting any non-blank domain once the certification itself is
+    recognized.
 
     This is an engine-capability pre-check that runs before, and is strictly
     stricter-or-equal to, the database persistence gate
