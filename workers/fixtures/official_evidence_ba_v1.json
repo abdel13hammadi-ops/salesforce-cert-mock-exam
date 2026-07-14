@@ -1,0 +1,225 @@
+{
+  "certifications_covered": [
+    "Salesforce Certified Business Analyst"
+  ],
+  "domains_covered": [
+    "Business Process Mapping",
+    "Collaboration with Stakeholders",
+    "Customer Discovery",
+    "Requirements",
+    "User Acceptance",
+    "User Stories"
+  ],
+  "evidence_config_id": "official_evidence_ba_v1",
+  "evidence_items": [
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/learn-about-customer-discovery",
+      "certification": "Salesforce Certified Business Analyst",
+      "certification_code": "BA-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the Customer Discovery section of the Salesforce Business Analyst exam, which makes up 17% of the overall exam. This section of the exam includes these topics: Stakeholders, Work streams, Change management, Application Lifecycle Management, Product roadmaps, Release notes, Salesforce.",
+      "content_hash": "af5a3d52aec218e422c8ff21f7d40fe2bcc6bb2f77c09800319ce6e9f61c18bb",
+      "domain": "Customer Discovery",
+      "domain_tags": [
+        "Customer Discovery"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "5b86fbb6-d7ed-5cd2-996a-cfd534e1ee20",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "fbf8c200-613f-515d-8a96-b2a69fc1a35f",
+      "resource_title": "Learn About Customer Discovery",
+      "resource_type": "trailhead",
+      "resource_version_id": "e8b065da-9184-532b-9b71-8e6da355d58e",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/learn-about-customer-discovery",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/reivew-collaboration-with-stakeholders",
+      "certification": "Salesforce Certified Business Analyst",
+      "certification_code": "BA-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the Collaboration with Stakeholders section of the Salesforce Business Analyst exam, which makes up 23% of the overall exam. This section of the exam includes these topics: Lead discovery, Agile, Whiteboarding, Journey map, Process design, Solution roadmap, Technical debt.",
+      "content_hash": "438791c0d60a0a8eb85507b29b24a22dd0246df68e7599a26f6553fecdf4208e",
+      "domain": "Collaboration with Stakeholders",
+      "domain_tags": [
+        "Collaboration with Stakeholders"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "22ffb9eb-3fd7-5fec-9e85-ceddf7e11dff",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "af15742b-0fd7-51af-923b-03fba31e6a52",
+      "resource_title": "Review Collaboration with Stakeholders",
+      "resource_type": "trailhead",
+      "resource_version_id": "e216c37b-18a3-59ef-9ba6-5870f14c3049",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/reivew-collaboration-with-stakeholders",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/study-up-on-business-process-mapping",
+      "certification": "Salesforce Certified Business Analyst",
+      "certification_code": "BA-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the Business Process Mapping section of the Salesforce Business Analyst exam, which makes up 12% of the overall exam. This section of the exam includes these topics: Functional ownership, Version control, Capability map, Scope, Process map, Stakeholders.",
+      "content_hash": "b470f007e14514fdd3d49ac77535975b6a8ef2f03252390cc0c4a5b2c2484885",
+      "domain": "Business Process Mapping",
+      "domain_tags": [
+        "Business Process Mapping"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "31c09cc4-6986-5f0f-bc95-3222219161e6",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "d015ad79-d809-536a-af1b-7059040592b8",
+      "resource_title": "Study Up on Business Process Mapping",
+      "resource_type": "trailhead",
+      "resource_version_id": "d3d67b14-a5a0-5635-95a8-447fa0909797",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/study-up-on-business-process-mapping",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/review-requirements",
+      "certification": "Salesforce Certified Business Analyst",
+      "certification_code": "BA-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the Requirements section of the Salesforce Business Analyst exam, which makes up 18% of the overall exam. This section of the exam includes these topics: Pain points, Well-defined requirements, Lifecycle, Change sets, Business needs, Dependencies.",
+      "content_hash": "bf60ce9564fb47c3e4eea0a612d2f2605044ff57213b1a60cca14debc2a65a03",
+      "domain": "Requirements",
+      "domain_tags": [
+        "Requirements"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "073bbde1-baa9-5fa0-b4d6-c404fd1b484b",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "83749246-2efd-5457-a3a4-521163c7dc92",
+      "resource_title": "Review Requirements",
+      "resource_type": "trailhead",
+      "resource_version_id": "079b631c-30ea-53f2-a299-48839e0457e8",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/review-requirements",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/refresh-your-user-story-skills",
+      "certification": "Salesforce Certified Business Analyst",
+      "certification_code": "BA-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the User Stories section of the Salesforce Business Analyst exam, which makes up 18% of the overall exam. This section of the exam includes these topics: Acceptance criteria, Implementation, Testing, Sign-offs, Definition of done, Version controlled repository.",
+      "content_hash": "7c1858d08789478545b7e0c9203f553c77d0a770e508cbf1ca34412cac3f32c5",
+      "domain": "User Stories",
+      "domain_tags": [
+        "User Stories"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "12ea88cf-1926-5e50-bb47-31cecd9bdeb5",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "0bc6307e-73b3-5758-bc72-f015bf0e4ca1",
+      "resource_title": "Refresh Your User Story Skills",
+      "resource_type": "trailhead",
+      "resource_version_id": "10eaf360-cc7b-5690-9cfd-5bae1d2b60f9",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/refresh-your-user-story-skills",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/explore-user-acceptance",
+      "certification": "Salesforce Certified Business Analyst",
+      "certification_code": "BA-201",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the User Acceptance section of the Salesforce Business Analyst exam, which makes up 12% of the overall exam. This section of the exam includes these topics: Test scripts, Compliance, Testers, Go/no-go, Collaboration, Feedback, Data collection, Stakeholder sign-off.",
+      "content_hash": "483a84b08fce4241be60e6eda41a25732e57b0f3c5bb3b8cff14a2b55c3f129d",
+      "domain": "User Acceptance",
+      "domain_tags": [
+        "User Acceptance"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-14T00:00:00+00:00",
+      "official_resource_id": "fd6259c9-cbc1-5f49-a0e7-da320e4cf19f",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "ca8aad81-28b9-5ed6-88c3-acde8c620023",
+      "resource_title": "Explore User Acceptance",
+      "resource_type": "trailhead",
+      "resource_version_id": "042e9555-f3c3-5445-8b98-13aa1152fe6c",
+      "retrieved_at": "2026-07-14T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-business-analyst-certification-prep/explore-user-acceptance",
+      "version_number": 1
+    }
+  ],
+  "export_summary": {
+    "exported_by_certification": {
+      "Salesforce Certified Business Analyst": 6
+    },
+    "exported_by_domain": {
+      "Customer Discovery": 1,
+      "Collaboration with Stakeholders": 1,
+      "Business Process Mapping": 1,
+      "Requirements": 1,
+      "User Stories": 1,
+      "User Acceptance": 1
+    },
+    "exported_chunk_count": 6,
+    "maximum_excerpt_chars": 312
+  },
+  "fixture_version": "official-evidence-ba-v1",
+  "generated_at": "2026-07-14T00:00:00+00:00",
+  "inventory_summary": {
+    "chunk_count_by_certification": {
+      "Salesforce Certified Business Analyst": 6
+    },
+    "domains_by_certification": {
+      "Salesforce Certified Business Analyst": [
+        "Business Process Mapping",
+        "Collaboration with Stakeholders",
+        "Customer Discovery",
+        "Requirements",
+        "User Acceptance",
+        "User Stories"
+      ]
+    },
+    "eligible_chunk_count": 6,
+    "provenance_complete_resource_count": 6,
+    "resource_count_by_certification": {
+      "Salesforce Certified Business Analyst": 6
+    },
+    "total_chunk_count": 6,
+    "total_resource_count": 6
+  },
+  "isolated_from": [
+    "official-evidence-seed-v1"
+  ],
+  "no_synthetic_evidence": true,
+  "source_verification_method": "Each chunk_text is a verbatim, single-paragraph excerpt actually retrieved from an official trailhead.salesforce.com Business Analyst certification-prep page during BA-EXP-02 (Key Topics prose only; no exam practice questions or flashcards copied). content_hash is SHA-256 of chunk_text.",
+  "sources_represented": [
+    "Learn About Customer Discovery",
+    "Review Collaboration with Stakeholders",
+    "Study Up on Business Process Mapping",
+    "Review Requirements",
+    "Refresh Your User Story Skills",
+    "Explore User Acceptance"
+  ],
+  "status": "verified_evidence_seed"
+}

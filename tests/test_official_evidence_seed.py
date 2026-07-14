@@ -16,12 +16,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.v58_export_official_evidence_seed import main as export_main
 from workers.certification_registry import (
+    BA_EXAM_NAME,
     PAB_EXAM_NAME,
+    get_certification_definition,
     get_platform_app_builder_definition,
 )
 from workers.official_evidence_seed import (
     ADM_EXAM_NAME,
-    BA_EXAM_NAME,
+    BA_EVIDENCE_CONFIG_ID,
+    BA_FIXTURE_VERSION,
     FIXTURE_VERSION,
     MAX_EXCERPT_CHARS,
     PAB_EVIDENCE_CONFIG_ID,
@@ -414,22 +417,21 @@ class TestExportedFixtureFile(unittest.TestCase):
         )
 
 
-class TestPlatformAppBuilderEvidenceIdentityRouting(unittest.TestCase):
-    """PAB-EXP-04A Correction 2/4: certification -> evidence-package identity
-    routing. ADM/BA continue to resolve to the frozen official-evidence-seed-v1
-    identity unchanged; PAB resolves to its own isolated identity; unknown
-    certifications fail clearly with no cross-certification fallback.
-    """
+class TestEvidenceIdentityRouting(unittest.TestCase):
+    """Certification -> evidence-package identity routing."""
 
-    def test_adm_and_ba_resolve_to_frozen_identity(self):
+    def test_administrator_resolves_to_frozen_shared_identity(self):
         self.assertEqual(
             resolve_evidence_identity_for_certification(ADM_EXAM_NAME),
             FIXTURE_VERSION,
         )
+
+    def test_business_analyst_resolves_to_isolated_identity(self):
         self.assertEqual(
             resolve_evidence_identity_for_certification(BA_EXAM_NAME),
-            FIXTURE_VERSION,
+            BA_FIXTURE_VERSION,
         )
+        self.assertNotEqual(BA_FIXTURE_VERSION, FIXTURE_VERSION)
 
     def test_pab_resolves_to_isolated_identity(self):
         self.assertEqual(
@@ -444,13 +446,16 @@ class TestPlatformAppBuilderEvidenceIdentityRouting(unittest.TestCase):
         with self.assertRaises(OfficialEvidenceSeedError):
             evidence_fixture_path_for_certification("")
 
-    def test_fixture_paths_are_distinct_files(self):
+    def test_fixture_paths_are_distinct_per_certification(self):
         adm_path = evidence_fixture_path_for_certification(ADM_EXAM_NAME)
         ba_path = evidence_fixture_path_for_certification(BA_EXAM_NAME)
         pab_path = evidence_fixture_path_for_certification(PAB_EXAM_NAME)
-        self.assertEqual(adm_path, ba_path)
-        self.assertNotEqual(adm_path, pab_path)
+        self.assertEqual(adm_path.name, "official_evidence_seed_v1.json")
+        self.assertEqual(ba_path.name, "official_evidence_ba_v1.json")
         self.assertEqual(pab_path.name, "official_evidence_pab_v1.json")
+        self.assertNotEqual(adm_path, ba_path)
+        self.assertNotEqual(ba_path, pab_path)
+        self.assertNotEqual(adm_path, pab_path)
 
 
 class TestPlatformAppBuilderFixtureContent(unittest.TestCase):
@@ -513,6 +518,93 @@ class TestPlatformAppBuilderFixtureContent(unittest.TestCase):
             excerpt = item["chunk_text_excerpt"]
             self.assertIn("main automation tool", excerpt)
             self.assertIn("Migrate to Flow", excerpt)
+
+
+class TestBusinessAnalystFixtureContent(unittest.TestCase):
+    """BA-EXP-02: isolated Business Analyst evidence package."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture_path = (
+            Path(__file__).resolve().parents[1] / "workers" / "fixtures" / "official_evidence_ba_v1.json"
+        )
+        if not cls.fixture_path.exists():
+            raise unittest.SkipTest("official_evidence_ba_v1.json not generated yet")
+        cls.payload = json.loads(cls.fixture_path.read_text(encoding="utf-8"))
+
+    def test_fixture_identity_and_isolation_metadata(self):
+        self.assertEqual(self.payload["fixture_version"], BA_FIXTURE_VERSION)
+        self.assertEqual(self.payload.get("evidence_config_id"), BA_EVIDENCE_CONFIG_ID)
+        self.assertTrue(self.payload["no_synthetic_evidence"])
+        self.assertIn(FIXTURE_VERSION, self.payload.get("isolated_from", []))
+        self.assertNotIn("intended_use", self.payload)
+
+    def test_passes_shared_structural_validation(self):
+        validate_fixture_payload(self.payload)
+
+    def test_contains_only_business_analyst_records(self):
+        certs = {item["certification"] for item in self.payload["evidence_items"]}
+        self.assertEqual(certs, {BA_EXAM_NAME})
+        self.assertNotIn(ADM_EXAM_NAME, certs)
+        self.assertNotIn(PAB_EXAM_NAME, certs)
+
+    def test_all_six_official_domains_have_at_least_one_record(self):
+        ba = get_certification_definition(BA_EXAM_NAME)
+        expected_domains = {domain.domain_name for domain in ba.domains}
+        covered = {item["domain"] for item in self.payload["evidence_items"]}
+        self.assertEqual(expected_domains, covered)
+
+    def test_every_record_uses_official_salesforce_trailhead_source(self):
+        for item in self.payload["evidence_items"]:
+            self.assertTrue(item["canonical_url"].startswith("https://trailhead.salesforce.com/"))
+            self.assertEqual(item["source_url"], item["canonical_url"])
+            self.assertEqual(item["publisher"], "Salesforce, Inc.")
+            self.assertEqual(item["provenance_status"], "verified_official_resource_library")
+            self.assertEqual(item["certification_code"], "BA-201")
+
+    def test_every_record_is_compact_and_hash_aligned(self):
+        seen_hashes = set()
+        for item in self.payload["evidence_items"]:
+            excerpt = item["chunk_text_excerpt"]
+            self.assertEqual(item["content_hash"], sha256_hex(excerpt))
+            self.assertNotIn(excerpt, seen_hashes)
+            seen_hashes.add(excerpt)
+            self.assertNotIn("Exam Practice Questions", excerpt)
+            self.assertNotIn("flashcard", excerpt.lower())
+
+    def test_duplicate_chunk_ids_are_rejected_by_validator(self):
+        tampered = json.loads(json.dumps(self.payload))
+        tampered["evidence_items"][1]["resource_chunk_id"] = tampered["evidence_items"][0][
+            "resource_chunk_id"
+        ]
+        with self.assertRaises(OfficialEvidenceSeedError):
+            validate_fixture_payload(tampered)
+
+    def test_unknown_domain_yields_no_qualifying_match(self):
+        result = retrieve_official_evidence_from_fixture(
+            certification_exam_name=BA_EXAM_NAME,
+            domain_name="Nonexistent Domain",
+            query_text="completely unrelated gibberish text xyzzy plugh",
+            fixture_payload=self.payload,
+        )
+        self.assertEqual(result["evidence_identity"], BA_FIXTURE_VERSION)
+        self.assertEqual(result["ranked_chunks"], [])
+
+    def test_ba_retrieval_never_returns_administrator_chunk_ids(self):
+        adm_payload = load_evidence_fixture_for_certification(ADM_EXAM_NAME)
+        ba_chunk_ids = {item["resource_chunk_id"] for item in self.payload["evidence_items"]}
+        adm_chunk_ids = {item["resource_chunk_id"] for item in adm_payload["evidence_items"]}
+        self.assertEqual(ba_chunk_ids.intersection(adm_chunk_ids), set())
+
+        result = retrieve_official_evidence_from_fixture(
+            certification_exam_name=BA_EXAM_NAME,
+            domain_name="Requirements",
+            query_text="requirements lifecycle pain points business needs dependencies",
+            fixture_payload=self.payload,
+        )
+        returned_ids = {chunk["resource_chunk_id"] for chunk in result["ranked_chunks"]}
+        self.assertTrue(returned_ids.issubset(ba_chunk_ids))
+        self.assertEqual(returned_ids.intersection(adm_chunk_ids), set())
 
 
 class TestPlatformAppBuilderFixtureRetrievalSmoke(unittest.TestCase):

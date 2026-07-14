@@ -21,14 +21,22 @@ from workers.resource_chunking import sha256_hex
 from workers.structural_audit_launcher import ADM_EXAM_NAME, BA_EXAM_NAME
 
 # Historical, frozen evidence-package identity. Its meaning (which chunk ids,
-# hashes, and content it contains) must never change -- prior frozen ADM/BA
+# hashes, and content it contains) must never change -- prior frozen ADM
 # audit contexts and benchmark artifacts were built against this exact
-# fixture. Administrator and Business Analyst have always shared this single
-# package identity; that sharing is pre-existing behavior and is preserved
-# unchanged here.
+# fixture. Administrator continues to resolve here unchanged.
+# Business Analyst was split onto its own isolated package in BA-EXP-02.
 FIXTURE_VERSION = "official-evidence-seed-v1"
 DEFAULT_OUTPUT_PATH = (
     Path(__file__).resolve().parent / "fixtures" / "official_evidence_seed_v1.json"
+)
+
+# Business Analyst evidence-package identity (BA-EXP-02). Deliberately
+# isolated from FIXTURE_VERSION above: adding BA coverage must never change
+# the hash or meaning of the historical ADM-only shared package.
+BA_FIXTURE_VERSION = "official-evidence-ba-v1"
+BA_EVIDENCE_CONFIG_ID = "official_evidence_ba_v1"
+BA_DEFAULT_OUTPUT_PATH = (
+    Path(__file__).resolve().parent / "fixtures" / "official_evidence_ba_v1.json"
 )
 
 # Platform App Builder evidence-package identity (PAB-EXP-04A). Deliberately
@@ -58,19 +66,20 @@ CERTIFICATION_CODES = {
 
 SUPPORTED_CERTIFICATIONS = frozenset(CERTIFICATION_CODES)
 
-# Certification -> frozen evidence-package identity. ADM and BA continue to
-# resolve to the original FIXTURE_VERSION (unchanged); PAB is isolated onto
-# its own identity. There is no cross-certification fallback: an
+# Certification -> frozen evidence-package identity. ADM continues to resolve
+# to the original FIXTURE_VERSION (unchanged); BA and PAB are isolated onto
+# their own identities. There is no cross-certification fallback: an
 # unrecognized certification raises rather than silently defaulting to
-# either package.
+# another package.
 EVIDENCE_IDENTITY_BY_CERTIFICATION: Dict[str, str] = {
     ADM_EXAM_NAME: FIXTURE_VERSION,
-    BA_EXAM_NAME: FIXTURE_VERSION,
+    BA_EXAM_NAME: BA_FIXTURE_VERSION,
     PAB_EXAM_NAME: PAB_FIXTURE_VERSION,
 }
 
 FIXTURE_PATH_BY_EVIDENCE_IDENTITY: Dict[str, Path] = {
     FIXTURE_VERSION: DEFAULT_OUTPUT_PATH,
+    BA_FIXTURE_VERSION: BA_DEFAULT_OUTPUT_PATH,
     PAB_FIXTURE_VERSION: PAB_DEFAULT_OUTPUT_PATH,
 }
 
