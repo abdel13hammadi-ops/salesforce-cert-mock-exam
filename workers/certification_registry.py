@@ -206,6 +206,10 @@ def _pab_definition() -> CertificationDefinition:
                 PAB_EXAM_NAME,
                 "pab",
                 "app-builder",
+                # Internal certification_code alias (PAB-EXP-05): callers may
+                # pass the snake_case code used in certifications.certification_code
+                # and evidence fixtures without using the full exam_name string.
+                CERTIFICATION_CODES[PAB_EXAM_NAME],
                 # NOTE: "app-401" was intentionally removed (PAB-EXP-02):
                 # no repository evidence supports it as an official or
                 # established internal identifier.

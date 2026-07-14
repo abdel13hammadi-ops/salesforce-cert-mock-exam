@@ -846,6 +846,56 @@ def validate_fixture_payload(payload: Mapping[str, Any]) -> None:
 # =============================================================================
 
 
+EVIDENCE_CONFIG_ID_BY_CERTIFICATION: Dict[str, str] = {
+    PAB_EXAM_NAME: PAB_EVIDENCE_CONFIG_ID,
+}
+
+
+def resolve_evidence_config_id_for_certification(
+    certification_exam_name: str,
+) -> Optional[str]:
+    """Return the frozen evidence_config_id for certifications that require one.
+
+    Platform App Builder returns ``official_evidence_pab_v1``. Administrator and
+    Business Analyst return ``None`` -- their generation callers may supply
+    free-form ``source_evidence`` without an enforced config id, preserving
+    historical behavior.
+    """
+    from workers.certification_registry import validate_supported_certification_exam_name
+
+    canonical = validate_supported_certification_exam_name(certification_exam_name)
+    return EVIDENCE_CONFIG_ID_BY_CERTIFICATION.get(canonical)
+
+
+def prepare_generation_source_evidence(
+    certification_exam_name: str,
+    source_evidence: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Resolve certification-specific evidence_config_id into source_evidence.
+
+    For Platform App Builder, ``evidence_config_id`` is always set to
+    ``official_evidence_pab_v1`` (injecting when absent, rejecting when wrong).
+    For Administrator and Business Analyst, ``source_evidence`` is returned
+    unchanged so the historical ADM/BA fixture identity is never mutated.
+    """
+    from workers.certification_registry import validate_supported_certification_exam_name
+
+    canonical = validate_supported_certification_exam_name(certification_exam_name)
+    expected = EVIDENCE_CONFIG_ID_BY_CERTIFICATION.get(canonical)
+    prepared = dict(source_evidence)
+    if expected is None:
+        return prepared
+
+    actual = str(prepared.get("evidence_config_id") or "").strip()
+    if actual and actual != expected:
+        raise OfficialEvidenceSeedError(
+            f"evidence_config_id {actual!r} is not valid for certification "
+            f"{canonical!r}; expected {expected!r}"
+        )
+    prepared["evidence_config_id"] = expected
+    return prepared
+
+
 def resolve_evidence_identity_for_certification(certification_exam_name: str) -> str:
     """Return the frozen evidence-package identity for a supported certification.
 

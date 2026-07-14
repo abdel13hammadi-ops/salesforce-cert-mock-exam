@@ -70,7 +70,7 @@ import json
 import logging
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -80,6 +80,10 @@ from workers.certification_registry import (
     validate_generation_request_certification,
 )
 from workers.llm_providers import SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY
+from workers.official_evidence_seed import (
+    OfficialEvidenceSeedError,
+    prepare_generation_source_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -351,6 +355,14 @@ def validate_generation_request(request: GenerationRequest) -> None:
             domain=request.domain,
         )
     except CertificationRegistryError as exc:
+        raise CandidateValidationError(str(exc)) from exc
+
+    try:
+        prepare_generation_source_evidence(
+            request.certification_exam_name,
+            request.source_evidence,
+        )
+    except OfficialEvidenceSeedError as exc:
         raise CandidateValidationError(str(exc)) from exc
 
 
@@ -1185,6 +1197,13 @@ def generate_and_persist_candidate(
         snapshot).
     """
     validate_generation_request(request)
+    request = replace(
+        request,
+        source_evidence=prepare_generation_source_evidence(
+            request.certification_exam_name,
+            request.source_evidence,
+        ),
+    )
 
     repo = QuestionCandidateRepository(client)
     if not repo.certification_domain_exists(request.certification_exam_name, request.domain):

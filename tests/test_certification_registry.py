@@ -165,6 +165,10 @@ class TestCertificationNormalization(unittest.TestCase):
             normalize_certification_exam_name("pab"),
             PAB_EXAM_NAME,
         )
+        self.assertEqual(
+            normalize_certification_exam_name("platform_app_builder"),
+            PAB_EXAM_NAME,
+        )
 
     def test_administrator_aliases_normalize(self):
         self.assertEqual(
