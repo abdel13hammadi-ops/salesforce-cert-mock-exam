@@ -16,6 +16,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from urllib.parse import urlsplit
 
 from workers.certification_registry import PAB_EXAM_NAME
 from workers.job_handlers import make_resource_ingestion_handler
@@ -41,7 +42,20 @@ except ImportError:  # pragma: no cover
 ALLOW_FIXTURE_INGEST_FLAG = "CERTBOUND_ALLOW_FIXTURE_INGEST"
 DEFAULT_CREATED_BY = "official-evidence-fixture-ingestion"
 
-PRODUCTION_HOST_MARKERS = ("supabase.co", "supabase.in")
+PRODUCTION_HOST_MARKERS = ("supabase.co", "supabase.in", "supabase.com")
+
+# Legitimate hosted Supabase domains use exact-match or strict suffix rules
+# only -- never loose substring checks over the full DSN string.
+HOSTED_SUPABASE_EXACT_DOMAINS = frozenset({
+    "supabase.com",
+    "supabase.co",
+    "supabase.in",
+})
+HOSTED_SUPABASE_DOMAIN_SUFFIXES = (
+    ".supabase.com",
+    ".supabase.co",
+    ".supabase.in",
+)
 
 # PAB-EXP-04E: narrow, fail-closed override permitting exactly one approved
 # hosted Supabase ingestion target. This does NOT weaken the default
@@ -162,6 +176,12 @@ def assert_fixture_ingest_allowed(
         raise OfficialEvidenceFixtureIngestionSafetyError(
             "Refusing fixture ingestion without an explicit disposable --database-url."
         )
+    if is_hosted_supabase_dsn(database_url):
+        # Hosted Supabase targets are validated by the separate seven-condition
+        # gate in enforce_dsn_target_safety; they are never disposable-DSN
+        # targets and must not be checked by validate_disposable_dsn (whose
+        # substring host markers incorrectly match pooler.supabase.com hosts).
+        return
     from workers.quality_benchmark_v48_orchestration import (
         V48DisposableDsnRejectedError,
         validate_disposable_dsn,
@@ -173,26 +193,57 @@ def assert_fixture_ingest_allowed(
         raise OfficialEvidenceFixtureIngestionSafetyError(str(exc)) from exc
 
 
+def parse_dsn_hostname(database_url: Optional[str]) -> Optional[str]:
+    """Return the lowercased hostname from a PostgreSQL DSN, or None."""
+    raw = str(database_url or "").strip()
+    if not raw:
+        return None
+    hostname = (urlsplit(raw).hostname or "").strip().lower()
+    return hostname or None
+
+
+def is_legitimate_hosted_supabase_hostname(hostname: Optional[str]) -> bool:
+    """Return True only for exact or strict-suffix Supabase hosted domains.
+
+    Accepts ``supabase.com``, ``*.supabase.com``, and the same pattern for
+    ``supabase.co`` / ``supabase.in``. Rejects attacker-controlled hosts such
+    as ``evil-supabase.com`` and ``supabase.com.example.org``.
+    """
+    host = str(hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in HOSTED_SUPABASE_EXACT_DOMAINS:
+        return True
+    return any(host.endswith(suffix) for suffix in HOSTED_SUPABASE_DOMAIN_SUFFIXES)
+
+
 def reject_production_like_dsn(database_url: str) -> None:
-    """Structural guard against obvious production Supabase hosts."""
-    lowered = database_url.strip().lower()
+    """Reject spoofed or non-approved Supabase-like hostnames.
+
+    Legitimate hosted Supabase hostnames are not rejected here; they are
+    routed through ``enforce_dsn_target_safety`` and the seven-condition gate.
+    """
+    hostname = parse_dsn_hostname(database_url)
+    if not hostname:
+        return
+    if is_legitimate_hosted_supabase_hostname(hostname):
+        return
     for marker in PRODUCTION_HOST_MARKERS:
-        if marker in lowered:
+        if marker in hostname:
             raise OfficialEvidenceFixtureIngestionSafetyError(
-                f"database URL contains production marker {marker!r}; refusing"
+                f"database URL host {hostname!r} matches production marker "
+                f"{marker!r}; refusing"
             )
 
 
 def is_hosted_supabase_dsn(database_url: Optional[str]) -> bool:
     """Return True if *database_url* structurally matches a hosted Supabase host.
 
-    Pure string classification only -- never treated as an approval signal by
-    itself. A True result routes the DSN into ``assert_approved_hosted_supabase_target``
-    instead of the unconditional ``reject_production_like_dsn`` rejection; it
-    never bypasses safety on its own.
+    Uses parsed-hostname suffix rules only -- never loose substring matching
+    over the full DSN string. Pure classification only; never treated as an
+    approval signal by itself.
     """
-    lowered = str(database_url or "").strip().lower()
-    return any(marker in lowered for marker in PRODUCTION_HOST_MARKERS)
+    return is_legitimate_hosted_supabase_hostname(parse_dsn_hostname(database_url))
 
 
 def assert_approved_hosted_supabase_target(

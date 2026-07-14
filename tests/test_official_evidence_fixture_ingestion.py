@@ -47,7 +47,9 @@ from workers.official_evidence_fixture_ingestion import (
     enforce_dsn_target_safety,
     ingest_official_evidence_fixture_package,
     is_hosted_supabase_dsn,
+    is_legitimate_hosted_supabase_hostname,
     load_fixture_for_ingestion,
+    parse_dsn_hostname,
     reject_production_like_dsn,
     resolve_package_config,
     validate_fixture_for_ingestion,
@@ -664,11 +666,14 @@ class TestPabFixtureIngestion(PgserverFixtureIngestionTestCase):
 
 
 class TestFixtureIngestionSafety(unittest.TestCase):
-    def test_production_dsn_rejected(self):
+    def test_production_dsn_rejected_for_spoofed_hostname(self):
         with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
-            reject_production_like_dsn(
-                "postgresql://postgres:secret@db.abcdef.supabase.co:5432/postgres"
-            )
+            reject_production_like_dsn(_SPOOF_EVIL_SUPABASE_COM)
+
+    def test_legitimate_supabase_co_not_rejected_by_generic_path(self):
+        # Legitimate hosted hosts route through the seven-condition gate, not
+        # the generic production rejection path.
+        reject_production_like_dsn(_HOSTED_DSN)
 
     def test_live_ingest_requires_explicit_flag(self):
         with patch(
@@ -697,6 +702,13 @@ class TestFixtureIngestionSafety(unittest.TestCase):
 
 
 _HOSTED_DSN = "postgresql://postgres:REDACTED@db.abcdefghijk.supabase.co:5432/postgres"
+_POOLER_HOSTED_DSN = (
+    "postgresql://postgres:REDACTED@aws-1-us-east-1.pooler.supabase.com:5432/postgres"
+)
+_SPOOF_SUPABASE_COM_EXAMPLE_ORG = (
+    "postgresql://postgres:REDACTED@supabase.com.example.org:5432/postgres"
+)
+_SPOOF_EVIL_SUPABASE_COM = "postgresql://postgres:REDACTED@evil-supabase.com:5432/postgres"
 _LOCAL_DSN = "postgresql://postgres:postgres@127.0.0.1:54329/certbound_v48_test"
 
 _APPROVED_KWARGS = dict(
@@ -719,9 +731,70 @@ class TestApprovedHostedSupabaseTargetOverride(unittest.TestCase):
 
     def test_is_hosted_supabase_dsn_classification(self):
         self.assertTrue(is_hosted_supabase_dsn(_HOSTED_DSN))
+        self.assertTrue(is_hosted_supabase_dsn(_POOLER_HOSTED_DSN))
         self.assertFalse(is_hosted_supabase_dsn(_LOCAL_DSN))
+        self.assertFalse(is_hosted_supabase_dsn(_SPOOF_SUPABASE_COM_EXAMPLE_ORG))
+        self.assertFalse(is_hosted_supabase_dsn(_SPOOF_EVIL_SUPABASE_COM))
         self.assertFalse(is_hosted_supabase_dsn(None))
         self.assertFalse(is_hosted_supabase_dsn(""))
+
+    def test_pooler_supabase_com_hostname_parsed_correctly(self):
+        self.assertEqual(
+            parse_dsn_hostname(_POOLER_HOSTED_DSN),
+            "aws-1-us-east-1.pooler.supabase.com",
+        )
+        self.assertTrue(
+            is_legitimate_hosted_supabase_hostname(
+                "aws-1-us-east-1.pooler.supabase.com"
+            )
+        )
+
+    def test_pooler_host_rejected_by_default(self):
+        with self._clear_hosted_flags():
+            with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                enforce_dsn_target_safety(_POOLER_HOSTED_DSN)
+
+    def test_pooler_host_permitted_only_with_all_seven_conditions(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                enforce_dsn_target_safety(
+                    _POOLER_HOSTED_DSN,
+                    allow_hosted_cli_flag=True,
+                    **_APPROVED_KWARGS,
+                )
+
+    def test_spoof_supabase_com_example_org_not_hosted(self):
+        self.assertFalse(is_hosted_supabase_dsn(_SPOOF_SUPABASE_COM_EXAMPLE_ORG))
+        with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+            reject_production_like_dsn(_SPOOF_SUPABASE_COM_EXAMPLE_ORG)
+
+    def test_spoof_evil_supabase_com_not_hosted(self):
+        self.assertFalse(is_hosted_supabase_dsn(_SPOOF_EVIL_SUPABASE_COM))
+        with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+            reject_production_like_dsn(_SPOOF_EVIL_SUPABASE_COM)
+
+    def test_pooler_hosted_dry_run_without_flags_never_connects(self):
+        from workers import official_evidence_fixture_ingestion as mod
+
+        with self._clear_hosted_flags():
+            with patch.object(
+                mod.psycopg2,
+                "connect",
+                side_effect=AssertionError("must not connect"),
+            ):
+                with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                    mod.ingest_fixture_file(
+                        PAB_DEFAULT_OUTPUT_PATH,
+                        database_url=_POOLER_HOSTED_DSN,
+                        dry_run=True,
+                        allow_hosted_cli_flag=False,
+                    )
 
     def test_hosted_target_rejected_with_zero_flags(self):
         with self._clear_hosted_flags():
