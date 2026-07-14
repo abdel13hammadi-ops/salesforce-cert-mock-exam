@@ -1,0 +1,254 @@
+{
+  "certifications_covered": [
+    "Salesforce Certified Platform App Builder"
+  ],
+  "domains_covered": [
+    "App Deployment",
+    "Business Logic and Process Automation",
+    "Data Modeling and Management",
+    "Salesforce Fundamentals",
+    "User Interface"
+  ],
+  "evidence_config_id": "official_evidence_pab_v1",
+  "evidence_items": [
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt2/platform-app-builder-deployment",
+      "certification": "Salesforce Certified Platform App Builder",
+      "certification_code": "platform_app_builder",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the App Deployment section of the Salesforce Platform App Builder exam, which makes up 10% of the overall exam. This section of the exam tests these topics: Application lifecycle management, Sandboxes, Changesets, Packaging.",
+      "content_hash": "433689a7853783663a8f45a143f0216c35970abf66facbe0d0477f49c6dfaa08",
+      "domain": "App Deployment",
+      "domain_tags": [
+        "App Deployment"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-13T00:00:00+00:00",
+      "official_resource_id": "0ab1a7a8-cb65-51e6-907f-db7b5776fc82",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "d8c27006-2a15-54b6-8936-15a0d132690b",
+      "resource_title": "Learn About App Deployment",
+      "resource_type": "trailhead",
+      "resource_version_id": "2616398e-5217-5197-acad-e5fb65eb2a6b",
+      "retrieved_at": "2026-07-13T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt2/platform-app-builder-deployment",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt2/platform-app-builder-automation",
+      "certification": "Salesforce Certified Platform App Builder",
+      "certification_code": "platform_app_builder",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the Business Logic and Process Automation section of the Salesforce Platform App Builder exam, which makes up 28% of the overall exam. This section of the exam tests these topics: Formula fields use cases, Roll-up summary fields capabilities, Validation rules, Approval processes, Workflow, Flow, and Process Builder, Avoiding errors in automation.",
+      "content_hash": "2b30275c44caa275813eb0438c7aa436f009b5b92d6f2a38981b786ea33d2dae",
+      "domain": "Business Logic and Process Automation",
+      "domain_tags": [
+        "Business Logic and Process Automation"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-13T00:00:00+00:00",
+      "official_resource_id": "874c7cda-5d17-50f9-b22a-863ddd69d8cf",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "a539dae2-f86d-51f1-b10c-c0eb4c749df1",
+      "resource_title": "Refresh on Business Logic and Process Automation",
+      "resource_type": "trailhead",
+      "resource_version_id": "f29cc6e1-e5ac-506c-a1f3-a86a8d9e313d",
+      "retrieved_at": "2026-07-13T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt2/platform-app-builder-automation",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/projects/migrate-workflows-and-processes-to-flows/understand-automation-changes",
+      "certification": "Salesforce Certified Platform App Builder",
+      "certification_code": "platform_app_builder",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "Workflow Rules and Processes are older automation tools that are now disabled for creating new automations. Flow Builder's new functionality makes it the main automation tool in Salesforce: its configurable entry conditions allow a flow to run only when certain conditions are met, dramatically improving performance, and flows are easier than workflow rules and processes to maintain, troubleshoot, and debug. The Migrate to Flow tool is available for migrating eligible existing workflow rules and processes to flows.",
+      "content_hash": "b1701724e0e4a3c3c4cf50361978af3ba4e46a6e41ae9eeb9929c4e6015e9e8c",
+      "domain": "Business Logic and Process Automation",
+      "domain_tags": [
+        "Business Logic and Process Automation"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-13T00:00:00+00:00",
+      "official_resource_id": "b428c0ad-baa2-51f9-8dd5-b16292272585",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "c7b91516-b711-59a8-bf32-613f0d70a6fb",
+      "resource_title": "Understand Automation Changes in Salesforce",
+      "resource_type": "trailhead",
+      "resource_version_id": "3cf67dad-1f74-5937-b3c9-71653ac59b65",
+      "retrieved_at": "2026-07-13T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/projects/migrate-workflows-and-processes-to-flows/understand-automation-changes",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt2/platform-app-builder-data-modeling-and-management",
+      "certification": "Salesforce Certified Platform App Builder",
+      "certification_code": "platform_app_builder",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the Data Modeling and Management section of the Salesforce Platform App Builder exam, which makes up 22% of the overall exam. This section of the exam tests these topics: Capabilities of core CRM objects, Determining an appropriate data model, Relationship types and impact on record access, user interface, and reporting, Considerations for changing field types, Considerations of Schema Builder functionality, Considerations for importing and exporting data, Use cases of external objects.",
+      "content_hash": "da48703099054fdb195e0b3cbfeb3de3544c8f4b58d38f7387a85ee7b860985a",
+      "domain": "Data Modeling and Management",
+      "domain_tags": [
+        "Data Modeling and Management"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-13T00:00:00+00:00",
+      "official_resource_id": "32f8917e-176f-53b9-84a7-2f1374230711",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "32868253-0ca4-5487-ada8-ee2cd3a4cd06",
+      "resource_title": "Study Up on Data Modeling and Management",
+      "resource_type": "trailhead",
+      "resource_version_id": "9e5b55dd-21fc-5108-9e12-6107982e4c6d",
+      "retrieved_at": "2026-07-13T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt2/platform-app-builder-data-modeling-and-management",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt1/platform-app-builder-getting-started",
+      "certification": "Salesforce Certified Platform App Builder",
+      "certification_code": "platform_app_builder",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "The Salesforce Platform App Builder certification is designed for individuals who have experience developing custom applications on the Lightning Platform. This exam covers these key sections, each making up a certain percentage of the exam: Salesforce Fundamentals: 23%, User Interface: 17%, Data Modeling and Management: 22%, Business Logic and Process Automation: 28%, App Deployment: 10%.",
+      "content_hash": "b479e9a9a495cb7666c4a21ae2a92e4bfbab546da4aff94c4ab275be9656df21",
+      "domain": "Salesforce Fundamentals",
+      "domain_tags": [
+        "Salesforce Fundamentals",
+        "User Interface",
+        "Data Modeling and Management",
+        "Business Logic and Process Automation",
+        "App Deployment"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-13T00:00:00+00:00",
+      "official_resource_id": "d2c48dbe-bd7f-5209-8c35-0ccee0afc798",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "b8c7370b-60c8-5730-a2ab-3337a0a0f790",
+      "resource_title": "Get Started with Platform App Builder Certification Prep",
+      "resource_type": "trailhead",
+      "resource_version_id": "ae3c5d08-9f16-5b45-8e20-816eca57e608",
+      "retrieved_at": "2026-07-13T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt1/platform-app-builder-getting-started",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt1/platform-app-builder-fundamentals",
+      "certification": "Salesforce Certified Platform App Builder",
+      "certification_code": "platform_app_builder",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the Salesforce Fundamentals section of the Salesforce Platform App Builder exam, which makes up 23% of the overall exam. This section of the exam tests these topics: Standard Salesforce objects, Restricting and extending object, record, and field access, Determining appropriate sharing solutions, Programmatic use cases, AgentExchange apps, Capabilities of reports, report types, and dashboards, Mobile, Chatter.",
+      "content_hash": "48a60e5266ae6c87a1f00d0213f7f4efb2da5d283a62368bd0f757b3ca215f1e",
+      "domain": "Salesforce Fundamentals",
+      "domain_tags": [
+        "Salesforce Fundamentals"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-13T00:00:00+00:00",
+      "official_resource_id": "2d0c56ba-50cc-5793-8ada-38e4115006a0",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "6dca3357-d32d-5ffc-9fe1-3b6190a4e210",
+      "resource_title": "Study Salesforce Fundamentals",
+      "resource_type": "trailhead",
+      "resource_version_id": "82368a62-7f1c-5d14-848c-2b618ac9ef36",
+      "retrieved_at": "2026-07-13T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt1/platform-app-builder-fundamentals",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt1/platform-app-builder-security-ui",
+      "certification": "Salesforce Certified Platform App Builder",
+      "certification_code": "platform_app_builder",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "This unit prepares you for the User Interface section of the Salesforce Platform App Builder exam, which makes up 17% of the overall exam. This section of the exam tests these topics: User interface customization options, Custom buttons, links, and actions, Record types, Lightning components.",
+      "content_hash": "498698925989a732f0d641e64d08e5f4e3034c4515f710a40b23f48561a04113",
+      "domain": "User Interface",
+      "domain_tags": [
+        "User Interface"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-13T00:00:00+00:00",
+      "official_resource_id": "96011266-c635-56bc-b3b5-a9ddc36cc856",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "7c9df629-7c52-54bb-86a8-a833d01237a4",
+      "resource_title": "Learn About the User Interface",
+      "resource_type": "trailhead",
+      "resource_version_id": "9e521cc9-5022-50f4-98a2-a03465a4ca2a",
+      "retrieved_at": "2026-07-13T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/platform-app-builder-pt1/platform-app-builder-security-ui",
+      "version_number": 1
+    }
+  ],
+  "export_summary": {
+    "exported_by_certification": {
+      "Salesforce Certified Platform App Builder": 7
+    },
+    "exported_by_domain": {
+      "App Deployment": 1,
+      "Business Logic and Process Automation": 2,
+      "Data Modeling and Management": 1,
+      "Salesforce Fundamentals": 2,
+      "User Interface": 1
+    },
+    "exported_chunk_count": 7,
+    "maximum_excerpt_chars": 519
+  },
+  "fixture_version": "official-evidence-pab-v1",
+  "generated_at": "2026-07-13T23:56:49+00:00",
+  "intended_use": "quality_benchmark_v1",
+  "inventory_summary": {
+    "chunk_count_by_certification": {
+      "Salesforce Certified Platform App Builder": 7
+    },
+    "domains_by_certification": {
+      "Salesforce Certified Platform App Builder": [
+        "App Deployment",
+        "Business Logic and Process Automation",
+        "Data Modeling and Management",
+        "Salesforce Fundamentals",
+        "User Interface"
+      ]
+    },
+    "eligible_chunk_count": 7,
+    "provenance_complete_resource_count": 7,
+    "resource_count_by_certification": {
+      "Salesforce Certified Platform App Builder": 7
+    },
+    "total_chunk_count": 7,
+    "total_resource_count": 7
+  },
+  "isolated_from": [
+    "official-evidence-seed-v1"
+  ],
+  "no_synthetic_evidence": true,
+  "source_verification_method": "Each chunk_text is a verbatim, single-paragraph excerpt actually retrieved via WebFetch from an official trailhead.salesforce.com Platform App Builder certification-prep page during PAB-EXP-04A (Learning Objectives / Key Topics prose only; no exam practice questions or flashcards copied). content_hash is SHA-256 of chunk_text.",
+  "sources_represented": [
+    "Get Started with Platform App Builder Certification Prep",
+    "Learn About App Deployment",
+    "Learn About the User Interface",
+    "Refresh on Business Logic and Process Automation",
+    "Study Salesforce Fundamentals",
+    "Study Up on Data Modeling and Management",
+    "Understand Automation Changes in Salesforce"
+  ],
+  "status": "verified_evidence_seed"
+}

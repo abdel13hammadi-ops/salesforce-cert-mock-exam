@@ -15,10 +15,17 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scripts.v58_export_official_evidence_seed import main as export_main
+from workers.certification_registry import (
+    PAB_EXAM_NAME,
+    get_platform_app_builder_definition,
+)
 from workers.official_evidence_seed import (
     ADM_EXAM_NAME,
     BA_EXAM_NAME,
+    FIXTURE_VERSION,
     MAX_EXCERPT_CHARS,
+    PAB_EVIDENCE_CONFIG_ID,
+    PAB_FIXTURE_VERSION,
     OfficialEvidenceSeedError,
     OfficialEvidenceSeedOutputError,
     _dedupe_items,
@@ -28,8 +35,15 @@ from workers.official_evidence_seed import (
     build_export_item,
     build_fixture_payload,
     collect_eligible_export_items,
+    evidence_fixture_path_for_certification,
     export_official_evidence_seed,
+    filter_fixture_items_by_certification,
+    fixture_item_to_candidate_row,
+    fixture_item_to_resource_row,
     inventory_report_dict,
+    load_evidence_fixture_for_certification,
+    resolve_evidence_identity_for_certification,
+    retrieve_official_evidence_from_fixture,
     select_export_items,
     validate_chunk_provenance,
     validate_fixture_payload,
@@ -369,6 +383,359 @@ class TestExportedFixtureFile(unittest.TestCase):
         self.assertIn(ADM_EXAM_NAME, certs)
         self.assertIn(BA_EXAM_NAME, certs)
         self.assertGreaterEqual(len(payload["evidence_items"]), 24)
+
+    def test_v1_fixture_is_byte_identical_to_pre_pab_checkpoint(self):
+        """PAB-EXP-04A Correction 1: official_evidence_seed_v1.json must be
+        restored to its exact contents as of commit
+        6fb472527bfcca3eff38ace835886c7ae5bce083 (the last commit before
+        PAB-EXP-04 appended PAB records to this file). This SHA-256 was
+        computed directly from that commit's blob during PAB-EXP-04A.
+        """
+        fixture_path = Path(__file__).resolve().parents[1] / "workers" / "fixtures" / "official_evidence_seed_v1.json"
+        if not fixture_path.exists():
+            self.skipTest("official_evidence_seed_v1.json not generated yet")
+        import hashlib
+
+        digest = hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+        self.assertEqual(
+            digest,
+            "75f472ceff12b704ff25d3c968fe6d7d644761508fa0d7e7c2dfbb95c8d91e51",
+            "official_evidence_seed_v1.json no longer matches the pre-PAB-EXP-04 "
+            "checkpoint (commit 6fb472527bfcca3eff38ace835886c7ae5bce083) -- its "
+            "historical evidence identity must never be mutated.",
+        )
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        certs = {item["certification"] for item in payload["evidence_items"]}
+        self.assertNotIn(
+            PAB_EXAM_NAME,
+            certs,
+            "official-evidence-seed-v1 must remain ADM/BA only; Platform App "
+            "Builder evidence belongs exclusively in official-evidence-pab-v1.",
+        )
+
+
+class TestPlatformAppBuilderEvidenceIdentityRouting(unittest.TestCase):
+    """PAB-EXP-04A Correction 2/4: certification -> evidence-package identity
+    routing. ADM/BA continue to resolve to the frozen official-evidence-seed-v1
+    identity unchanged; PAB resolves to its own isolated identity; unknown
+    certifications fail clearly with no cross-certification fallback.
+    """
+
+    def test_adm_and_ba_resolve_to_frozen_identity(self):
+        self.assertEqual(
+            resolve_evidence_identity_for_certification(ADM_EXAM_NAME),
+            FIXTURE_VERSION,
+        )
+        self.assertEqual(
+            resolve_evidence_identity_for_certification(BA_EXAM_NAME),
+            FIXTURE_VERSION,
+        )
+
+    def test_pab_resolves_to_isolated_identity(self):
+        self.assertEqual(
+            resolve_evidence_identity_for_certification(PAB_EXAM_NAME),
+            PAB_FIXTURE_VERSION,
+        )
+        self.assertNotEqual(PAB_FIXTURE_VERSION, FIXTURE_VERSION)
+
+    def test_unknown_certification_raises_with_no_fallback(self):
+        with self.assertRaises(OfficialEvidenceSeedError):
+            resolve_evidence_identity_for_certification("Salesforce Certified Nonexistent Thing")
+        with self.assertRaises(OfficialEvidenceSeedError):
+            evidence_fixture_path_for_certification("")
+
+    def test_fixture_paths_are_distinct_files(self):
+        adm_path = evidence_fixture_path_for_certification(ADM_EXAM_NAME)
+        ba_path = evidence_fixture_path_for_certification(BA_EXAM_NAME)
+        pab_path = evidence_fixture_path_for_certification(PAB_EXAM_NAME)
+        self.assertEqual(adm_path, ba_path)
+        self.assertNotEqual(adm_path, pab_path)
+        self.assertEqual(pab_path.name, "official_evidence_pab_v1.json")
+
+
+class TestPlatformAppBuilderFixtureContent(unittest.TestCase):
+    """PAB-EXP-04A Correction 2/3: the new, isolated PAB evidence package.
+    Verifies structural validity, source provenance, domain coverage, and
+    isolation from the historical ADM/BA package.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture_path = (
+            Path(__file__).resolve().parents[1] / "workers" / "fixtures" / "official_evidence_pab_v1.json"
+        )
+        if not cls.fixture_path.exists():
+            raise unittest.SkipTest("official_evidence_pab_v1.json not generated yet")
+        cls.payload = json.loads(cls.fixture_path.read_text(encoding="utf-8"))
+
+    def test_fixture_identity_and_isolation_metadata(self):
+        self.assertEqual(self.payload["fixture_version"], PAB_FIXTURE_VERSION)
+        self.assertEqual(self.payload.get("evidence_config_id"), PAB_EVIDENCE_CONFIG_ID)
+        self.assertTrue(self.payload["no_synthetic_evidence"])
+        self.assertIn(FIXTURE_VERSION, self.payload.get("isolated_from", []))
+
+    def test_passes_shared_structural_validation(self):
+        validate_fixture_payload(self.payload)
+
+    def test_contains_only_platform_app_builder_records(self):
+        certs = {item["certification"] for item in self.payload["evidence_items"]}
+        self.assertEqual(certs, {PAB_EXAM_NAME})
+
+    def test_all_five_domains_have_at_least_one_record(self):
+        pab = get_platform_app_builder_definition()
+        expected_domains = {domain.domain_name for domain in pab.domains}
+        covered = {item["domain"] for item in self.payload["evidence_items"]}
+        self.assertEqual(expected_domains, expected_domains & covered)
+
+    def test_every_record_is_compact_and_source_verified(self):
+        self.assertLess(len(self.payload["evidence_items"]), 18)
+        for item in self.payload["evidence_items"]:
+            self.assertEqual(item["provenance_status"], "verified_official_resource_library")
+            self.assertTrue(item["canonical_url"].startswith("https://trailhead.salesforce.com/"))
+            self.assertEqual(item["publisher"], "Salesforce, Inc.")
+            excerpt = item["chunk_text_excerpt"]
+            self.assertEqual(
+                item["content_hash"],
+                sha256_hex(excerpt) if item["excerpt_mode"] == "full_chunk" else item["content_hash"],
+            )
+            self.assertNotIn("Exam Practice Questions", excerpt)
+            self.assertNotIn("Flashcard", excerpt)
+
+    def test_legacy_automation_record_supports_flow_preference_without_overclaiming(self):
+        matches = [
+            item
+            for item in self.payload["evidence_items"]
+            if "Workflow Rules" in item["chunk_text_excerpt"]
+            and "Flow" in item["chunk_text_excerpt"]
+        ]
+        self.assertTrue(matches, "expected a retrieved record distinguishing legacy tools from Flow")
+        for item in matches:
+            excerpt = item["chunk_text_excerpt"]
+            self.assertIn("main automation tool", excerpt)
+            self.assertIn("Migrate to Flow", excerpt)
+
+
+class TestPlatformAppBuilderFixtureRetrievalSmoke(unittest.TestCase):
+    """No-model, local smoke retrieval against the isolated PAB fixture only."""
+
+    def setUp(self):
+        self.pab_payload = load_evidence_fixture_for_certification(PAB_EXAM_NAME)
+        self.adm_payload = load_evidence_fixture_for_certification(ADM_EXAM_NAME)
+
+    def test_each_pab_domain_returns_official_evidence(self):
+        queries = {
+            "Salesforce Fundamentals": "sharing solutions object record field access reports dashboards",
+            "User Interface": "user interface customization Lightning components record types",
+            "Data Modeling and Management": "data model relationship types schema builder field types",
+            "Business Logic and Process Automation": "formula fields validation rules approval processes automation",
+            "App Deployment": "application lifecycle sandbox changesets packaging deployment",
+        }
+        for domain_name, query in queries.items():
+            with self.subTest(domain=domain_name):
+                result = retrieve_official_evidence_from_fixture(
+                    certification_exam_name=PAB_EXAM_NAME,
+                    domain_name=domain_name,
+                    query_text=query,
+                    fixture_payload=self.pab_payload,
+                )
+                self.assertEqual(result["evidence_identity"], PAB_FIXTURE_VERSION)
+                self.assertGreaterEqual(len(result["ranked_chunks"]), 1)
+                for chunk in result["ranked_chunks"]:
+                    self.assertEqual(chunk["retrieval_rank"] >= 1, True)
+
+    def test_pab_retrieval_never_returns_adm_or_ba_chunk_ids(self):
+        pab_chunk_ids = {
+            item["resource_chunk_id"] for item in self.pab_payload["evidence_items"]
+        }
+        adm_ba_chunk_ids = {
+            item["resource_chunk_id"] for item in self.adm_payload["evidence_items"]
+        }
+        self.assertEqual(pab_chunk_ids.intersection(adm_ba_chunk_ids), set())
+
+        result = retrieve_official_evidence_from_fixture(
+            certification_exam_name=PAB_EXAM_NAME,
+            domain_name="Business Logic and Process Automation",
+            query_text="approval processes validation rules formula fields automation",
+            fixture_payload=self.pab_payload,
+        )
+        returned_ids = {chunk["resource_chunk_id"] for chunk in result["ranked_chunks"]}
+        self.assertTrue(returned_ids.issubset(pab_chunk_ids))
+        self.assertEqual(returned_ids.intersection(adm_ba_chunk_ids), set())
+
+    def test_administrator_retrieval_is_unaffected_by_pab_fixture(self):
+        result = retrieve_official_evidence_from_fixture(
+            certification_exam_name=ADM_EXAM_NAME,
+            domain_name="Configuration and Setup",
+            query_text="lookup relationship deleted record recycle bin",
+            fixture_payload=self.adm_payload,
+        )
+        self.assertEqual(result["evidence_identity"], FIXTURE_VERSION)
+        pab_chunk_ids = {
+            item["resource_chunk_id"] for item in self.pab_payload["evidence_items"]
+        }
+        returned_ids = {chunk["resource_chunk_id"] for chunk in result["ranked_chunks"]}
+        self.assertEqual(returned_ids.intersection(pab_chunk_ids), set())
+
+    def test_unknown_pab_domain_yields_no_qualifying_match(self):
+        result = retrieve_official_evidence_from_fixture(
+            certification_exam_name=PAB_EXAM_NAME,
+            domain_name="Nonexistent Domain",
+            query_text="completely unrelated gibberish text xyzzy plugh",
+            fixture_payload=self.pab_payload,
+        )
+        self.assertEqual(result["ranked_chunks"], [])
+
+    def test_retrieval_is_deterministic(self):
+        first = retrieve_official_evidence_from_fixture(
+            certification_exam_name=PAB_EXAM_NAME,
+            domain_name="App Deployment",
+            query_text="sandbox changesets packaging deployment lifecycle",
+            fixture_payload=self.pab_payload,
+        )
+        second = retrieve_official_evidence_from_fixture(
+            certification_exam_name=PAB_EXAM_NAME,
+            domain_name="App Deployment",
+            query_text="sandbox changesets packaging deployment lifecycle",
+            fixture_payload=self.pab_payload,
+        )
+        self.assertEqual(
+            [c["resource_chunk_id"] for c in first["ranked_chunks"]],
+            [c["resource_chunk_id"] for c in second["ranked_chunks"]],
+        )
+
+
+class _PabEvidenceFakeClient:
+    """Minimal Supabase-shaped fake client, mirroring
+    tests/test_ai_quality_audit_evidence.py::EvidenceFakeClient, used to
+    prove the *real* operational evidence-loading path
+    (workers.ai_quality_audit_evidence.prepare_smoke_evidence_set) can
+    retrieve Platform App Builder evidence once official_resources /
+    resource_chunks rows exist for it -- not just the fixture-specific
+    retrieve_official_evidence_from_fixture() test helper above.
+    """
+
+    def __init__(self):
+        self._tables: dict[str, list[dict]] = {}
+        self._candidate_rows: list[dict] = []
+        self.rpc_calls: list[tuple[str, dict]] = []
+
+    def set_table(self, name, rows):
+        self._tables[name] = list(rows)
+
+    def table(self, name):
+        return _PabFakeTableQuery(self, name)
+
+    def rpc(self, name, params):
+        self.rpc_calls.append((name, params))
+        if name == "get_question_version_blind_context_v1":
+            return _PabFakeRpcBuilder(
+                [
+                    {
+                        "question_version_id": params["p_question_version_id"],
+                        "question_id": 1,
+                        "certification_exam_name": PAB_EXAM_NAME,
+                        "domain_name": "Business Logic and Process Automation",
+                        "question_text": (
+                            "Which approach should a Platform App Builder recommend for a "
+                            "newly designed approval process with validation rules?"
+                        ),
+                        "question_type": "single",
+                        "select_count": 1,
+                        "options": [
+                            {"option_label": "A", "option_text": "Salesforce Flow", "display_order": 1},
+                        ],
+                    }
+                ]
+            )
+        if name == "list_audit_candidate_resource_chunks_v1":
+            return _PabFakeRpcBuilder(list(self._candidate_rows))
+        raise AssertionError(f"unexpected rpc {name!r}")
+
+
+class _PabFakeRpcResult:
+    def __init__(self, data, error=None):
+        self.data = data
+        self.error = error
+
+
+class _PabFakeRpcBuilder:
+    def __init__(self, data, error=None):
+        self._data = data
+        self._error = error
+
+    def execute(self):
+        return _PabFakeRpcResult(self._data, self._error)
+
+
+class _PabFakeTableQuery:
+    def __init__(self, client, table_name):
+        self._client = client
+        self._table_name = table_name
+        self._filters: list[tuple[str, str, object]] = []
+
+    def select(self, _fields):
+        return self
+
+    def eq(self, field, value):
+        self._filters.append(("eq", field, value))
+        return self
+
+    def execute(self):
+        rows = list(self._client._tables.get(self._table_name, []))
+        for _, field, value in self._filters:
+            rows = [row for row in rows if row.get(field) == value]
+        return _PabFakeRpcResult(rows)
+
+
+class TestPlatformAppBuilderOperationalRetrievalPath(unittest.TestCase):
+    """PAB-EXP-04A Correction 4: proves the real generation/audit runtime
+    path (prepare_smoke_evidence_set) retrieves PAB evidence, seeded from the
+    verified official_evidence_pab_v1.json fixture converted into
+    official_resources/resource_chunks-shaped rows. This is Option A/B in
+    combination: certification-based routing already works correctly at the
+    live-database layer purely via the certification_exam_name column filter
+    (there is no evidence_config_id concept at that layer); this test proves
+    that once PAB rows exist there, retrieval genuinely works end to end.
+    """
+
+    def setUp(self):
+        from workers.ai_quality_audit_evidence import prepare_smoke_evidence_set
+
+        self.prepare_smoke_evidence_set = prepare_smoke_evidence_set
+        payload = load_evidence_fixture_for_certification(PAB_EXAM_NAME)
+        items = filter_fixture_items_by_certification(payload, PAB_EXAM_NAME)
+        self.assertTrue(items)
+
+        self.client = _PabEvidenceFakeClient()
+        resource_rows = []
+        seen_resource_ids: set[str] = set()
+        for item in items:
+            row = fixture_item_to_resource_row(item)
+            row = {
+                **row,
+                "certification_exam_name": PAB_EXAM_NAME,
+                "is_active": True,
+            }
+            if row["id"] not in seen_resource_ids:
+                seen_resource_ids.add(row["id"])
+                resource_rows.append(row)
+        self.client.set_table("official_resources", resource_rows)
+        self.client._candidate_rows = [
+            fixture_item_to_candidate_row(item) for item in items
+        ]
+        self.qvid = "cccccccc-0000-0000-0000-0000000000aa"
+
+    def test_prepare_smoke_evidence_set_retrieves_pab_evidence(self):
+        prepared = self.prepare_smoke_evidence_set(self.client, self.qvid)
+        self.assertGreaterEqual(len(prepared.evidence_chunks), 1)
+        self.assertEqual(prepared.certification_exam_name, PAB_EXAM_NAME)
+
+        pab_payload = load_evidence_fixture_for_certification(PAB_EXAM_NAME)
+        pab_chunk_ids = {
+            item["resource_chunk_id"] for item in pab_payload["evidence_items"]
+        }
+        for chunk in prepared.evidence_chunks:
+            self.assertIn(chunk["resource_chunk_id"], pab_chunk_ids)
 
 
 if __name__ == "__main__":

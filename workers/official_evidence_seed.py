@@ -16,13 +16,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
+from workers.certification_registry import PAB_EXAM_NAME
 from workers.resource_chunking import sha256_hex
 from workers.structural_audit_launcher import ADM_EXAM_NAME, BA_EXAM_NAME
 
+# Historical, frozen evidence-package identity. Its meaning (which chunk ids,
+# hashes, and content it contains) must never change -- prior frozen ADM/BA
+# audit contexts and benchmark artifacts were built against this exact
+# fixture. Administrator and Business Analyst have always shared this single
+# package identity; that sharing is pre-existing behavior and is preserved
+# unchanged here.
 FIXTURE_VERSION = "official-evidence-seed-v1"
 DEFAULT_OUTPUT_PATH = (
     Path(__file__).resolve().parent / "fixtures" / "official_evidence_seed_v1.json"
 )
+
+# Platform App Builder evidence-package identity (PAB-EXP-04A). Deliberately
+# isolated from FIXTURE_VERSION above: adding PAB coverage must never change
+# the hash or meaning of the historical ADM/BA package. Only Platform App
+# Builder requests resolve to this identity -- see
+# resolve_evidence_identity_for_certification() below.
+PAB_FIXTURE_VERSION = "official-evidence-pab-v1"
+PAB_EVIDENCE_CONFIG_ID = "official_evidence_pab_v1"
+PAB_DEFAULT_OUTPUT_PATH = (
+    Path(__file__).resolve().parent / "fixtures" / "official_evidence_pab_v1.json"
+)
+
 MAX_EXCERPT_CHARS = 1500
 DEFAULT_TARGET_MIN_CHUNKS = 24
 DEFAULT_TARGET_MAX_CHUNKS = 40
@@ -31,9 +50,29 @@ DEFAULT_MAX_CHUNKS_PER_RESOURCE = 3
 CERTIFICATION_CODES = {
     ADM_EXAM_NAME: "ADM-201",
     BA_EXAM_NAME: "BA-201",
+    # Must match certification_registry.CERTIFICATION_CODES[PAB_EXAM_NAME]
+    # (single source of truth for the code string lives there; duplicated
+    # here only because this module's dict predates that import).
+    PAB_EXAM_NAME: "platform_app_builder",
 }
 
 SUPPORTED_CERTIFICATIONS = frozenset(CERTIFICATION_CODES)
+
+# Certification -> frozen evidence-package identity. ADM and BA continue to
+# resolve to the original FIXTURE_VERSION (unchanged); PAB is isolated onto
+# its own identity. There is no cross-certification fallback: an
+# unrecognized certification raises rather than silently defaulting to
+# either package.
+EVIDENCE_IDENTITY_BY_CERTIFICATION: Dict[str, str] = {
+    ADM_EXAM_NAME: FIXTURE_VERSION,
+    BA_EXAM_NAME: FIXTURE_VERSION,
+    PAB_EXAM_NAME: PAB_FIXTURE_VERSION,
+}
+
+FIXTURE_PATH_BY_EVIDENCE_IDENTITY: Dict[str, Path] = {
+    FIXTURE_VERSION: DEFAULT_OUTPUT_PATH,
+    PAB_FIXTURE_VERSION: PAB_DEFAULT_OUTPUT_PATH,
+}
 
 ALLOWED_RESOURCE_TYPES = frozenset({
     "exam_guide",
@@ -790,3 +829,184 @@ def validate_fixture_payload(payload: Mapping[str, Any]) -> None:
         raise OfficialEvidenceSeedError("fixture must include supported certifications")
     if len(domains) < 2:
         raise OfficialEvidenceSeedError("fixture must cover multiple domains")
+
+
+# =============================================================================
+# Fixture-based evidence routing and retrieval (PAB-EXP-04A)
+#
+# These helpers are for local, no-model smoke-testing of committed fixture
+# content only. The real generation/audit runtime path never reads these
+# JSON fixtures -- it retrieves evidence from live official_resources /
+# resource_versions / resource_chunks rows (see
+# workers/ai_quality_audit_evidence.py::prepare_smoke_evidence_set(), which
+# filters strictly by certification_exam_name and has no notion of an
+# "evidence_config_id" at all). The fixture-identity routing below exists so
+# that adding a new certification's committed evidence export can never
+# change the content or hash of another certification's committed fixture.
+# =============================================================================
+
+
+def resolve_evidence_identity_for_certification(certification_exam_name: str) -> str:
+    """Return the frozen evidence-package identity for a supported certification.
+
+    Raises clearly for any certification without a configured identity --
+    there is no cross-certification fallback.
+    """
+    cert = str(certification_exam_name or "").strip()
+    identity = EVIDENCE_IDENTITY_BY_CERTIFICATION.get(cert)
+    if identity is None:
+        raise OfficialEvidenceSeedError(
+            f"no evidence-package identity configured for certification {cert!r}; "
+            f"supported certifications are {sorted(EVIDENCE_IDENTITY_BY_CERTIFICATION)}"
+        )
+    return identity
+
+
+def evidence_fixture_path_for_certification(certification_exam_name: str) -> Path:
+    """Return the on-disk fixture path for one certification's evidence identity."""
+    identity = resolve_evidence_identity_for_certification(certification_exam_name)
+    path = FIXTURE_PATH_BY_EVIDENCE_IDENTITY.get(identity)
+    if path is None:
+        raise OfficialEvidenceSeedError(
+            f"no fixture path configured for evidence identity {identity!r}"
+        )
+    return path
+
+
+def load_official_evidence_fixture(path: Optional[Path | str] = None) -> Dict[str, Any]:
+    """Load and structurally validate one evidence-package fixture file.
+
+    Defaults to the historical ADM/BA fixture (``DEFAULT_OUTPUT_PATH``) when
+    ``path`` is omitted, matching this function's pre-PAB-EXP-04A behavior.
+    """
+    fixture_path = Path(path) if path is not None else DEFAULT_OUTPUT_PATH
+    if not fixture_path.exists():
+        raise OfficialEvidenceSeedError(f"evidence fixture not found: {fixture_path}")
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    validate_fixture_payload(payload)
+    return payload
+
+
+def load_evidence_fixture_for_certification(certification_exam_name: str) -> Dict[str, Any]:
+    """Load the one correct isolated evidence-package fixture for a certification.
+
+    This is the routing boundary that keeps Platform App Builder evidence
+    out of Administrator/Business Analyst retrieval and vice versa: each
+    certification loads only its own resolved fixture file, never a shared
+    or merged file.
+    """
+    path = evidence_fixture_path_for_certification(certification_exam_name)
+    return load_official_evidence_fixture(path)
+
+
+def filter_fixture_items_by_certification(
+    payload: Mapping[str, Any],
+    certification_exam_name: str,
+) -> List[Dict[str, Any]]:
+    """Return only the evidence items tagged with the exact certification name."""
+    canonical = str(certification_exam_name or "").strip()
+    return [
+        dict(item)
+        for item in payload.get("evidence_items", [])
+        if str(item.get("certification")) == canonical
+    ]
+
+
+def fixture_item_to_resource_row(item: Mapping[str, Any]) -> Dict[str, Any]:
+    """Map one fixture evidence item to an official_resources-shaped row."""
+    domain_tags = list(item.get("domain_tags") or [item.get("domain")])
+    return {
+        "id": str(item["official_resource_id"]).strip().lower(),
+        "title": str(item.get("resource_title") or ""),
+        "metadata": {"domain": item.get("domain"), "domains": domain_tags},
+        "resource_type": str(item.get("resource_type") or ""),
+    }
+
+
+def fixture_item_to_candidate_row(item: Mapping[str, Any]) -> Dict[str, Any]:
+    """Map one fixture evidence item to a resource_chunks-candidate-shaped row.
+
+    Field names match the normalized output of
+    ``workers.ai_quality_audit_evidence._list_candidate_chunks`` so the same
+    real ranking function (``rank_question_evidence_candidates``) can score
+    fixture-derived candidates exactly as it scores live-DB candidates.
+    """
+    return {
+        "resource_chunk_id": str(item["resource_chunk_id"]).strip().lower(),
+        "resource_id": str(item["official_resource_id"]).strip().lower(),
+        "content_hash": str(item.get("content_hash") or ""),
+        "chunk_index": int(item.get("chunk_index") or 0),
+        "certification_exam_name": str(item.get("certification") or ""),
+        "chunk_text": str(item.get("chunk_text_excerpt") or ""),
+        "title": str(item.get("resource_title") or ""),
+        "resource_type": str(item.get("resource_type") or ""),
+    }
+
+
+def build_fixture_candidate_pool(
+    items: Sequence[Mapping[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Convert fixture items into (candidate_rows, resource_by_id) for ranking."""
+    candidates = [fixture_item_to_candidate_row(item) for item in items]
+    resource_by_id: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        row = fixture_item_to_resource_row(item)
+        resource_by_id[row["id"]] = row
+    return candidates, resource_by_id
+
+
+def retrieve_official_evidence_from_fixture(
+    *,
+    certification_exam_name: str,
+    domain_name: str,
+    query_text: str,
+    max_chunks: int = DEFAULT_MAX_CHUNKS_PER_RESOURCE * 4,
+    max_characters: int = 16_000,
+    max_chunks_per_resource: int = DEFAULT_MAX_CHUNKS_PER_RESOURCE,
+    fixture_payload: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Rank one certification's isolated fixture evidence for a smoke query.
+
+    Loads *only* the evidence-package identity resolved for
+    ``certification_exam_name`` (see
+    ``resolve_evidence_identity_for_certification``); it can never return
+    another certification's records. This is a local, no-model smoke-test
+    helper for validating fixture content quality and isolation -- the real
+    generation/audit runtime path retrieves evidence from live
+    official_resources / resource_versions / resource_chunks rows instead
+    (see ``workers.ai_quality_audit_evidence.prepare_smoke_evidence_set``).
+    """
+    from workers.ai_quality_audit_evidence import rank_question_evidence_candidates
+
+    canonical = str(certification_exam_name or "").strip()
+    payload = fixture_payload if fixture_payload is not None else load_evidence_fixture_for_certification(canonical)
+    items = filter_fixture_items_by_certification(payload, canonical)
+    if not items:
+        raise OfficialEvidenceSeedError(
+            f"no fixture evidence items found for certification {canonical!r}"
+        )
+    candidates, resource_by_id = build_fixture_candidate_pool(items)
+    blind_context = {
+        "certification_exam_name": canonical,
+        "domain_name": str(domain_name or ""),
+        "question_text": str(query_text or ""),
+        "options": [],
+    }
+    ranked, previews, qualified_count, rejected_count, rejected_previews = rank_question_evidence_candidates(
+        candidates,
+        blind_context=blind_context,
+        resource_by_id=resource_by_id,
+        max_chunks=max_chunks,
+        max_characters=max_characters,
+        max_chunks_per_resource=max_chunks_per_resource,
+    )
+    return {
+        "certification_exam_name": canonical,
+        "evidence_identity": resolve_evidence_identity_for_certification(canonical),
+        "ranked_chunks": ranked,
+        "chunk_previews": previews,
+        "qualified_candidate_count": qualified_count,
+        "rejected_below_threshold_count": rejected_count,
+        "rejected_previews": rejected_previews,
+        "candidate_count": len(candidates),
+    }
