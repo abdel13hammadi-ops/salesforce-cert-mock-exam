@@ -17,13 +17,19 @@ from workers.certification_registry import (
     ADM_EXAM_NAME,
     BA_EXAM_NAME,
     CERTIFICATION_CODES,
+    DECIMAL_DOMAIN_WEIGHT_PUBLISHED_TOTAL,
+    DECIMAL_DOMAIN_WEIGHT_TOTAL_TOLERANCE,
+    INTEGER_DOMAIN_WEIGHT_TOTAL,
     LEGACY_AUTOMATION_GUARDRAIL,
     PAB_EXAM_NAME,
+    SCC_EXAM_NAME,
     CertificationDefinition,
     CertificationRegistryError,
+    domain_metadata_for_certification,
     get_business_analyst_definition,
     get_certification_definition,
     get_platform_app_builder_definition,
+    get_sales_cloud_consultant_definition,
     normalize_certification_exam_name,
     validate_audit_retry_context_certification,
     validate_certification_domain,
@@ -99,13 +105,25 @@ class TestPlatformAppBuilderRegistry(unittest.TestCase):
         # "Salesforce Platform App Builder" form, which is an alias only.
         self.assertEqual(PAB_EXAM_NAME, "Salesforce Certified Platform App Builder")
 
-    def test_all_certification_domain_weights_total_100(self):
+    def test_all_certification_domain_weights_use_documented_totals(self):
         for definition in certification_registry.CERTIFICATION_DEFINITIONS:
-            self.assertEqual(
-                definition.total_domain_weight,
-                100,
-                msg=f"{definition.exam_name} domain weights do not total 100",
-            )
+            total = definition.total_domain_weight
+            if definition.uses_integral_domain_weights:
+                self.assertEqual(
+                    total,
+                    INTEGER_DOMAIN_WEIGHT_TOTAL,
+                    msg=f"{definition.exam_name} integer domain weights must total 100",
+                )
+            else:
+                self.assertAlmostEqual(
+                    total,
+                    DECIMAL_DOMAIN_WEIGHT_PUBLISHED_TOTAL,
+                    delta=DECIMAL_DOMAIN_WEIGHT_TOTAL_TOLERANCE,
+                    msg=(
+                        f"{definition.exam_name} published decimal domain weights "
+                        f"must total approximately {DECIMAL_DOMAIN_WEIGHT_PUBLISHED_TOTAL}"
+                    ),
+                )
 
     def test_domain_ids_are_globally_unique_across_certifications(self):
         all_domain_ids = [
@@ -147,6 +165,114 @@ class TestBusinessAnalystRegistry(unittest.TestCase):
         self.assertEqual(normalize_certification_exam_name("ba-201"), BA_EXAM_NAME)
 
 
+class TestSalesCloudConsultantRegistry(unittest.TestCase):
+    def test_registry_lookup_returns_canonical_definition(self):
+        definition = get_certification_definition(SCC_EXAM_NAME)
+        self.assertIsNotNone(definition)
+        assert definition is not None
+        self.assertEqual(definition.exam_name, SCC_EXAM_NAME)
+
+    def test_official_code_is_sales_con_201(self):
+        self.assertEqual(CERTIFICATION_CODES[SCC_EXAM_NAME], "Sales-Con-201")
+
+    def test_sales_con_201_resolves_to_canonical_certification(self):
+        self.assertEqual(normalize_certification_exam_name("Sales-Con-201"), SCC_EXAM_NAME)
+        self.assertEqual(normalize_certification_exam_name("sales-con-201"), SCC_EXAM_NAME)
+
+    def test_semantic_aliases_resolve(self):
+        self.assertEqual(
+            normalize_certification_exam_name("sales_cloud_consultant"),
+            SCC_EXAM_NAME,
+        )
+        self.assertEqual(normalize_certification_exam_name("scc"), SCC_EXAM_NAME)
+        self.assertEqual(
+            normalize_certification_exam_name("Salesforce Sales Cloud Consultant"),
+            SCC_EXAM_NAME,
+        )
+
+    def test_unofficial_scc_201_alias_is_rejected(self):
+        self.assertIsNone(normalize_certification_exam_name("SCC-201"))
+        self.assertIsNone(normalize_certification_exam_name("scc-201"))
+
+    def test_exact_domain_names(self):
+        definition = get_sales_cloud_consultant_definition()
+        self.assertEqual(
+            tuple(domain.domain_name for domain in definition.domains),
+            (
+                "Practical Application of Sales Cloud Expertise",
+                "Sales Lifecycle",
+                "Consulting & Implementation Strategies",
+                "Data Management",
+                "Predictive and Generative AI",
+            ),
+        )
+
+    def test_exact_decimal_domain_weights(self):
+        definition = get_sales_cloud_consultant_definition()
+        self.assertEqual(
+            [domain.weight for domain in definition.domains],
+            [23.3, 20.0, 25.0, 18.3, 13.3],
+        )
+
+    def test_published_decimal_total_is_approximately_99_9(self):
+        definition = get_sales_cloud_consultant_definition()
+        self.assertAlmostEqual(
+            definition.total_domain_weight,
+            DECIMAL_DOMAIN_WEIGHT_PUBLISHED_TOTAL,
+            delta=DECIMAL_DOMAIN_WEIGHT_TOTAL_TOLERANCE,
+        )
+        self.assertFalse(definition.uses_integral_domain_weights)
+
+    def test_strict_domain_validation_enabled(self):
+        definition = get_sales_cloud_consultant_definition()
+        self.assertTrue(definition.enforce_domain_contract_at_request_validation)
+
+    def test_all_five_official_domains_are_accepted(self):
+        for domain in get_sales_cloud_consultant_definition().domains:
+            with self.subTest(domain=domain.domain_name):
+                canonical = validate_generation_request_certification(
+                    certification_exam_name=SCC_EXAM_NAME,
+                    domain=domain.domain_name,
+                )
+                self.assertEqual(canonical, SCC_EXAM_NAME)
+
+    def test_cross_certification_domains_are_rejected(self):
+        invalid_domains = (
+            "Configuration and Setup",
+            "Customer Discovery",
+            "App Deployment",
+            "Some Domain Never Enumerated In The Registry",
+        )
+        for domain in invalid_domains:
+            with self.subTest(domain=domain):
+                with self.assertRaises(CertificationRegistryError):
+                    validate_generation_request_certification(
+                        certification_exam_name=SCC_EXAM_NAME,
+                        domain=domain,
+                    )
+
+    def test_ampersand_domain_name_must_match_exactly(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=SCC_EXAM_NAME,
+                domain="Consulting and Implementation Strategies",
+            )
+
+    def test_blank_domain_is_rejected(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=SCC_EXAM_NAME,
+                domain="   ",
+            )
+
+    def test_domain_metadata_preserves_decimal_weight(self):
+        metadata = domain_metadata_for_certification(
+            SCC_EXAM_NAME,
+            "Practical Application of Sales Cloud Expertise",
+        )
+        self.assertEqual(metadata["weight"], 23.3)
+
+
 class TestCertificationCodeIdentifierDecision(unittest.TestCase):
     """PAB-EXP-02: APP-401 had no repository evidence and was removed."""
 
@@ -162,6 +288,7 @@ class TestCertificationCodeIdentifierDecision(unittest.TestCase):
         # ADM-201 / BA-201 remain: evidenced by workers/official_evidence_seed.py.
         self.assertEqual(CERTIFICATION_CODES[ADM_EXAM_NAME], "ADM-201")
         self.assertEqual(CERTIFICATION_CODES[BA_EXAM_NAME], "BA-201")
+        self.assertEqual(CERTIFICATION_CODES[PAB_EXAM_NAME], "platform_app_builder")
 
 
 class TestEngineProfileVersusPersistenceCatalogSeparation(unittest.TestCase):
@@ -224,6 +351,20 @@ class TestCertificationNormalization(unittest.TestCase):
         self.assertEqual(
             normalize_certification_exam_name("BA-201"),
             BA_EXAM_NAME,
+        )
+
+    def test_sales_cloud_consultant_aliases_normalize(self):
+        self.assertEqual(
+            normalize_certification_exam_name("Salesforce Sales Cloud Consultant"),
+            SCC_EXAM_NAME,
+        )
+        self.assertEqual(
+            normalize_certification_exam_name("Sales-Con-201"),
+            SCC_EXAM_NAME,
+        )
+        self.assertEqual(
+            normalize_certification_exam_name("sales-cloud-consultant"),
+            SCC_EXAM_NAME,
         )
 
     def test_unexpected_certification_string_is_not_guessed(self):
@@ -296,6 +437,27 @@ class TestGenerationRequestValidation(unittest.TestCase):
         with self.assertRaises(CandidateValidationError):
             validate_generation_request(request)
 
+    def _scc_request(self, *, domain: str) -> GenerationRequest:
+        return GenerationRequest(
+            certification_exam_name=SCC_EXAM_NAME,
+            domain=domain,
+            prompt_template_id="certbound-question-gen",
+            prompt_version="v1.0.0",
+            model_name="claude-test",
+            created_by="tester@certbound.internal",
+            source_evidence={"resource_reference": "Salesforce Help"},
+        )
+
+    def test_generation_request_accepts_sales_cloud_consultant(self):
+        validate_generation_request(
+            self._scc_request(domain="Sales Lifecycle")
+        )
+
+    def test_generation_request_rejects_unknown_sales_cloud_consultant_domain(self):
+        request = self._scc_request(domain="User Interface")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
 
 class TestAuditRetryAndFrozenContextValidation(unittest.TestCase):
     def test_audit_retry_context_accepts_platform_app_builder(self):
@@ -339,6 +501,13 @@ class TestAuditRetryAndFrozenContextValidation(unittest.TestCase):
             "Customer Discovery",
         )
         self.assertEqual(canonical, BA_EXAM_NAME)
+
+    def test_audit_retry_context_accepts_sales_cloud_consultant(self):
+        canonical = validate_audit_retry_context_certification(
+            certification_exam_name="scc",
+            domain="Data Management",
+        )
+        self.assertEqual(canonical, SCC_EXAM_NAME)
 
 
 class TestDomainBoundaryEnforcement(unittest.TestCase):
@@ -420,6 +589,20 @@ class TestDomainBoundaryEnforcement(unittest.TestCase):
                     domain=domain,
                 )
                 self.assertEqual(canonical, BA_EXAM_NAME)
+
+    def test_sales_cloud_consultant_rejects_unregistered_domain(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=SCC_EXAM_NAME,
+                domain="Some Domain Never Enumerated In The Registry",
+            )
+
+    def test_sales_cloud_consultant_rejects_platform_app_builder_domain(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=SCC_EXAM_NAME,
+                domain="Salesforce Fundamentals",
+            )
 
 
 class TestNoMutationOfFrozenOrHistoricalValues(unittest.TestCase):

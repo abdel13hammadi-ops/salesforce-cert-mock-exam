@@ -48,6 +48,7 @@ from typing import Dict, FrozenSet, Mapping, Optional, Sequence, Tuple
 ADM_EXAM_NAME = "Salesforce Certified Platform Administrator"
 BA_EXAM_NAME = "Salesforce Certified Business Analyst"
 PAB_EXAM_NAME = "Salesforce Certified Platform App Builder"
+SCC_EXAM_NAME = "Salesforce Certified Sales Cloud Consultant"
 
 CERTIFICATION_CODES: Dict[str, str] = {
     # "ADM-201" / "BA-201" mirror the pre-existing codes already used by
@@ -63,7 +64,16 @@ CERTIFICATION_CODES: Dict[str, str] = {
     # semantic identifier is used instead, following the same snake_case
     # convention already used for domain_id values below.
     PAB_EXAM_NAME: "platform_app_builder",
+    # Official Salesforce exam code for Sales Cloud Consultant (SCC-EXP-02).
+    SCC_EXAM_NAME: "Sales-Con-201",
 }
+
+# Integer-weight certifications (ADM, BA, PAB) sum to exactly 100. Salesforce
+# publishes one-decimal weights for Sales Cloud Consultant that sum to 99.9 due
+# to rounding; do not normalize or reject that total.
+INTEGER_DOMAIN_WEIGHT_TOTAL = 100
+DECIMAL_DOMAIN_WEIGHT_PUBLISHED_TOTAL = 99.9
+DECIMAL_DOMAIN_WEIGHT_TOTAL_TOLERANCE = 0.15
 
 LEGACY_AUTOMATION_GUARDRAIL = (
     "Newly designed automation must not recommend Workflow Rules or Process "
@@ -81,7 +91,7 @@ class CertificationRegistryError(ValueError):
 class CertificationDomain:
     domain_id: str
     domain_name: str
-    weight: int
+    weight: float
     coverage_topics: Tuple[str, ...] = ()
     policy_guidance: Tuple[str, ...] = ()
 
@@ -103,8 +113,12 @@ class CertificationDefinition:
         return frozenset(domain.domain_name for domain in self.domains)
 
     @property
-    def total_domain_weight(self) -> int:
+    def total_domain_weight(self) -> float:
         return sum(domain.weight for domain in self.domains)
+
+    @property
+    def uses_integral_domain_weights(self) -> bool:
+        return all(domain.weight == int(domain.weight) for domain in self.domains)
 
 
 def _normalize_certification_key(value: str) -> str:
@@ -299,10 +313,49 @@ def _pab_definition() -> CertificationDefinition:
     )
 
 
+def _scc_definition() -> CertificationDefinition:
+    return CertificationDefinition(
+        exam_name=SCC_EXAM_NAME,
+        certification_code=CERTIFICATION_CODES[SCC_EXAM_NAME],
+        aliases=frozenset(
+            {
+                "Salesforce Sales Cloud Consultant",
+                SCC_EXAM_NAME,
+                CERTIFICATION_CODES[SCC_EXAM_NAME],
+                "sales-con-201",
+                "sales_cloud_consultant",
+                "sales-cloud-consultant",
+                "scc",
+            }
+        ),
+        domains=(
+            CertificationDomain(
+                "practical_application_of_sales_cloud_expertise",
+                "Practical Application of Sales Cloud Expertise",
+                23.3,
+            ),
+            CertificationDomain("sales_lifecycle", "Sales Lifecycle", 20.0),
+            CertificationDomain(
+                "consulting_and_implementation_strategies",
+                "Consulting & Implementation Strategies",
+                25.0,
+            ),
+            CertificationDomain("data_management", "Data Management", 18.3),
+            CertificationDomain(
+                "predictive_and_generative_ai",
+                "Predictive and Generative AI",
+                13.3,
+            ),
+        ),
+        enforce_domain_contract_at_request_validation=True,
+    )
+
+
 CERTIFICATION_DEFINITIONS: Tuple[CertificationDefinition, ...] = (
     _adm_definition(),
     _ba_definition(),
     _pab_definition(),
+    _scc_definition(),
 )
 
 _DEFINITION_BY_EXAM_NAME: Dict[str, CertificationDefinition] = {
@@ -348,6 +401,11 @@ def get_platform_app_builder_definition() -> CertificationDefinition:
 
 def get_business_analyst_definition() -> CertificationDefinition:
     definition = _DEFINITION_BY_EXAM_NAME[BA_EXAM_NAME]
+    return definition
+
+
+def get_sales_cloud_consultant_definition() -> CertificationDefinition:
+    definition = _DEFINITION_BY_EXAM_NAME[SCC_EXAM_NAME]
     return definition
 
 
@@ -399,10 +457,10 @@ def validate_generation_request_certification(
 ) -> str:
     """Validate certification and domain for a generation request.
 
-    Platform App Builder and Business Analyst enforce their full domain
-    contracts at request validation time. Administrator behavior is preserved
-    by accepting any non-blank domain once the certification itself is
-    recognized.
+    Platform App Builder, Business Analyst, and Sales Cloud Consultant enforce
+    their full domain contracts at request validation time. Administrator
+    behavior is preserved by accepting any non-blank domain once the
+    certification itself is recognized.
 
     This is an engine-capability pre-check that runs before, and is strictly
     stricter-or-equal to, the database persistence gate
