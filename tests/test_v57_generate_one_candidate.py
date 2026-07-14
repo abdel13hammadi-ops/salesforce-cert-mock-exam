@@ -40,8 +40,12 @@ from tests.test_question_candidate_generation import (
     _seed_domain,
     _valid_raw_payload,
 )
-from workers.certification_registry import BA_EXAM_NAME, PAB_EXAM_NAME
-from workers.official_evidence_seed import BA_EVIDENCE_CONFIG_ID, PAB_EVIDENCE_CONFIG_ID
+from workers.certification_registry import BA_EXAM_NAME, PAB_EXAM_NAME, SCC_EXAM_NAME
+from workers.official_evidence_seed import (
+    BA_EVIDENCE_CONFIG_ID,
+    PAB_EVIDENCE_CONFIG_ID,
+    SCC_EVIDENCE_CONFIG_ID,
+)
 from workers.question_candidate_generation import AuditInitiationError, GenerationRequest
 
 
@@ -237,6 +241,29 @@ class TestRunnerDelegatesToRealService(unittest.TestCase):
         self.assertEqual(
             row["candidate_payload"]["provenance"]["source_evidence"]["evidence_config_id"],
             BA_EVIDENCE_CONFIG_ID,
+        )
+        self.assertFalse(result.deduplicated)
+        self.assertEqual(len(fake.tables["question_candidates"]), 1)
+
+    def test_sales_cloud_consultant_generate_delegates_through_existing_service(self):
+        args = _generate_args(
+            certification=SCC_EXAM_NAME,
+            domain="Sales Lifecycle",
+            source_evidence='{"resource_reference": "Salesforce Help: Opportunities"}',
+        )
+        request = build_generation_request_from_args(args)
+        fake = FakeSupabase()
+        _seed_domain(fake, request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        result = run_generate_one_candidate(fake, provider, args)
+
+        row = fake.tables["question_candidates"][0]
+        self.assertEqual(row["certification_exam_name"], SCC_EXAM_NAME)
+        self.assertEqual(row["metadata"]["domain"], "Sales Lifecycle")
+        self.assertEqual(
+            row["candidate_payload"]["provenance"]["source_evidence"]["evidence_config_id"],
+            SCC_EVIDENCE_CONFIG_ID,
         )
         self.assertFalse(result.deduplicated)
         self.assertEqual(len(fake.tables["question_candidates"]), 1)

@@ -25,10 +25,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from workers.certification_registry import (
     BA_EXAM_NAME,
     PAB_EXAM_NAME,
+    SCC_EXAM_NAME,
     get_business_analyst_definition,
     get_platform_app_builder_definition,
+    get_sales_cloud_consultant_definition,
+    validate_generation_request_certification,
 )
-from workers.official_evidence_seed import BA_EVIDENCE_CONFIG_ID, PAB_EVIDENCE_CONFIG_ID
+from workers.official_evidence_seed import (
+    BA_EVIDENCE_CONFIG_ID,
+    PAB_EVIDENCE_CONFIG_ID,
+    SCC_EVIDENCE_CONFIG_ID,
+)
 from workers.anthropic_provider import AnthropicAuditProvider, AnthropicProviderConfig
 from workers.llm_audit import LlmAuditValidationError
 from workers.llm_providers import LlmResponse, SKIP_LEGACY_LLM_AUDIT_VALIDATION_METADATA_KEY
@@ -1365,6 +1372,216 @@ class TestBusinessAnalystGeneration(unittest.TestCase):
         self.assertEqual(result.question_snapshot["domain"], request.domain)
 
     def test_platform_app_builder_generation_unchanged_after_ba_registration(self):
+        request = _make_pab_request(domain="App Deployment")
+        fake = FakeSupabase()
+        _seed_pab_domain(fake, request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        result = generate_and_persist_candidate(fake, provider, request)
+
+        provenance = fake.tables["question_candidates"][0]["candidate_payload"]["provenance"]
+        self.assertEqual(
+            provenance["source_evidence"]["evidence_config_id"],
+            PAB_EVIDENCE_CONFIG_ID,
+        )
+        self.assertFalse(result.deduplicated)
+
+
+# ===========================================================================
+# Sales Cloud Consultant generation vertical slice (SCC-EXP-06)
+# ===========================================================================
+
+_SCC_DOMAINS = tuple(
+    domain.domain_name for domain in get_sales_cloud_consultant_definition().domains
+)
+
+
+def _make_scc_request(**overrides) -> GenerationRequest:
+    kwargs = dict(
+        certification_exam_name=SCC_EXAM_NAME,
+        domain="Sales Lifecycle",
+        prompt_template_id="certbound-question-gen",
+        prompt_version="v1.0.0",
+        model_name="claude-3-5-sonnet-20241022",
+        created_by="generation-service@certbound.internal",
+        source_evidence={"resource_reference": "Salesforce Help: Opportunities"},
+    )
+    kwargs.update(overrides)
+    return GenerationRequest(**kwargs)
+
+
+def _seed_scc_domain(fake: FakeSupabase, request: GenerationRequest) -> None:
+    fake.add_certification_domain(request.certification_exam_name, request.domain)
+
+
+class TestSalesCloudConsultantGeneration(unittest.TestCase):
+    """Deterministic local smoke for the SCC generation vertical slice."""
+
+    def _fake_with_scc_domain(self, request: GenerationRequest) -> FakeSupabase:
+        fake = FakeSupabase()
+        _seed_scc_domain(fake, request)
+        return fake
+
+    def test_sales_con_201_resolves_to_canonical_certification(self):
+        canonical = validate_generation_request_certification(
+            certification_exam_name="Sales-Con-201",
+            domain="Sales Lifecycle",
+        )
+        self.assertEqual(canonical, SCC_EXAM_NAME)
+
+    def test_existing_scc_aliases_resolve(self):
+        for alias in (
+            "Sales-Con-201",
+            "sales-con-201",
+            "Salesforce Sales Cloud Consultant",
+            "scc",
+        ):
+            with self.subTest(alias=alias):
+                canonical = validate_generation_request_certification(
+                    certification_exam_name=alias,
+                    domain="Data Management",
+                )
+                self.assertEqual(canonical, SCC_EXAM_NAME)
+
+    def test_all_five_registered_domains_are_accepted(self):
+        for domain in _SCC_DOMAINS:
+            with self.subTest(domain=domain):
+                request = _make_scc_request(domain=domain)
+                validate_generation_request(request)
+
+    def test_blank_domain_is_rejected(self):
+        request = _make_scc_request(domain="   ")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_administrator_domain_is_rejected_for_sales_cloud_consultant(self):
+        request = _make_scc_request(domain="Data and Analytics Management")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_platform_app_builder_domain_is_rejected_for_sales_cloud_consultant(self):
+        request = _make_scc_request(domain="User Interface")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_business_analyst_domain_is_rejected_for_sales_cloud_consultant(self):
+        request = _make_scc_request(domain="Requirements")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_arbitrary_domain_is_rejected(self):
+        request = _make_scc_request(domain="Totally Made Up Domain")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_wrong_evidence_config_id_is_rejected(self):
+        request = _make_scc_request(
+            source_evidence={
+                "evidence_config_id": "official-evidence-seed-v1",
+                "resource_reference": "Salesforce Help",
+            }
+        )
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def test_valid_request_resolves_official_evidence_scc_v1(self):
+        request = _make_scc_request(domain="Consulting & Implementation Strategies")
+        fake = self._fake_with_scc_domain(request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        result = generate_and_persist_candidate(fake, provider, request)
+
+        row = fake.tables["question_candidates"][0]
+        provenance = row["candidate_payload"]["provenance"]
+        self.assertEqual(
+            provenance["source_evidence"]["evidence_config_id"],
+            SCC_EVIDENCE_CONFIG_ID,
+        )
+        self.assertEqual(row["certification_exam_name"], SCC_EXAM_NAME)
+        self.assertEqual(row["metadata"]["domain"], request.domain)
+        self.assertFalse(result.deduplicated)
+        self.assertEqual(len(fake.tables["question_candidates"]), 1)
+        self.assertEqual(len(fake.tables["question_candidate_events"]), 1)
+
+    def test_candidate_only_persistence_never_touches_live_question_tables(self):
+        request = _make_scc_request(domain="Predictive and Generative AI")
+        fake = self._fake_with_scc_domain(request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        generate_and_persist_candidate(fake, provider, request)
+
+        for forbidden in _FORBIDDEN_TABLES:
+            self.assertNotIn(forbidden, fake.tables)
+
+    def test_exact_duplicate_handling_unchanged(self):
+        request = _make_scc_request(domain="Practical Application of Sales Cloud Expertise")
+        fake = self._fake_with_scc_domain(request)
+        provider = FakeLlmProvider(
+            responses=[_llm_response(_valid_raw_payload()), _llm_response(_valid_raw_payload())]
+        )
+
+        first = generate_and_persist_candidate(fake, provider, request)
+        second = generate_and_persist_candidate(fake, provider, request)
+
+        self.assertFalse(first.deduplicated)
+        self.assertTrue(second.deduplicated)
+        self.assertEqual(first.candidate_id, second.candidate_id)
+        self.assertEqual(len(fake.tables["question_candidates"]), 1)
+
+    def test_audit_enqueue_carries_immutable_candidate_snapshot(self):
+        request = _make_scc_request(domain="Data Management")
+        fake = self._fake_with_scc_domain(request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        result = generate_and_persist_candidate(fake, provider, request)
+
+        det_call, llm_call = fake.calls_for("enqueue_background_job_v1")
+        self.assertEqual(
+            det_call["params"]["p_payload"]["target_candidate_id"],
+            result.candidate_id,
+        )
+        self.assertEqual(
+            det_call["params"]["p_payload"]["question"],
+            result.question_snapshot,
+        )
+        self.assertEqual(
+            llm_call["params"]["p_payload"]["question"],
+            result.question_snapshot,
+        )
+        self.assertEqual(
+            result.question_snapshot["certification_exam_name"],
+            SCC_EXAM_NAME,
+        )
+        self.assertEqual(result.question_snapshot["domain"], request.domain)
+
+    def test_administrator_generation_unchanged_after_scc_registration(self):
+        request = _make_request()
+        fake = FakeSupabase()
+        _seed_domain(fake, request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        result = generate_and_persist_candidate(fake, provider, request)
+
+        provenance = fake.tables["question_candidates"][0]["candidate_payload"]["provenance"]
+        self.assertNotIn("evidence_config_id", provenance["source_evidence"])
+        self.assertFalse(result.deduplicated)
+
+    def test_business_analyst_generation_unchanged_after_scc_registration(self):
+        request = _make_ba_request(domain="User Stories")
+        fake = FakeSupabase()
+        _seed_ba_domain(fake, request)
+        provider = FakeLlmProvider(response=_llm_response(_valid_raw_payload()))
+
+        result = generate_and_persist_candidate(fake, provider, request)
+
+        provenance = fake.tables["question_candidates"][0]["candidate_payload"]["provenance"]
+        self.assertEqual(
+            provenance["source_evidence"]["evidence_config_id"],
+            BA_EVIDENCE_CONFIG_ID,
+        )
+        self.assertFalse(result.deduplicated)
+
+    def test_platform_app_builder_generation_unchanged_after_scc_registration(self):
         request = _make_pab_request(domain="App Deployment")
         fake = FakeSupabase()
         _seed_pab_domain(fake, request)

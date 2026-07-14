@@ -874,6 +874,7 @@ def validate_fixture_payload(payload: Mapping[str, Any]) -> None:
 EVIDENCE_CONFIG_ID_BY_CERTIFICATION: Dict[str, str] = {
     PAB_EXAM_NAME: PAB_EVIDENCE_CONFIG_ID,
     BA_EXAM_NAME: BA_EVIDENCE_CONFIG_ID,
+    SCC_EXAM_NAME: SCC_EVIDENCE_CONFIG_ID,
 }
 
 
@@ -883,8 +884,9 @@ def resolve_evidence_config_id_for_certification(
     """Return the frozen evidence_config_id for certifications that require one.
 
     Platform App Builder returns ``official_evidence_pab_v1``. Business Analyst
-    returns ``official_evidence_ba_v1``. Administrator returns ``None`` --
-    its generation callers may supply free-form ``source_evidence`` without an
+    returns ``official_evidence_ba_v1``. Sales Cloud Consultant returns
+    ``official_evidence_scc_v1``. Administrator returns ``None`` -- its
+    generation callers may supply free-form ``source_evidence`` without an
     enforced config id, preserving historical behavior.
     """
     from workers.certification_registry import validate_supported_certification_exam_name
@@ -903,6 +905,8 @@ def prepare_generation_source_evidence(
     ``official_evidence_pab_v1`` (injecting when absent, rejecting when wrong).
     For Business Analyst, ``evidence_config_id`` is always set to
     ``official_evidence_ba_v1`` (injecting when absent, rejecting when wrong).
+    For Sales Cloud Consultant, ``evidence_config_id`` is always set to
+    ``official_evidence_scc_v1`` (injecting when absent, rejecting when wrong).
     For Administrator, ``source_evidence`` is returned unchanged so the
     historical ADM fixture identity is never mutated.
     """
