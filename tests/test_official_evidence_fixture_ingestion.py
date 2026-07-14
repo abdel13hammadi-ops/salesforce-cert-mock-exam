@@ -148,16 +148,20 @@ def _sanitize_pgserver_sql(sql: str) -> str:
     return sql
 
 
-def _patch_ingest_rpc_for_pgserver(sql: str) -> str:
-    return sql.replace(
-        "FROM   public.resource_chunks\n        WHERE  resource_version_id = v_version_id",
-        "FROM   public.resource_chunks rc\n        WHERE  rc.resource_version_id = v_version_id",
-    )
-
-
 def bootstrap_fixture_ingestion_schema(conn) -> None:
-    ingest_sql = _patch_ingest_rpc_for_pgserver(
+    """Apply the real migration sequence: the original (still-ambiguous) V44
+    ingest_resource_version_v1 migration, followed by the PAB-EXP-04H
+    CREATE OR REPLACE corrective migration. This proves the *actual*
+    committed migration file fixes SQLSTATE 42702 -- it is no longer
+    patched around in Python string substitution here.
+    """
+    original_ingest_sql = _substitute_uuid_sql(
         _read_migration("20260623234600_v44_ingest_resource_version_rpc.sql")
+    )
+    fixed_ingest_sql = _substitute_uuid_sql(
+        _read_migration(
+            "20260713230000_v62_fix_ingest_resource_version_idempotency_ambiguity.sql"
+        )
     )
     parts = [
         _sanitize_pgserver_sql(
@@ -165,7 +169,8 @@ def bootstrap_fixture_ingestion_schema(conn) -> None:
                 _read_migration("20260623233800_v44_resource_library_foundation.sql")
             )
         ),
-        _sanitize_pgserver_sql(_substitute_uuid_sql(ingest_sql)),
+        _sanitize_pgserver_sql(original_ingest_sql),
+        _sanitize_pgserver_sql(fixed_ingest_sql),
         _MINIMAL_QUESTION_DDL,
     ]
     v48 = _read_migration("20260630130000_v48_ai_quality_audit_rpcs.sql")
@@ -338,6 +343,258 @@ class PgserverFixtureIngestionTestCase(unittest.TestCase):
         return qvid
 
 
+@unittest.skipUnless(_pgserver_available(), "pgserver/psycopg2 unavailable")
+class TestIngestResourceVersionRpcIdempotency(PgserverFixtureIngestionTestCase):
+    """PAB-EXP-04H: direct RPC-level regression tests for the
+    ingest_resource_version_v1 idempotency-branch fix, run against the real
+    migration sequence (original V44 migration + the new corrective
+    migration) applied by bootstrap_fixture_ingestion_schema(). These are
+    independent of the PAB fixture package -- they exercise the RPC itself
+    with a synthetic resource.
+    """
+
+    def _seed_standalone_resource(self, *, certification: str = PAB_EXAM_NAME) -> str:
+        resource_id = str(uuid.uuid4())
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.official_resources (
+                    id, certification_exam_name, resource_type, title,
+                    metadata, is_active, created_by
+                ) VALUES (%s, %s, 'official_documentation', %s, %s::jsonb, true, 'rpc-idempotency-test')
+                """,
+                (
+                    resource_id,
+                    certification,
+                    "RPC Idempotency Test Resource",
+                    json.dumps({"domain": "Salesforce Fundamentals"}),
+                ),
+            )
+        return resource_id
+
+    def _call_ingest_rpc(
+        self,
+        *,
+        resource_id: str,
+        content_text: str,
+        content_hash: str,
+        chunks: list,
+        created_by: str = "rpc-idempotency-test",
+    ) -> dict:
+        params = {
+            "p_resource_id": resource_id,
+            "p_source_url": None,
+            "p_source_external_version": None,
+            "p_content_text": content_text,
+            "p_content_hash": content_hash,
+            "p_effective_at": None,
+            "p_created_by": created_by,
+            "p_metadata": {},
+            "p_chunks": chunks,
+        }
+        result = self.client.rpc("ingest_resource_version_v1", params).execute()
+        self.assertIsNone(result.error)
+        self.assertEqual(len(result.data), 1)
+        return result.data[0]
+
+    def _one_chunk(self, *, text: str, content_hash: str) -> list:
+        return [
+            {
+                "chunk_index": 0,
+                "chunk_text": text,
+                "content_hash": content_hash,
+            }
+        ]
+
+    def test_first_ingestion_creates_one_version_and_expected_chunks(self):
+        resource_id = self._seed_standalone_resource()
+        row = self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="First ingestion content.",
+            content_hash="aa" * 32,
+            chunks=self._one_chunk(text="First ingestion content.", content_hash="aa" * 32),
+        )
+        self.assertEqual(row["version_number"], 1)
+        self.assertEqual(row["chunk_count"], 1)
+        self.assertEqual(
+            self._count_table("resource_versions", certification=PAB_EXAM_NAME), 1
+        )
+        self.assertEqual(
+            self._count_table("resource_chunks", certification=PAB_EXAM_NAME), 1
+        )
+
+    def test_second_identical_call_succeeds(self):
+        resource_id = self._seed_standalone_resource()
+        content_hash = "bb" * 32
+        chunks = self._one_chunk(text="Idempotent content.", content_hash=content_hash)
+        self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Idempotent content.",
+            content_hash=content_hash,
+            chunks=chunks,
+        )
+        # Must not raise psycopg2.errors.AmbiguousColumn (SQLSTATE 42702).
+        second = self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Idempotent content.",
+            content_hash=content_hash,
+            chunks=chunks,
+        )
+        self.assertIsNotNone(second)
+
+    def test_second_call_returns_original_version_id(self):
+        resource_id = self._seed_standalone_resource()
+        content_hash = "cc" * 32
+        chunks = self._one_chunk(text="Same content twice.", content_hash=content_hash)
+        first = self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Same content twice.",
+            content_hash=content_hash,
+            chunks=chunks,
+        )
+        second = self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Same content twice.",
+            content_hash=content_hash,
+            chunks=chunks,
+        )
+        self.assertEqual(str(second["resource_version_id"]), str(first["resource_version_id"]))
+        self.assertEqual(second["version_number"], first["version_number"])
+
+    def test_second_call_returns_existing_chunk_count(self):
+        resource_id = self._seed_standalone_resource()
+        content_hash = "dd" * 32
+        chunks = [
+            {"chunk_index": 0, "chunk_text": "Chunk zero.", "content_hash": "d0" * 32},
+            {"chunk_index": 1, "chunk_text": "Chunk one.", "content_hash": "d1" * 32},
+        ]
+        first = self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Two-chunk content.",
+            content_hash=content_hash,
+            chunks=chunks,
+        )
+        second = self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Two-chunk content.",
+            content_hash=content_hash,
+            chunks=chunks,
+        )
+        self.assertEqual(first["chunk_count"], 2)
+        self.assertEqual(second["chunk_count"], 2)
+
+    def test_no_second_version_row_created_on_idempotent_rerun(self):
+        resource_id = self._seed_standalone_resource()
+        content_hash = "ee" * 32
+        chunks = self._one_chunk(text="Version row check.", content_hash=content_hash)
+        self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Version row check.",
+            content_hash=content_hash,
+            chunks=chunks,
+        )
+        self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Version row check.",
+            content_hash=content_hash,
+            chunks=chunks,
+        )
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.resource_versions WHERE resource_id = %s",
+                (resource_id,),
+            )
+            self.assertEqual(cur.fetchone()[0], 1)
+
+    def test_no_additional_chunk_rows_created_on_idempotent_rerun(self):
+        resource_id = self._seed_standalone_resource()
+        content_hash = "ff" * 32
+        chunks = [
+            {"chunk_index": 0, "chunk_text": "Chunk A.", "content_hash": "f0" * 32},
+            {"chunk_index": 1, "chunk_text": "Chunk B.", "content_hash": "f1" * 32},
+            {"chunk_index": 2, "chunk_text": "Chunk C.", "content_hash": "f2" * 32},
+        ]
+        row1 = self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Three-chunk content.",
+            content_hash=content_hash,
+            chunks=chunks,
+        )
+        self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Three-chunk content.",
+            content_hash=content_hash,
+            chunks=chunks,
+        )
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.resource_chunks WHERE resource_version_id = %s",
+                (row1["resource_version_id"],),
+            )
+            self.assertEqual(cur.fetchone()[0], 3)
+
+    def test_new_content_hash_creates_next_version_normally(self):
+        resource_id = self._seed_standalone_resource()
+        first = self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Version one content.",
+            content_hash="11" * 32,
+            chunks=self._one_chunk(text="Version one content.", content_hash="11" * 32),
+        )
+        second = self._call_ingest_rpc(
+            resource_id=resource_id,
+            content_text="Version two content.",
+            content_hash="22" * 32,
+            chunks=self._one_chunk(text="Version two content.", content_hash="22" * 32),
+        )
+        self.assertEqual(first["version_number"], 1)
+        self.assertEqual(second["version_number"], 2)
+        self.assertNotEqual(
+            str(first["resource_version_id"]), str(second["resource_version_id"])
+        )
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.resource_versions WHERE resource_id = %s",
+                (resource_id,),
+            )
+            self.assertEqual(cur.fetchone()[0], 2)
+
+    def test_existing_invalid_payload_validation_unchanged(self):
+        resource_id = self._seed_standalone_resource()
+        params = {
+            "p_resource_id": resource_id,
+            "p_source_url": None,
+            "p_source_external_version": None,
+            "p_content_text": "",  # invalid: empty content_text
+            "p_content_hash": "33" * 32,
+            "p_effective_at": None,
+            "p_created_by": "rpc-idempotency-test",
+            "p_metadata": {},
+            "p_chunks": [],
+        }
+        with self.assertRaises(Exception) as ctx:
+            self.client.conn.cursor().execute(
+                "SELECT * FROM public.ingest_resource_version_v1("
+                "p_resource_id => %s, p_source_url => %s, "
+                "p_source_external_version => %s, p_content_text => %s, "
+                "p_content_hash => %s, p_effective_at => %s, "
+                "p_created_by => %s, p_metadata => %s::jsonb, p_chunks => %s::jsonb)",
+                (
+                    params["p_resource_id"],
+                    params["p_source_url"],
+                    params["p_source_external_version"],
+                    params["p_content_text"],
+                    params["p_content_hash"],
+                    params["p_effective_at"],
+                    params["p_created_by"],
+                    json.dumps(params["p_metadata"]),
+                    json.dumps(params["p_chunks"]),
+                ),
+            )
+        self.assertIn("p_content_text", str(ctx.exception))
+        self.conn.rollback()
+
+
 class TestPabFixtureValidation(unittest.TestCase):
     def test_pab_fixture_validation_passes(self):
         payload, fixture_version, package_config = load_fixture_for_ingestion(
@@ -387,9 +644,14 @@ class TestPabFixtureIngestion(PgserverFixtureIngestionTestCase):
         first = self._ingest_pab()
         second = self._ingest_pab()
         self.assertEqual(first.item_count, 7)
+        self.assertEqual(first.resources_created, 7)
+        self.assertEqual(first.versions_created, 7)
         self.assertEqual(second.item_count, 7)
-        self.assertEqual(second.versions_idempotent, 7)
+        # PAB-EXP-04H acceptance criterion: exact rerun disposition.
+        self.assertEqual(second.resources_created, 0)
+        self.assertEqual(second.resources_existing, 7)
         self.assertEqual(second.versions_created, 0)
+        self.assertEqual(second.versions_idempotent, 7)
         self.assertEqual(second.chunks_created, 0)
         self.assertEqual(self._count_table("official_resources", certification=PAB_EXAM_NAME), 7)
         self.assertEqual(self._count_table("resource_versions", certification=PAB_EXAM_NAME), 7)
