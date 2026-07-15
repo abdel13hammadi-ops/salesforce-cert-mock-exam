@@ -2,6 +2,7 @@
 streamlit
 streamlit-autorefresh
 pandas
+plotly==5.24.1
 psycopg2-binary
 sqlalchemy
 supabase

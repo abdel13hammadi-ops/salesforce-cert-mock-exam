@@ -20,13 +20,28 @@ from utils.access_control import (
 )
 from utils.datetime_display import DEFAULT_DISPLAY_TIMEZONE, format_user_datetime
 from utils.learner_analytics import (
+    build_activity_history_display_rows,
     build_all_activity_score_summary,
     build_readiness_display_contract,
+    build_study_activity_summary,
     build_verified_domain_performance,
     build_verified_mock_performance,
     filter_question_attempts_for_attempts,
     filter_readiness_attempts,
     rank_weak_domains,
+)
+from utils.dashboard_components import (
+    build_mock_exam_href,
+    inject_certbound_theme,
+    render_activity_history,
+    render_cert_context_header,
+    render_domain_mastery_section,
+    render_empty_state,
+    render_readiness_hero,
+    render_score_trend_section,
+    render_study_activity_section,
+    render_verified_kpi_row,
+    render_weak_area_action_panel,
 )
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.version import APP_VERSION
@@ -501,6 +516,7 @@ def render_locked_premium_cards() -> None:
 
 
 def render_logged_in_dashboard(email: str) -> None:
+    inject_certbound_theme()
     profile = get_user_profile(email) or {}
     access_level = get_user_access_level(email)
     subscription_status = safe_lower(profile.get("subscription_status") or st.session_state.get("subscription_status"), "free")
@@ -588,10 +604,12 @@ def render_logged_in_dashboard(email: str) -> None:
         render_session_page_link("pages/My_Progress.py", label="My Progress", icon="📈")
 
     st.divider()
-    st.subheader("Current status")
     expected_question_count = safe_int(cert.get("question_count"), 60) or 60
     passing_score = safe_float(cert.get("passing_score"), 72 if "Business Analyst" in selected_exam else 68)
     domain_weights = fetch_domain_weights(selected_exam)
+    session_token = safe_str(st.query_params.get("fr_session", ""))
+    mock_exam_href = build_mock_exam_href(session_token)
+
     verified_performance = build_verified_mock_performance(
         attempts,
         question_attempts,
@@ -607,60 +625,19 @@ def render_logged_in_dashboard(email: str) -> None:
         passing_threshold=passing_score,
     )
     domain_df = verified_domain_rows_to_dataframe(verified_domain_rows)
+    study_activity = build_study_activity_summary(attempts, window_days=30)
+    weak_domain_rows = rank_weak_domains(verified_domain_rows, limit=5)
+    priority_weak_domain = weak_domain_rows[0] if weak_domain_rows else None
 
-    st.caption(
-        "Verified scores use full paid mocks with saved question-level evidence. "
-        "All-activity score includes every saved attempt mode."
+    render_cert_context_header(
+        title=display_by_exam.get(selected_exam, selected_exam),
+        subtitle="Executive learner overview for your current certification focus.",
+        passing_score=passing_score,
+        access_label=access_level.title(),
     )
-    s1, s2, s3, s4 = st.columns(4)
-    if verified_performance.has_verified_mocks:
-        s1.metric("Latest Score", f"{verified_performance.latest_score}%")
-        s2.metric("Average Score", f"{verified_performance.average_score}%")
-        s3.metric("Best Score", f"{verified_performance.best_score}%")
-    else:
-        s1.metric("Latest Score", "No verified mocks")
-        s2.metric("Average Score", "No verified mocks")
-        s3.metric("Best Score", "No verified mocks")
-    s4.metric("All Exam Attempts", len(attempts))
 
-    if all_activity_scores.has_attempts:
-        st.metric(
-            "All-activity Average Score",
-            f"{all_activity_scores.average_score}%",
-        )
-
-    h1, h2, h3 = st.columns(3)
-    h1.metric("Approved Questions", question_health.get("approved_questions", 0))
-    h2.metric("Free Preview Questions", question_health.get("free_questions", 0))
-    h3.metric("Domains Covered", question_health.get("domains", 0))
-
-    practice_domain_counts = fetch_practice_domain_counts(selected_exam, preferred_language)
-    if calculate_readiness is not None:
-        daily_domain_weights = domain_weights
-        daily_passing_score = passing_score
-        daily_expected_question_count = expected_question_count
-        daily_readiness_attempts = filter_readiness_attempts(attempts, daily_expected_question_count)
-        daily_readiness_question_attempts = filter_question_attempts_for_attempts(question_attempts, daily_readiness_attempts)
-        daily_readiness = calculate_readiness(
-            attempts=daily_readiness_attempts,
-            passing_score=daily_passing_score,
-            domain_weights=daily_domain_weights,
-            expected_question_count=daily_expected_question_count,
-            question_bank_total=safe_int(question_health.get("approved_questions"), 0),
-            question_attempts=daily_readiness_question_attempts,
-            time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
-            captured_bank_size=extract_captured_bank_size(daily_readiness_attempts) if extract_captured_bank_size else None,
-        )
-        daily_sprint_domain = resolve_daily_sprint_domain(daily_readiness, domain_df, practice_domain_counts)
-        render_daily_sprint_card(selected_exam, daily_sprint_domain, premium)
-
-    if not attempts:
-        st.warning("No attempt data for this certification yet. Start with the mock exam. Dashboard intelligence stays weak until attempts exist.")
-        if not premium:
-            render_locked_premium_cards()
-        return
-
-    st.divider()
+    readiness = None
+    readiness_display = None
     if calculate_readiness is not None:
         readiness_attempts = filter_readiness_attempts(attempts, expected_question_count)
         readiness_question_attempts = filter_question_attempts_for_attempts(question_attempts, readiness_attempts)
@@ -675,86 +652,69 @@ def render_logged_in_dashboard(email: str) -> None:
             captured_bank_size=extract_captured_bank_size(readiness_attempts) if extract_captured_bank_size else None,
         )
         readiness_display = build_readiness_display_contract(readiness)
-        if readiness_display.is_locked:
-            render_readiness_locked(
-                readiness_display.completed_verified_mock_count,
-                readiness_display.required_mock_count,
-            )
-            r1, r2, r3 = st.columns(3)
-            r1.metric(
-                "Full Mocks Completed",
-                f"{readiness_display.completed_verified_mock_count} / {readiness_display.required_mock_count}",
-            )
-            r2.metric("Unique Questions Seen", safe_int(readiness.get("unique_questions_seen"), 0))
-            r3.metric(
-                "Estimate Confidence",
-                f"{readiness_display.confidence_score:.0f}% — {readiness_display.confidence_label}",
-            )
-            st.info(readiness_methodology_text())
-        else:
-            # Primary row
-            r1, r2, r3, r4 = st.columns(4)
-            r1.metric("Readiness", f"{round(readiness_display.readiness_score or 0.0, 2)}%")
-            r2.metric("Status", readiness_display.readiness_label)
-            r3.metric(
-                "Estimate Confidence",
-                f"{readiness_display.confidence_score:.0f}% — {readiness_display.confidence_label}",
-            )
-            r4.metric("Recent Mock Accuracy", f"{safe_float(readiness.get('recent_accuracy'), 0):.2f}%")
-
-            # Diagnostics row
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Domain Robustness", f"{safe_float(readiness.get('domain_robustness'), 0):.2f}%")
-            c2.metric("Trend", readiness_display.score_trend_indicator)
-            c3.metric("Consistency (SD)", f"±{safe_float(readiness.get('consistency_standard_deviation'), 0):.1f}pts")
-            c4.metric("Pacing", safe_str(readiness.get("pacing_status"), "Insufficient Timing Data"))
-
-            st.caption(
-                "Confidence measures how well-supported the estimate is. "
-                "It is not your probability of passing."
-            )
-            st.info(readiness_display.recommended_next_action)
-
-    st.subheader("Weakest domains")
-    weak_domain_rows = rank_weak_domains(verified_domain_rows, limit=5)
-    if not weak_domain_rows:
-        st.warning(
-            "No verified mock domain evidence yet. Complete a full paid mock exam with saved "
-            "question-level results to see verified weak domains."
+        render_readiness_hero(
+            readiness_display,
+            readiness,
+            variant="compact",
+            mock_exam_href=mock_exam_href,
         )
     else:
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Domain": row.get("Domain"),
-                        "Correct": row.get("Correct"),
-                        "Total": row.get("Total"),
-                        "Accuracy %": row.get("Accuracy %"),
-                    }
-                    for row in weak_domain_rows
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
+        render_empty_state(
+            "Readiness unavailable",
+            "Readiness analytics are temporarily unavailable. You can still review verified mock performance below.",
         )
-        weakest = weak_domain_rows[0]
-        st.warning(f"Highest-risk domain: {weakest['Domain']} ({weakest['Accuracy %']}%)")
 
-    st.subheader("Recent attempts")
-    rows = []
-    for attempt in attempts[:5]:
-        rows.append(
-            {
-                "Completed": format_user_datetime(attempt.get("completed_at") or attempt.get("started_at"), preferred_timezone),
-                "Mode": attempt.get("mode"),
-                "Score %": attempt.get("score"),
-                "Correct": attempt_correct_count(attempt),
-                "Total": attempt.get("total_questions"),
-                "Language": attempt.get("language_code"),
-            }
+    st.subheader("Verified mock performance")
+    if verified_performance.has_verified_mocks:
+        render_verified_kpi_row(
+            verified_performance,
+            all_activity_average=all_activity_scores.average_score if all_activity_scores.has_attempts else None,
         )
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        render_empty_state(
+            "No verified mocks yet",
+            "Complete a full paid mock exam with saved question-level results to unlock verified KPIs.",
+            action_label="Start mock exam",
+            action_href=mock_exam_href,
+        )
+
+    st.subheader("Verified score trend")
+    render_score_trend_section(verified_performance, compact=True, chart_key="dashboard_score_trend")
+
+    st.subheader("Priority weak area")
+    render_weak_area_action_panel(
+        priority_weak_domain,
+        exam_name=selected_exam,
+        session_token=session_token,
+        compact=True,
+    )
+
+    practice_domain_counts = fetch_practice_domain_counts(selected_exam, preferred_language)
+    if calculate_readiness is not None and readiness is not None:
+        daily_sprint_domain = resolve_daily_sprint_domain(readiness, domain_df, practice_domain_counts)
+        render_daily_sprint_card(selected_exam, daily_sprint_domain, premium)
+
+    st.subheader("Domain mastery summary")
+    render_domain_mastery_section(verified_domain_rows, compact=True, limit=5, chart_key="dashboard_domain_mastery")
+
+    st.subheader("Study activity")
+    render_study_activity_section(study_activity, compact=True, chart_key="dashboard_study_activity")
+
+    if not attempts:
+        if not premium:
+            render_locked_premium_cards()
+        return
+
+    st.subheader("Recent activity")
+    recent_history = build_activity_history_display_rows(
+        attempts[:5],
+        format_datetime=lambda value: format_user_datetime(value, preferred_timezone),
+        get_correct_count=attempt_correct_count,
+    )
+    render_activity_history(recent_history, compact=True)
+
+    if readiness_display and readiness_display.is_locked and calculate_readiness is not None:
+        st.caption(readiness_methodology_text())
 
     if not premium:
         render_locked_premium_cards()

@@ -327,7 +327,7 @@ class TestSharedPageIntegration(unittest.TestCase):
             self.assertIn(call, progress_source)
 
         self.assertIn("build_verified_mock_performance", dashboard_source)
-        self.assertIn("build_verified_mock_performance_metrics", progress_source)
+        self.assertIn("build_verified_mock_performance", progress_source)
 
     def test_metrics_dict_remains_compatible(self):
         attempts = [

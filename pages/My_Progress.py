@@ -18,11 +18,26 @@ from utils.readiness import (
 from utils.learner_analytics import (
     build_activity_history_display_rows,
     build_readiness_display_contract,
+    build_study_activity_summary,
     build_verified_domain_performance,
-    build_verified_mock_performance_metrics,
+    build_verified_mock_performance,
     filter_question_attempts_for_attempts,
     filter_readiness_attempts,
     select_weakest_verified_domain,
+)
+from utils.dashboard_components import (
+    build_mock_exam_href,
+    inject_certbound_theme,
+    render_activity_history,
+    render_cert_context_header,
+    render_data_failure_state,
+    render_domain_mastery_section,
+    render_empty_state,
+    render_readiness_hero,
+    render_score_trend_section,
+    render_study_activity_section,
+    render_verified_kpi_row,
+    render_weak_area_action_panel,
 )
 from utils.readiness_persistence import extract_captured_bank_size
 from utils.datetime_display import DEFAULT_DISPLAY_TIMEZONE, format_user_datetime
@@ -405,6 +420,7 @@ def render_locked_progress_preview(user_email: str, subscription_status: str) ->
 
 st.title("My Progress")
 st.caption(f"App Version: {APP_VERSION}")
+inject_certbound_theme()
 
 user_email = get_current_user_email()
 if not user_email:
@@ -461,13 +477,16 @@ with st.expander("Progress query diagnostics", expanded=False):
         st.write("Database query status: unavailable")
 
 if query_error or question_attempt_error:
-    st.error(PROGRESS_LOAD_ERROR_MESSAGE)
+    render_data_failure_state()
     st.stop()
 
 if not attempts:
-    st.info("No exam attempts found for this certification yet. Complete a mock exam first.")
-    st.header("Overall Readiness")
-    st.warning("No readiness score yet. Complete at least one full mock exam to generate a readiness estimate.")
+    render_empty_state(
+        "No activity yet",
+        "Complete your first mock exam to start building verified readiness and progress analytics.",
+        action_label="Start mock exam",
+        action_href=build_mock_exam_href(str(st.query_params.get("fr_session", "")).strip()),
+    )
     st.info(readiness_methodology_text())
     st.stop()
 
@@ -491,63 +510,12 @@ readiness = calculate_readiness(
 )
 
 readiness_display = build_readiness_display_contract(readiness)
-
-if readiness_display.is_locked:
-    render_readiness_locked(
-        readiness_display.completed_verified_mock_count,
-        readiness_display.required_mock_count,
-    )
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric(
-        "Full Mocks Completed",
-        f"{readiness_display.completed_verified_mock_count} / {readiness_display.required_mock_count}",
-    )
-    m2.metric("Mocks Remaining", readiness_display.remaining_mock_count)
-    m3.metric("Unique Questions Seen", _safe_int(readiness.get("unique_questions_seen"), 0))
-    m4.metric(
-        "Estimate Confidence",
-        f"{readiness_display.confidence_score:.0f}% — {readiness_display.confidence_label}",
-    )
-    st.caption(
-        "Confidence measures how well-supported the estimate is. "
-        "It is not your probability of passing."
-    )
-    st.info(readiness_methodology_text())
-else:
-    render_readiness_card(readiness_display, readiness, passing_score, selected_exam)
-
-st.divider()
-st.header(VERIFIED_MOCK_PERFORMANCE_HEADER)
-mock_performance = build_verified_mock_performance_metrics(
+verified_performance = build_verified_mock_performance(
     attempts,
     question_attempts,
     expected_question_count,
     passing_threshold=passing_score,
 )
-if not mock_performance["has_verified_mocks"]:
-    st.info(VERIFIED_MOCK_PERFORMANCE_EMPTY_MESSAGE)
-else:
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Latest Score", f"{mock_performance['latest_score']}%")
-    c2.metric("Average Score", f"{mock_performance['average_score']}%")
-    c3.metric("Best Score", f"{mock_performance['best_score']}%")
-    c4.metric("Verified Mocks", mock_performance["verified_mock_count"])
-
-    trend_rows = []
-    for attempt in mock_performance["trend_attempts"]:
-        trend_rows.append(
-            {
-                "Completed": format_user_datetime(attempt.get("completed_at") or attempt.get("started_at"), preferred_timezone),
-                "Score": _safe_float(attempt.get("score"), 0.0),
-            }
-        )
-    if trend_rows:
-        st.subheader("Score Trend")
-        trend_df = pd.DataFrame(trend_rows)
-        st.line_chart(trend_df.set_index("Completed"))
-
-st.divider()
-st.header("Weak Areas by Domain")
 domain_rows = build_verified_domain_performance(
     attempts,
     question_attempts,
@@ -555,27 +523,86 @@ domain_rows = build_verified_domain_performance(
     domain_weights=domain_weights,
     passing_threshold=passing_score,
 )
-if not domain_rows:
-    st.info(VERIFIED_DOMAIN_EMPTY_MESSAGE)
-else:
-    domain_df = pd.DataFrame(
-        [
-            {
-                "Domain": row["Domain"],
-                "Correct": row["Correct"],
-                "Total": row["Total"],
-                "Accuracy %": row["Accuracy %"],
-            }
-            for row in domain_rows
-        ]
+study_activity = build_study_activity_summary(attempts, window_days=30)
+session_token = str(st.query_params.get("fr_session", "")).strip()
+priority_weak_domain = select_weakest_verified_domain(domain_rows)
+
+render_cert_context_header(
+    title=display_by_exam.get(selected_exam, selected_exam),
+    subtitle="Detailed analytics for verified mock performance, domain mastery, and study activity.",
+    passing_score=passing_score,
+    access_label=subscription_status.title(),
+)
+
+render_readiness_hero(
+    readiness_display,
+    readiness,
+    variant="detailed",
+    mock_exam_href=build_mock_exam_href(session_token),
+)
+
+if readiness_display.is_locked:
+    st.caption(
+        "Confidence measures how well-supported the estimate is. "
+        "It is not your probability of passing."
     )
-    st.dataframe(domain_df, use_container_width=True, hide_index=True)
-    st.bar_chart(domain_df.set_index("Domain")["Accuracy %"])
-    weakest = select_weakest_verified_domain(domain_rows)
-    if weakest is not None:
-        st.info(f"Weakest domain: {weakest['Domain']} ({weakest['Accuracy %']}%)")
+    st.info(readiness_methodology_text())
+else:
+    st.subheader("Readiness diagnostics")
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Domain Robustness", f"{_safe_float(readiness.get('domain_robustness'), 0):.2f}%")
+    d2.metric("Recent Mock Accuracy", f"{_safe_float(readiness.get('recent_accuracy', readiness.get('accuracy_score')), 0):.2f}%")
+    d3.metric("Question Data Completeness", f"{_safe_float(readiness.get('question_attempt_completeness'), 0) * 100:.0f}%")
+    d4.metric("Coverage", f"{_safe_float(readiness.get('coverage_percent'), 0):.1f}%")
+    weak = readiness.get("weak_domains") or []
+    strong = readiness.get("strong_domains") or []
+    cols = st.columns(2)
+    with cols[0]:
+        st.markdown("**Highest-risk areas**")
+        if weak:
+            for item in weak:
+                st.write(f"- {item}")
+        else:
+            st.write("No domain-risk signal yet.")
+    with cols[1]:
+        st.markdown("**Strongest areas**")
+        if strong:
+            for item in strong:
+                st.write(f"- {item}")
+        else:
+            st.write("No strength signal yet.")
+    st.info(readiness_methodology_text())
+
+st.divider()
+st.header(VERIFIED_MOCK_PERFORMANCE_HEADER)
+if verified_performance.has_verified_mocks:
+    render_verified_kpi_row(verified_performance)
+else:
+    render_empty_state(
+        "No verified mock performance yet",
+        VERIFIED_MOCK_PERFORMANCE_EMPTY_MESSAGE,
+        action_label="Start mock exam",
+        action_href=build_mock_exam_href(session_token),
+    )
+
+st.subheader("Verified score trend")
+render_score_trend_section(verified_performance, compact=False, chart_key="progress_score_trend")
+
+st.divider()
+st.header("Weak Areas by Domain")
+render_weak_area_action_panel(
+    priority_weak_domain,
+    exam_name=selected_exam,
+    session_token=session_token,
+    compact=False,
+)
+render_domain_mastery_section(domain_rows, compact=False, chart_key="progress_domain_mastery")
+
+st.divider()
+st.header("Study activity")
+render_study_activity_section(study_activity, compact=False, chart_key="progress_study_activity")
 
 st.divider()
 st.header("Attempt History")
 history_rows = build_attempt_history_rows(attempts, preferred_timezone)
-st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)
+render_activity_history(history_rows, compact=False)
