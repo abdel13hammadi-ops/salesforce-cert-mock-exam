@@ -19,9 +19,11 @@ from workers.certification_registry import (
     BA_EXAM_NAME,
     PAB_EXAM_NAME,
     SCC_EXAM_NAME,
+    SVC_EXAM_NAME,
     get_certification_definition,
     get_platform_app_builder_definition,
     get_sales_cloud_consultant_definition,
+    get_service_cloud_consultant_definition,
 )
 from workers.official_evidence_seed import (
     ADM_EXAM_NAME,
@@ -33,6 +35,8 @@ from workers.official_evidence_seed import (
     PAB_FIXTURE_VERSION,
     SCC_EVIDENCE_CONFIG_ID,
     SCC_FIXTURE_VERSION,
+    SVC_EVIDENCE_CONFIG_ID,
+    SVC_FIXTURE_VERSION,
     OfficialEvidenceSeedError,
     OfficialEvidenceSeedOutputError,
     _dedupe_items,
@@ -425,6 +429,12 @@ class TestExportedFixtureFile(unittest.TestCase):
             "official-evidence-seed-v1 must remain ADM/BA only; Sales Cloud "
             "Consultant evidence belongs exclusively in official-evidence-scc-v1.",
         )
+        self.assertNotIn(
+            SVC_EXAM_NAME,
+            certs,
+            "official-evidence-seed-v1 must remain ADM/BA only; Service Cloud "
+            "Consultant evidence belongs exclusively in official-evidence-svc-v1.",
+        )
 
 
 class TestEvidenceIdentityRouting(unittest.TestCase):
@@ -459,6 +469,16 @@ class TestEvidenceIdentityRouting(unittest.TestCase):
         self.assertNotEqual(SCC_FIXTURE_VERSION, BA_FIXTURE_VERSION)
         self.assertNotEqual(SCC_FIXTURE_VERSION, PAB_FIXTURE_VERSION)
 
+    def test_svc_resolves_to_isolated_identity(self):
+        self.assertEqual(
+            resolve_evidence_identity_for_certification(SVC_EXAM_NAME),
+            SVC_FIXTURE_VERSION,
+        )
+        self.assertNotEqual(SVC_FIXTURE_VERSION, FIXTURE_VERSION)
+        self.assertNotEqual(SVC_FIXTURE_VERSION, BA_FIXTURE_VERSION)
+        self.assertNotEqual(SVC_FIXTURE_VERSION, PAB_FIXTURE_VERSION)
+        self.assertNotEqual(SVC_FIXTURE_VERSION, SCC_FIXTURE_VERSION)
+
     def test_unknown_certification_raises_with_no_fallback(self):
         with self.assertRaises(OfficialEvidenceSeedError):
             resolve_evidence_identity_for_certification("Salesforce Certified Nonexistent Thing")
@@ -470,11 +490,13 @@ class TestEvidenceIdentityRouting(unittest.TestCase):
         ba_path = evidence_fixture_path_for_certification(BA_EXAM_NAME)
         pab_path = evidence_fixture_path_for_certification(PAB_EXAM_NAME)
         scc_path = evidence_fixture_path_for_certification(SCC_EXAM_NAME)
+        svc_path = evidence_fixture_path_for_certification(SVC_EXAM_NAME)
         self.assertEqual(adm_path.name, "official_evidence_seed_v1.json")
         self.assertEqual(ba_path.name, "official_evidence_ba_v1.json")
         self.assertEqual(pab_path.name, "official_evidence_pab_v1.json")
         self.assertEqual(scc_path.name, "official_evidence_scc_v1.json")
-        all_paths = [adm_path, ba_path, pab_path, scc_path]
+        self.assertEqual(svc_path.name, "official_evidence_svc_v1.json")
+        all_paths = [adm_path, ba_path, pab_path, scc_path, svc_path]
         self.assertEqual(len(all_paths), len(set(all_paths)))
 
 
@@ -780,6 +802,184 @@ class TestSalesCloudConsultantFixtureContent(unittest.TestCase):
             [c["resource_chunk_id"] for c in first["ranked_chunks"]],
             [c["resource_chunk_id"] for c in second["ranked_chunks"]],
         )
+
+
+class TestServiceCloudConsultantFixtureContent(unittest.TestCase):
+    """SVC-EXP-04: isolated Service Cloud Consultant evidence package."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture_path = (
+            Path(__file__).resolve().parents[1] / "workers" / "fixtures" / "official_evidence_svc_v1.json"
+        )
+        if not cls.fixture_path.exists():
+            raise unittest.SkipTest("official_evidence_svc_v1.json not generated yet")
+        cls.payload = json.loads(cls.fixture_path.read_text(encoding="utf-8"))
+
+    def test_fixture_identity_and_isolation_metadata(self):
+        self.assertEqual(self.payload["fixture_version"], SVC_FIXTURE_VERSION)
+        self.assertEqual(self.payload.get("evidence_config_id"), SVC_EVIDENCE_CONFIG_ID)
+        self.assertTrue(self.payload["no_synthetic_evidence"])
+        self.assertIn(FIXTURE_VERSION, self.payload.get("isolated_from", []))
+        self.assertIn(BA_FIXTURE_VERSION, self.payload.get("isolated_from", []))
+        self.assertIn(PAB_FIXTURE_VERSION, self.payload.get("isolated_from", []))
+        self.assertIn(SCC_FIXTURE_VERSION, self.payload.get("isolated_from", []))
+        self.assertNotIn("intended_use", self.payload)
+
+    def test_passes_shared_structural_validation(self):
+        validate_fixture_payload(self.payload)
+
+    def test_contains_only_service_cloud_consultant_records(self):
+        certs = {item["certification"] for item in self.payload["evidence_items"]}
+        self.assertEqual(certs, {SVC_EXAM_NAME})
+        self.assertNotIn(ADM_EXAM_NAME, certs)
+        self.assertNotIn(BA_EXAM_NAME, certs)
+        self.assertNotIn(PAB_EXAM_NAME, certs)
+        self.assertNotIn(SCC_EXAM_NAME, certs)
+
+    def test_all_eight_official_domains_have_at_least_one_record(self):
+        svc = get_service_cloud_consultant_definition()
+        expected_domains = {domain.domain_name for domain in svc.domains}
+        self.assertEqual(
+            expected_domains,
+            {
+                "Industry Knowledge",
+                "Implementation Strategies",
+                "Service Cloud Solution Design",
+                "Knowledge Management",
+                "Intake and Interaction Channels",
+                "Case Management",
+                "Contact Center Analytics",
+                "Integrations",
+            },
+        )
+        covered = {item["domain"] for item in self.payload["evidence_items"]}
+        self.assertEqual(expected_domains, covered)
+
+    def test_every_record_uses_official_salesforce_controlled_source(self):
+        allowed_prefixes = (
+            "https://trailhead.salesforce.com/",
+            "https://developer.salesforce.com/",
+        )
+        seen_urls = set()
+        for item in self.payload["evidence_items"]:
+            self.assertTrue(item["canonical_url"].startswith(allowed_prefixes))
+            self.assertEqual(item["source_url"], item["canonical_url"])
+            self.assertEqual(item["publisher"], "Salesforce, Inc.")
+            self.assertEqual(item["provenance_status"], "verified_official_resource_library")
+            self.assertEqual(item["certification_code"], "service_cloud_consultant")
+            self.assertNotIn(item["canonical_url"], seen_urls)
+            seen_urls.add(item["canonical_url"])
+
+    def test_every_record_is_compact_and_hash_aligned(self):
+        self.assertLessEqual(len(self.payload["evidence_items"]), 10)
+        seen_hashes = set()
+        seen_ids = set()
+        for item in self.payload["evidence_items"]:
+            excerpt = item["chunk_text_excerpt"]
+            self.assertEqual(item["content_hash"], sha256_hex(excerpt))
+            self.assertNotIn(excerpt, seen_hashes)
+            seen_hashes.add(excerpt)
+            self.assertNotIn(item["resource_chunk_id"], seen_ids)
+            seen_ids.add(item["resource_chunk_id"])
+            self.assertNotIn("Exam Practice Questions", excerpt)
+            self.assertNotIn("flashcard", excerpt.lower())
+
+    def test_each_domain_maps_to_exactly_one_official_domain(self):
+        valid_domains = {
+            "Industry Knowledge",
+            "Implementation Strategies",
+            "Service Cloud Solution Design",
+            "Knowledge Management",
+            "Intake and Interaction Channels",
+            "Case Management",
+            "Contact Center Analytics",
+            "Integrations",
+        }
+        for item in self.payload["evidence_items"]:
+            self.assertIn(item["domain"], valid_domains)
+            self.assertEqual(item["domain_tags"], [item["domain"]])
+
+    def test_unknown_or_misspelled_domain_is_rejected_by_registry(self):
+        from workers.certification_registry import (
+            CertificationRegistryError,
+            validate_certification_domain,
+        )
+
+        with self.assertRaises(CertificationRegistryError):
+            validate_certification_domain(SVC_EXAM_NAME, "Industry Knowledg")
+        with self.assertRaises(CertificationRegistryError):
+            validate_certification_domain(SVC_EXAM_NAME, "Nonexistent SVC Domain")
+        self.assertEqual(
+            validate_certification_domain(SVC_EXAM_NAME, "Case Management"),
+            SVC_EXAM_NAME,
+        )
+
+    def test_duplicate_chunk_ids_are_rejected_by_validator(self):
+        tampered = json.loads(json.dumps(self.payload))
+        tampered["evidence_items"][1]["resource_chunk_id"] = tampered["evidence_items"][0][
+            "resource_chunk_id"
+        ]
+        with self.assertRaises(OfficialEvidenceSeedError):
+            validate_fixture_payload(tampered)
+
+    def test_unknown_domain_yields_no_qualifying_match(self):
+        result = retrieve_official_evidence_from_fixture(
+            certification_exam_name=SVC_EXAM_NAME,
+            domain_name="Nonexistent Domain",
+            query_text="completely unrelated gibberish text xyzzy plugh",
+            fixture_payload=self.payload,
+        )
+        self.assertEqual(result["evidence_identity"], SVC_FIXTURE_VERSION)
+        self.assertEqual(result["ranked_chunks"], [])
+
+    def test_svc_retrieval_never_returns_other_certifications_chunk_ids(self):
+        adm_payload = load_evidence_fixture_for_certification(ADM_EXAM_NAME)
+        ba_payload = load_evidence_fixture_for_certification(BA_EXAM_NAME)
+        pab_payload = load_evidence_fixture_for_certification(PAB_EXAM_NAME)
+        scc_payload = load_evidence_fixture_for_certification(SCC_EXAM_NAME)
+        svc_chunk_ids = {item["resource_chunk_id"] for item in self.payload["evidence_items"]}
+        other_chunk_ids = (
+            {item["resource_chunk_id"] for item in adm_payload["evidence_items"]}
+            | {item["resource_chunk_id"] for item in ba_payload["evidence_items"]}
+            | {item["resource_chunk_id"] for item in pab_payload["evidence_items"]}
+            | {item["resource_chunk_id"] for item in scc_payload["evidence_items"]}
+        )
+        self.assertEqual(svc_chunk_ids.intersection(other_chunk_ids), set())
+
+        result = retrieve_official_evidence_from_fixture(
+            certification_exam_name=SVC_EXAM_NAME,
+            domain_name="Integrations",
+            query_text="integrate Salesforce other applications integration patterns",
+            fixture_payload=self.payload,
+        )
+        returned_ids = {chunk["resource_chunk_id"] for chunk in result["ranked_chunks"]}
+        self.assertTrue(returned_ids.issubset(svc_chunk_ids))
+        self.assertEqual(returned_ids.intersection(other_chunk_ids), set())
+
+    def test_retrieval_is_deterministic(self):
+        first = retrieve_official_evidence_from_fixture(
+            certification_exam_name=SVC_EXAM_NAME,
+            domain_name="Knowledge Management",
+            query_text="KCS methodology knowledge agents managers",
+            fixture_payload=self.payload,
+        )
+        second = retrieve_official_evidence_from_fixture(
+            certification_exam_name=SVC_EXAM_NAME,
+            domain_name="Knowledge Management",
+            query_text="KCS methodology knowledge agents managers",
+            fixture_payload=self.payload,
+        )
+        self.assertEqual(
+            [c["resource_chunk_id"] for c in first["ranked_chunks"]],
+            [c["resource_chunk_id"] for c in second["ranked_chunks"]],
+        )
+
+    def test_existing_isolated_fixtures_still_validate(self):
+        for certification in (ADM_EXAM_NAME, BA_EXAM_NAME, PAB_EXAM_NAME, SCC_EXAM_NAME):
+            with self.subTest(certification=certification):
+                payload = load_evidence_fixture_for_certification(certification)
+                validate_fixture_payload(payload)
 
 
 class TestPlatformAppBuilderFixtureRetrievalSmoke(unittest.TestCase):

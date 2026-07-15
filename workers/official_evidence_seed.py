@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
-from workers.certification_registry import PAB_EXAM_NAME, SCC_EXAM_NAME
+from workers.certification_registry import PAB_EXAM_NAME, SCC_EXAM_NAME, SVC_EXAM_NAME
 from workers.resource_chunking import sha256_hex
 from workers.structural_audit_launcher import ADM_EXAM_NAME, BA_EXAM_NAME
 
@@ -62,6 +62,18 @@ SCC_DEFAULT_OUTPUT_PATH = (
     Path(__file__).resolve().parent / "fixtures" / "official_evidence_scc_v1.json"
 )
 
+# Service Cloud Consultant evidence-package identity (SVC-EXP-04). Deliberately
+# isolated from FIXTURE_VERSION, BA_FIXTURE_VERSION, PAB_FIXTURE_VERSION, and
+# SCC_FIXTURE_VERSION above: adding SVC coverage must never change the hash or
+# meaning of any other certification's committed package. Only Service Cloud
+# Consultant requests resolve to this identity -- see
+# resolve_evidence_identity_for_certification() below.
+SVC_FIXTURE_VERSION = "official-evidence-svc-v1"
+SVC_EVIDENCE_CONFIG_ID = "official_evidence_svc_v1"
+SVC_DEFAULT_OUTPUT_PATH = (
+    Path(__file__).resolve().parent / "fixtures" / "official_evidence_svc_v1.json"
+)
+
 MAX_EXCERPT_CHARS = 1500
 DEFAULT_TARGET_MIN_CHUNKS = 24
 DEFAULT_TARGET_MAX_CHUNKS = 40
@@ -76,6 +88,8 @@ CERTIFICATION_CODES = {
     PAB_EXAM_NAME: "platform_app_builder",
     # Must match certification_registry.CERTIFICATION_CODES[SCC_EXAM_NAME].
     SCC_EXAM_NAME: "Sales-Con-201",
+    # Must match certification_registry.CERTIFICATION_CODES[SVC_EXAM_NAME].
+    SVC_EXAM_NAME: "service_cloud_consultant",
 }
 
 SUPPORTED_CERTIFICATIONS = frozenset(CERTIFICATION_CODES)
@@ -90,6 +104,7 @@ EVIDENCE_IDENTITY_BY_CERTIFICATION: Dict[str, str] = {
     BA_EXAM_NAME: BA_FIXTURE_VERSION,
     PAB_EXAM_NAME: PAB_FIXTURE_VERSION,
     SCC_EXAM_NAME: SCC_FIXTURE_VERSION,
+    SVC_EXAM_NAME: SVC_FIXTURE_VERSION,
 }
 
 FIXTURE_PATH_BY_EVIDENCE_IDENTITY: Dict[str, Path] = {
@@ -97,6 +112,7 @@ FIXTURE_PATH_BY_EVIDENCE_IDENTITY: Dict[str, Path] = {
     BA_FIXTURE_VERSION: BA_DEFAULT_OUTPUT_PATH,
     PAB_FIXTURE_VERSION: PAB_DEFAULT_OUTPUT_PATH,
     SCC_FIXTURE_VERSION: SCC_DEFAULT_OUTPUT_PATH,
+    SVC_FIXTURE_VERSION: SVC_DEFAULT_OUTPUT_PATH,
 }
 
 ALLOWED_RESOURCE_TYPES = frozenset({
@@ -875,6 +891,7 @@ EVIDENCE_CONFIG_ID_BY_CERTIFICATION: Dict[str, str] = {
     PAB_EXAM_NAME: PAB_EVIDENCE_CONFIG_ID,
     BA_EXAM_NAME: BA_EVIDENCE_CONFIG_ID,
     SCC_EXAM_NAME: SCC_EVIDENCE_CONFIG_ID,
+    SVC_EXAM_NAME: SVC_EVIDENCE_CONFIG_ID,
 }
 
 

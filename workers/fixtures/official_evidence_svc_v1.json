@@ -1,0 +1,288 @@
+{
+  "certifications_covered": [
+    "Salesforce Certified Service Cloud Consultant"
+  ],
+  "domains_covered": [
+    "Case Management",
+    "Contact Center Analytics",
+    "Implementation Strategies",
+    "Industry Knowledge",
+    "Intake and Interaction Channels",
+    "Integrations",
+    "Knowledge Management",
+    "Service Cloud Solution Design"
+  ],
+  "evidence_config_id": "official_evidence_svc_v1",
+  "evidence_items": [
+    {
+      "canonical_url": "https://trailhead.salesforce.com/credentials/servicecloudconsultant",
+      "certification": "Salesforce Certified Service Cloud Consultant",
+      "certification_code": "service_cloud_consultant",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "Certified Service Cloud Consultants are experts at designing and implementing Service Cloud solutions that are sustainable and scalable, meet customer business requirements, and contribute to long-term customer success.",
+      "content_hash": "905c3b7df15b977ab777af87352c632ca72fc9f3486cf85bcb778ea0237d46a1",
+      "domain": "Industry Knowledge",
+      "domain_tags": [
+        "Industry Knowledge"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-15T00:00:00+00:00",
+      "official_resource_id": "58d62c5f-3746-5329-a52c-84d411e8d777",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "4017ffc2-f9db-5a1b-9d3a-2d996d32e4fd",
+      "resource_title": "Salesforce Certified Service Cloud Consultant",
+      "resource_type": "trailhead",
+      "resource_version_id": "6ac78159-4ffb-5dd8-96ba-60114092b166",
+      "retrieved_at": "2026-07-15T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/credentials/servicecloudconsultant",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-agile-basics/understand-why-salesforce-adopted-agile",
+      "certification": "Salesforce Certified Service Cloud Consultant",
+      "certification_code": "service_cloud_consultant",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "When trying to choose a workflow process, ask yourself these questions. How much do we know about the project at hand? How clear are the project's objectives and requirements? How clear and well-defined is the solution?",
+      "content_hash": "caa22b946330d161f25eace01027f8a6f5e3c9d3bdace90c1d48ec904bed67be",
+      "domain": "Implementation Strategies",
+      "domain_tags": [
+        "Implementation Strategies"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-15T00:00:00+00:00",
+      "official_resource_id": "cb403af2-945e-570f-a256-8eaa6738b5a8",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "379282e6-d903-5acf-b1d2-8f358147d375",
+      "resource_title": "Understand Why Salesforce Adopted Agile",
+      "resource_type": "trailhead",
+      "resource_version_id": "66698f45-949d-53dc-a7ad-5d610cda5f26",
+      "retrieved_at": "2026-07-15T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-agile-basics/understand-why-salesforce-adopted-agile",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/projects/create-a-process-for-managing-support-cases/create-support-processes",
+      "certification": "Salesforce Certified Service Cloud Consultant",
+      "certification_code": "service_cloud_consultant",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "To help support users create, manage, and resolve cases and inquiries more quickly, you can create support processes.",
+      "content_hash": "fc26fd578a1050df6365f516622da11162e2731eee0e64e7ff786678d9f9f001",
+      "domain": "Service Cloud Solution Design",
+      "domain_tags": [
+        "Service Cloud Solution Design"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-15T00:00:00+00:00",
+      "official_resource_id": "256fbb61-f4f0-5983-a4da-7ffbe4b6aec0",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "4fc469b7-2cc4-5d68-827b-b0b80ef23eb9",
+      "resource_title": "Create Support Processes",
+      "resource_type": "trailhead",
+      "resource_version_id": "31257ca7-df09-5062-944d-4654afa38e8c",
+      "retrieved_at": "2026-07-15T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/projects/create-a-process-for-managing-support-cases/create-support-processes",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/knowledgecentered-service-in-lightning-knowledge/get-started-with-knowledgecentered-service",
+      "certification": "Salesforce Certified Service Cloud Consultant",
+      "certification_code": "service_cloud_consultant",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "Deciding to implement KCS methodology at Ursa Major isn't about buying a tool. It's about changing how agents and managers think about knowledge.",
+      "content_hash": "749265fc6f2d1f839d9e80f0a84698756df7adee6440d0ed07a3f1ad54472fda",
+      "domain": "Knowledge Management",
+      "domain_tags": [
+        "Knowledge Management"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-15T00:00:00+00:00",
+      "official_resource_id": "e7f8afc0-5081-5b41-b59c-afbee27a6287",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "e7de7280-f3b0-54b9-bbfb-624e2c73203d",
+      "resource_title": "Get Started with Knowledge-Centered Service",
+      "resource_type": "trailhead",
+      "resource_version_id": "e0b98763-d8b2-5f3b-977f-5f442784da23",
+      "retrieved_at": "2026-07-15T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/knowledgecentered-service-in-lightning-knowledge/get-started-with-knowledgecentered-service",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-messaging/learn-about-messaging",
+      "certification": "Salesforce Certified Service Cloud Consultant",
+      "certification_code": "service_cloud_consultant",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "With Messaging, you can meet your customer's service needs on their preferred channel of communication. Messaging creates a consistent and personalized experience between your service reps and customers.",
+      "content_hash": "570b221cbbe7abb0d6ca1139bb1f3764c1ea77aa013a4d0311e4977dba035973",
+      "domain": "Intake and Interaction Channels",
+      "domain_tags": [
+        "Intake and Interaction Channels"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-15T00:00:00+00:00",
+      "official_resource_id": "f46046e7-18e9-5639-abd6-48a3037b1d31",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "37078e21-fe62-53fb-b3c8-fc2ca3b4655d",
+      "resource_title": "Learn About Messaging",
+      "resource_type": "trailhead",
+      "resource_version_id": "42d9f134-8daf-5e61-8da8-87dc696484e7",
+      "retrieved_at": "2026-07-15T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/salesforce-messaging/learn-about-messaging",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/entitlement-management-for-lightning-experience/get-started-with-entitlements",
+      "certification": "Salesforce Certified Service Cloud Consultant",
+      "certification_code": "service_cloud_consultant",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "Roberto learns that entitlements are units of customer support in Salesforce, such as phone support or web support. These entitlements are stated in each customer's SLA.",
+      "content_hash": "dd416e004cc6678d84bf9ff97eae31ca751662ae49862eb6322de45b92198445",
+      "domain": "Case Management",
+      "domain_tags": [
+        "Case Management"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-15T00:00:00+00:00",
+      "official_resource_id": "b3cd2e89-8629-59ff-bd12-9cf757e868c9",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "24152cc7-210f-5b99-b5d9-1fd36a31f63e",
+      "resource_title": "Get Started with Entitlements",
+      "resource_type": "trailhead",
+      "resource_version_id": "baad82ba-655f-5f9a-82ab-e79211b73d01",
+      "retrieved_at": "2026-07-15T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/entitlement-management-for-lightning-experience/get-started-with-entitlements",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://trailhead.salesforce.com/content/learn/modules/knowledgecentered-service-in-lightning-knowledge/use-evolve-loop-to-improve-your-process",
+      "certification": "Salesforce Certified Service Cloud Consultant",
+      "certification_code": "service_cloud_consultant",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "Part of KCS methodology is continuous improvement using a mechanism called the Evolve Loop. The Evolve Loop analyzes existing articles and tasks to search for patterns, then uses that information to improve content health, processes, performance, and leadership.",
+      "content_hash": "2a9a466d21e7d9e1669c828cd625cea4573aba2dd981b48263a0d22105de71c7",
+      "domain": "Contact Center Analytics",
+      "domain_tags": [
+        "Contact Center Analytics"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-15T00:00:00+00:00",
+      "official_resource_id": "3b998a8d-5fe5-51e0-956a-98c3f802cef1",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "8dacd73d-e2e9-5180-a4de-61fe3a38b388",
+      "resource_title": "Use Evolve Loop to Improve Your Process",
+      "resource_type": "trailhead",
+      "resource_version_id": "ded4b86d-9de6-5532-88f8-dbfcf6c7ad6d",
+      "retrieved_at": "2026-07-15T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://trailhead.salesforce.com/content/learn/modules/knowledgecentered-service-in-lightning-knowledge/use-evolve-loop-to-improve-your-process",
+      "version_number": 1
+    },
+    {
+      "canonical_url": "https://developer.salesforce.com/docs/atlas.en-us.integration_patterns_and_practices.meta/integration_patterns_and_practices/integ_pat_intro_overview.htm",
+      "certification": "Salesforce Certified Service Cloud Consultant",
+      "certification_code": "service_cloud_consultant",
+      "chunk_index": 0,
+      "chunk_text_excerpt": "Typically, when you implement Salesforce, you need to integrate it with other applications. Although each integration scenario is unique, there are common requirements and issues that developers and architects must resolve.",
+      "content_hash": "c6713cffe99e2fc21beb4df9d174f315a54e68cc3e78b453e2172d273a6dcf31",
+      "domain": "Integrations",
+      "domain_tags": [
+        "Integrations"
+      ],
+      "effective_at": null,
+      "excerpt_mode": "full_chunk",
+      "exported_at": "2026-07-15T00:00:00+00:00",
+      "official_resource_id": "1cf2db01-df93-581a-9f8a-59e7a78b5e3c",
+      "provenance_status": "verified_official_resource_library",
+      "publisher": "Salesforce, Inc.",
+      "resource_chunk_id": "ef2e7315-e686-5831-b707-7efeb907dd9b",
+      "resource_title": "Integration Patterns Overview",
+      "resource_type": "official_documentation",
+      "resource_version_id": "3691314f-2c08-51ae-a971-b63fc8d8159e",
+      "retrieved_at": "2026-07-15T00:00:00+00:00",
+      "source_external_version": null,
+      "source_url": "https://developer.salesforce.com/docs/atlas.en-us.integration_patterns_and_practices.meta/integration_patterns_and_practices/integ_pat_intro_overview.htm",
+      "version_number": 1
+    }
+  ],
+  "export_summary": {
+    "exported_by_certification": {
+      "Salesforce Certified Service Cloud Consultant": 8
+    },
+    "exported_by_domain": {
+      "Case Management": 1,
+      "Contact Center Analytics": 1,
+      "Implementation Strategies": 1,
+      "Industry Knowledge": 1,
+      "Intake and Interaction Channels": 1,
+      "Integrations": 1,
+      "Knowledge Management": 1,
+      "Service Cloud Solution Design": 1
+    },
+    "exported_chunk_count": 8,
+    "maximum_excerpt_chars": 263
+  },
+  "fixture_version": "official-evidence-svc-v1",
+  "generated_at": "2026-07-15T00:00:00+00:00",
+  "inventory_summary": {
+    "chunk_count_by_certification": {
+      "Salesforce Certified Service Cloud Consultant": 8
+    },
+    "domains_by_certification": {
+      "Salesforce Certified Service Cloud Consultant": [
+        "Case Management",
+        "Contact Center Analytics",
+        "Implementation Strategies",
+        "Industry Knowledge",
+        "Intake and Interaction Channels",
+        "Integrations",
+        "Knowledge Management",
+        "Service Cloud Solution Design"
+      ]
+    },
+    "eligible_chunk_count": 8,
+    "provenance_complete_resource_count": 8,
+    "resource_count_by_certification": {
+      "Salesforce Certified Service Cloud Consultant": 8
+    },
+    "total_chunk_count": 8,
+    "total_resource_count": 8
+  },
+  "isolated_from": [
+    "official-evidence-seed-v1",
+    "official-evidence-ba-v1",
+    "official-evidence-pab-v1",
+    "official-evidence-scc-v1"
+  ],
+  "no_synthetic_evidence": true,
+  "source_verification_method": "Each chunk_text_excerpt is a verbatim, single-paragraph excerpt retrieved via WebFetch from official trailhead.salesforce.com or developer.salesforce.com pages linked in the official 'Prepare for Your Salesforce Service Cloud Consultant Certification' trailmix during SVC-EXP-04 (learning-objective / body prose only; no exam practice questions copied). content_hash is SHA-256 of chunk_text_excerpt.",
+  "sources_represented": [
+    "Create Support Processes",
+    "Get Started with Entitlements",
+    "Get Started with Knowledge-Centered Service",
+    "Integration Patterns Overview",
+    "Learn About Messaging",
+    "Salesforce Certified Service Cloud Consultant",
+    "Understand Why Salesforce Adopted Agile",
+    "Use Evolve Loop to Improve Your Process"
+  ],
+  "status": "verified_evidence_seed"
+}
