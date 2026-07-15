@@ -49,6 +49,7 @@ ADM_EXAM_NAME = "Salesforce Certified Platform Administrator"
 BA_EXAM_NAME = "Salesforce Certified Business Analyst"
 PAB_EXAM_NAME = "Salesforce Certified Platform App Builder"
 SCC_EXAM_NAME = "Salesforce Certified Sales Cloud Consultant"
+SVC_EXAM_NAME = "Salesforce Certified Service Cloud Consultant"
 
 CERTIFICATION_CODES: Dict[str, str] = {
     # "ADM-201" / "BA-201" mirror the pre-existing codes already used by
@@ -66,6 +67,14 @@ CERTIFICATION_CODES: Dict[str, str] = {
     PAB_EXAM_NAME: "platform_app_builder",
     # Official Salesforce exam code for Sales Cloud Consultant (SCC-EXP-02).
     SCC_EXAM_NAME: "Sales-Con-201",
+    # Service Cloud Consultant (SVC-EXP-01): the verified official exam
+    # code is "Service-Con-201", but per this dict's own field-level
+    # contract (see CertificationDefinition.certification_code docstring —
+    # "Never an official Salesforce exam code") the official exam code is
+    # registered as an alias below instead, and this value uses the same
+    # internal snake_case identifier convention already established for
+    # PAB_EXAM_NAME ("platform_app_builder").
+    SVC_EXAM_NAME: "service_cloud_consultant",
 }
 
 # Integer-weight certifications (ADM, BA, PAB) sum to exactly 100. Salesforce
@@ -351,11 +360,59 @@ def _scc_definition() -> CertificationDefinition:
     )
 
 
+def _svc_definition() -> CertificationDefinition:
+    return CertificationDefinition(
+        exam_name=SVC_EXAM_NAME,
+        certification_code=CERTIFICATION_CODES[SVC_EXAM_NAME],
+        aliases=frozenset(
+            {
+                "Salesforce Service Cloud Consultant",
+                SVC_EXAM_NAME,
+                CERTIFICATION_CODES[SVC_EXAM_NAME],
+                # Verified official Salesforce exam code (SVC-EXP-01);
+                # normalization is casefold-based, so this single stored
+                # form also resolves "Service-Con-201" / "SERVICE-CON-201".
+                "service-con-201",
+                "service-cloud",
+                # Short abbreviation, mirroring the already-established
+                # "adm" / "ba" / "pab" / "scc" convention.
+                "svc",
+                # Deliberately NOT added: "service", "cloud", "consultant"
+                # (ambiguous single generic words).
+            }
+        ),
+        domains=(
+            CertificationDomain("industry_knowledge", "Industry Knowledge", 12),
+            CertificationDomain(
+                "implementation_strategies", "Implementation Strategies", 12
+            ),
+            CertificationDomain(
+                "service_cloud_solution_design",
+                "Service Cloud Solution Design",
+                15,
+            ),
+            CertificationDomain("knowledge_management", "Knowledge Management", 12),
+            CertificationDomain(
+                "intake_and_interaction_channels",
+                "Intake and Interaction Channels",
+                13,
+            ),
+            CertificationDomain("case_management", "Case Management", 13),
+            CertificationDomain(
+                "contact_center_analytics", "Contact Center Analytics", 13
+            ),
+            CertificationDomain("integrations", "Integrations", 10),
+        ),
+        enforce_domain_contract_at_request_validation=True,
+    )
+
+
 CERTIFICATION_DEFINITIONS: Tuple[CertificationDefinition, ...] = (
     _adm_definition(),
     _ba_definition(),
     _pab_definition(),
     _scc_definition(),
+    _svc_definition(),
 )
 
 _DEFINITION_BY_EXAM_NAME: Dict[str, CertificationDefinition] = {
@@ -406,6 +463,11 @@ def get_business_analyst_definition() -> CertificationDefinition:
 
 def get_sales_cloud_consultant_definition() -> CertificationDefinition:
     definition = _DEFINITION_BY_EXAM_NAME[SCC_EXAM_NAME]
+    return definition
+
+
+def get_service_cloud_consultant_definition() -> CertificationDefinition:
+    definition = _DEFINITION_BY_EXAM_NAME[SVC_EXAM_NAME]
     return definition
 
 

@@ -23,6 +23,7 @@ from workers.certification_registry import (
     LEGACY_AUTOMATION_GUARDRAIL,
     PAB_EXAM_NAME,
     SCC_EXAM_NAME,
+    SVC_EXAM_NAME,
     CertificationDefinition,
     CertificationRegistryError,
     domain_metadata_for_certification,
@@ -30,6 +31,7 @@ from workers.certification_registry import (
     get_certification_definition,
     get_platform_app_builder_definition,
     get_sales_cloud_consultant_definition,
+    get_service_cloud_consultant_definition,
     normalize_certification_exam_name,
     validate_audit_retry_context_certification,
     validate_certification_domain,
@@ -273,6 +275,243 @@ class TestSalesCloudConsultantRegistry(unittest.TestCase):
         self.assertEqual(metadata["weight"], 23.3)
 
 
+class TestServiceCloudConsultantRegistry(unittest.TestCase):
+    """SVC-EXP-01: engine profile only — no database migration, no evidence
+    fixtures, no ingestion, no generation/audit wiring, no activation."""
+
+    def test_registry_lookup_returns_canonical_definition(self):
+        definition = get_certification_definition(SVC_EXAM_NAME)
+        self.assertIsNotNone(definition)
+        assert definition is not None
+        self.assertEqual(definition.exam_name, SVC_EXAM_NAME)
+
+    def test_canonical_name_is_correct(self):
+        self.assertEqual(SVC_EXAM_NAME, "Salesforce Certified Service Cloud Consultant")
+
+    def test_canonical_internal_code_resolves(self):
+        # Requirement 1: the canonical internal code resolves both as the
+        # certification_code value and as an alias lookup.
+        self.assertEqual(CERTIFICATION_CODES[SVC_EXAM_NAME], "service_cloud_consultant")
+        self.assertEqual(
+            normalize_certification_exam_name("service_cloud_consultant"),
+            SVC_EXAM_NAME,
+        )
+
+    def test_canonical_certification_name_resolves(self):
+        # Requirement 2.
+        self.assertEqual(normalize_certification_exam_name(SVC_EXAM_NAME), SVC_EXAM_NAME)
+        definition = get_service_cloud_consultant_definition()
+        self.assertEqual(definition.exam_name, SVC_EXAM_NAME)
+
+    def test_official_exam_code_is_registered_as_an_alias_not_the_internal_code(self):
+        # The verified official exam code "Service-Con-201" is deliberately
+        # NOT the certification_code value (that is the distinct internal
+        # code "service_cloud_consultant", per the CertificationDefinition
+        # docstring: certification_code is "Never an official Salesforce
+        # exam code"). It is registered as an alias instead.
+        self.assertNotEqual(CERTIFICATION_CODES[SVC_EXAM_NAME], "Service-Con-201")
+        self.assertNotEqual(CERTIFICATION_CODES[SVC_EXAM_NAME], "service-con-201")
+
+    def test_exam_code_resolves(self):
+        # Requirement 3.
+        self.assertEqual(normalize_certification_exam_name("Service-Con-201"), SVC_EXAM_NAME)
+        self.assertEqual(normalize_certification_exam_name("service-con-201"), SVC_EXAM_NAME)
+        self.assertEqual(normalize_certification_exam_name("SERVICE-CON-201"), SVC_EXAM_NAME)
+
+    def test_each_approved_alias_resolves(self):
+        # Requirement 4.
+        approved_aliases = (
+            "Salesforce Service Cloud Consultant",
+            SVC_EXAM_NAME,
+            "service_cloud_consultant",
+            "service-con-201",
+            "service-cloud",
+            "svc",
+        )
+        for alias in approved_aliases:
+            with self.subTest(alias=alias):
+                self.assertEqual(normalize_certification_exam_name(alias), SVC_EXAM_NAME)
+
+    def test_ambiguous_aliases_are_not_added(self):
+        # Requirement 5.
+        for ambiguous in ("service", "cloud", "consultant"):
+            with self.subTest(ambiguous=ambiguous):
+                self.assertIsNone(normalize_certification_exam_name(ambiguous))
+
+    def test_exactly_eight_domains(self):
+        # Requirement 6.
+        definition = get_service_cloud_consultant_definition()
+        self.assertEqual(len(definition.domains), 8)
+
+    def test_domain_names_and_ordering_match_official_blueprint(self):
+        # Requirement 7.
+        definition = get_service_cloud_consultant_definition()
+        self.assertEqual(
+            tuple(domain.domain_name for domain in definition.domains),
+            (
+                "Industry Knowledge",
+                "Implementation Strategies",
+                "Service Cloud Solution Design",
+                "Knowledge Management",
+                "Intake and Interaction Channels",
+                "Case Management",
+                "Contact Center Analytics",
+                "Integrations",
+            ),
+        )
+
+    def test_domain_weights_match_exactly(self):
+        # Requirement 8.
+        definition = get_service_cloud_consultant_definition()
+        self.assertEqual(
+            [domain.weight for domain in definition.domains],
+            [12, 12, 15, 12, 13, 13, 13, 10],
+        )
+
+    def test_domain_weight_total_equals_100(self):
+        # Requirement 9.
+        definition = get_service_cloud_consultant_definition()
+        self.assertEqual(definition.total_domain_weight, 100)
+        self.assertTrue(definition.uses_integral_domain_weights)
+
+    def test_stable_unique_domain_identifiers(self):
+        definition = get_service_cloud_consultant_definition()
+        domain_ids = [domain.domain_id for domain in definition.domains]
+        self.assertEqual(
+            domain_ids,
+            [
+                "industry_knowledge",
+                "implementation_strategies",
+                "service_cloud_solution_design",
+                "knowledge_management",
+                "intake_and_interaction_channels",
+                "case_management",
+                "contact_center_analytics",
+                "integrations",
+            ],
+        )
+        self.assertEqual(len(domain_ids), len(set(domain_ids)))
+
+    def test_strict_domain_validation_enabled(self):
+        definition = get_service_cloud_consultant_definition()
+        self.assertTrue(definition.enforce_domain_contract_at_request_validation)
+
+    def test_all_eight_official_domains_are_accepted(self):
+        for domain in get_service_cloud_consultant_definition().domains:
+            with self.subTest(domain=domain.domain_name):
+                canonical = validate_generation_request_certification(
+                    certification_exam_name=SVC_EXAM_NAME,
+                    domain=domain.domain_name,
+                )
+                self.assertEqual(canonical, SVC_EXAM_NAME)
+
+    def test_cross_certification_domains_are_rejected(self):
+        invalid_domains = (
+            "Configuration and Setup",
+            "Customer Discovery",
+            "App Deployment",
+            "Sales Lifecycle",
+            "Some Domain Never Enumerated In The Registry",
+        )
+        for domain in invalid_domains:
+            with self.subTest(domain=domain):
+                with self.assertRaises(CertificationRegistryError):
+                    validate_generation_request_certification(
+                        certification_exam_name=SVC_EXAM_NAME,
+                        domain=domain,
+                    )
+
+    def test_blank_domain_is_rejected(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=SVC_EXAM_NAME,
+                domain="   ",
+            )
+
+    def test_domain_id_is_rejected_as_a_domain_value(self):
+        with self.assertRaises(CertificationRegistryError):
+            validate_generation_request_certification(
+                certification_exam_name=SVC_EXAM_NAME,
+                domain="case_management",  # domain_id, not domain_name
+            )
+
+    def test_audit_retry_context_accepts_service_cloud_consultant(self):
+        canonical = validate_audit_retry_context_certification(
+            certification_exam_name="svc",
+            domain="Case Management",
+        )
+        self.assertEqual(canonical, SVC_EXAM_NAME)
+
+    def test_validate_certification_domain_for_service_cloud_consultant(self):
+        canonical = validate_certification_domain(
+            SVC_EXAM_NAME,
+            "Contact Center Analytics",
+        )
+        self.assertEqual(canonical, SVC_EXAM_NAME)
+
+    def test_domain_metadata_preserves_integer_weight(self):
+        metadata = domain_metadata_for_certification(
+            SVC_EXAM_NAME,
+            "Service Cloud Solution Design",
+        )
+        self.assertEqual(metadata["weight"], 15)
+
+    def test_registry_module_has_no_evidence_ingestion_or_database_dependency(self):
+        # SVC-EXP-01 is registry-only: adding this profile must not pull in
+        # any evidence-fixture, ingestion, or database dependency into this
+        # module (mirrors TestEngineProfileVersusPersistenceCatalogSeparation
+        # below, re-asserted here specifically for the new certification).
+        self.assertFalse(hasattr(certification_registry, "official_evidence_seed"))
+        self.assertFalse(hasattr(certification_registry, "official_evidence_fixture_ingestion"))
+        self.assertFalse(hasattr(certification_registry, "client"))
+        self.assertFalse(hasattr(certification_registry, "supabase"))
+
+
+class TestExistingCertificationsUnchangedAfterServiceCloudAddition(unittest.TestCase):
+    """SVC-EXP-01 requirement 11: adding SVC must not alter any existing
+    certification's identity or domain profile."""
+
+    def test_certification_definition_count_increased_by_exactly_one(self):
+        self.assertEqual(len(certification_registry.CERTIFICATION_DEFINITIONS), 5)
+
+    def test_administrator_identity_and_domains_unchanged(self):
+        definition = get_certification_definition(ADM_EXAM_NAME)
+        assert definition is not None
+        self.assertEqual(CERTIFICATION_CODES[ADM_EXAM_NAME], "ADM-201")
+        self.assertEqual(len(definition.domains), 8)
+        self.assertEqual(definition.total_domain_weight, 100)
+
+    def test_business_analyst_identity_and_domains_unchanged(self):
+        definition = get_business_analyst_definition()
+        self.assertEqual(CERTIFICATION_CODES[BA_EXAM_NAME], "BA-201")
+        self.assertEqual(len(definition.domains), 6)
+        self.assertEqual(definition.total_domain_weight, 100)
+
+    def test_platform_app_builder_identity_and_domains_unchanged(self):
+        definition = get_platform_app_builder_definition()
+        self.assertEqual(CERTIFICATION_CODES[PAB_EXAM_NAME], "platform_app_builder")
+        self.assertEqual(len(definition.domains), 5)
+        self.assertEqual(definition.total_domain_weight, 100)
+
+    def test_sales_cloud_consultant_identity_and_domains_unchanged(self):
+        definition = get_sales_cloud_consultant_definition()
+        self.assertEqual(CERTIFICATION_CODES[SCC_EXAM_NAME], "Sales-Con-201")
+        self.assertEqual(len(definition.domains), 5)
+        self.assertAlmostEqual(
+            definition.total_domain_weight,
+            DECIMAL_DOMAIN_WEIGHT_PUBLISHED_TOTAL,
+            delta=DECIMAL_DOMAIN_WEIGHT_TOTAL_TOLERANCE,
+        )
+
+    def test_service_cloud_consultant_does_not_normalize_from_sales_cloud_aliases(self):
+        self.assertEqual(normalize_certification_exam_name("scc"), SCC_EXAM_NAME)
+        self.assertEqual(normalize_certification_exam_name("svc"), SVC_EXAM_NAME)
+        self.assertNotEqual(
+            normalize_certification_exam_name("scc"),
+            normalize_certification_exam_name("svc"),
+        )
+
+
 class TestCertificationCodeIdentifierDecision(unittest.TestCase):
     """PAB-EXP-02: APP-401 had no repository evidence and was removed."""
 
@@ -367,6 +606,25 @@ class TestCertificationNormalization(unittest.TestCase):
             SCC_EXAM_NAME,
         )
 
+    def test_service_cloud_consultant_aliases_normalize(self):
+        self.assertEqual(
+            normalize_certification_exam_name("Salesforce Service Cloud Consultant"),
+            SVC_EXAM_NAME,
+        )
+        self.assertEqual(
+            normalize_certification_exam_name("Service-Con-201"),
+            SVC_EXAM_NAME,
+        )
+        self.assertEqual(
+            normalize_certification_exam_name("service-cloud"),
+            SVC_EXAM_NAME,
+        )
+        self.assertEqual(
+            normalize_certification_exam_name("service_cloud_consultant"),
+            SVC_EXAM_NAME,
+        )
+        self.assertEqual(normalize_certification_exam_name("svc"), SVC_EXAM_NAME)
+
     def test_unexpected_certification_string_is_not_guessed(self):
         self.assertIsNone(
             normalize_certification_exam_name("Salesforce Certified Data Cloud Consultant")
@@ -455,6 +713,25 @@ class TestGenerationRequestValidation(unittest.TestCase):
 
     def test_generation_request_rejects_unknown_sales_cloud_consultant_domain(self):
         request = self._scc_request(domain="User Interface")
+        with self.assertRaises(CandidateValidationError):
+            validate_generation_request(request)
+
+    def _svc_request(self, *, domain: str) -> GenerationRequest:
+        return GenerationRequest(
+            certification_exam_name=SVC_EXAM_NAME,
+            domain=domain,
+            prompt_template_id="certbound-question-gen",
+            prompt_version="v1.0.0",
+            model_name="claude-test",
+            created_by="tester@certbound.internal",
+            source_evidence={"resource_reference": "Salesforce Help"},
+        )
+
+    def test_generation_request_accepts_service_cloud_consultant(self):
+        validate_generation_request(self._svc_request(domain="Case Management"))
+
+    def test_generation_request_rejects_unknown_service_cloud_consultant_domain(self):
+        request = self._svc_request(domain="User Interface")
         with self.assertRaises(CandidateValidationError):
             validate_generation_request(request)
 
