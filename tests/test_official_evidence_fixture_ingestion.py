@@ -7,6 +7,7 @@ environments without pgcrypto. No network access or production credentials.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -32,13 +33,15 @@ except ImportError:  # pragma: no cover
     pgserver = None  # type: ignore
 
 from workers.ai_quality_audit_evidence import prepare_smoke_evidence_set
-from workers.certification_registry import PAB_EXAM_NAME, SCC_EXAM_NAME
+from workers.certification_registry import PAB_EXAM_NAME, SCC_EXAM_NAME, SVC_EXAM_NAME
 from workers.official_evidence_fixture_ingestion import (
     ALLOW_APPROVED_SUPABASE_INGEST_FLAG,
     ALLOW_FIXTURE_INGEST_FLAG,
+    APPROVED_HOSTED_TARGETS,
     APPROVED_HOSTED_TARGET_CERTIFICATION,
     APPROVED_HOSTED_TARGET_FIXTURE_VERSION,
     APPROVED_HOSTED_TARGET_RECORD_COUNT,
+    KNOWN_EVIDENCE_PACKAGES,
     OfficialEvidenceFixtureIngestionConflictError,
     OfficialEvidenceFixtureIngestionError,
     OfficialEvidenceFixtureIngestionSafetyError,
@@ -66,6 +69,9 @@ from workers.official_evidence_seed import (
     SCC_DEFAULT_OUTPUT_PATH,
     SCC_EVIDENCE_CONFIG_ID,
     SCC_FIXTURE_VERSION,
+    SVC_DEFAULT_OUTPUT_PATH,
+    SVC_EVIDENCE_CONFIG_ID,
+    SVC_FIXTURE_VERSION,
 )
 from workers.v48_psycopg_client import PsycopgV48Client
 
@@ -92,6 +98,19 @@ _SCC_DOMAINS = (
     "Consulting & Implementation Strategies",
     "Data Management",
     "Predictive and Generative AI",
+)
+_SVC_DOMAINS = (
+    "Case Management",
+    "Contact Center Analytics",
+    "Implementation Strategies",
+    "Industry Knowledge",
+    "Intake and Interaction Channels",
+    "Integrations",
+    "Knowledge Management",
+    "Service Cloud Solution Design",
+)
+_SVC_FIXTURE_SHA256 = (
+    "f256fe289654d16dba8baed9e7370ed6183702f97e2393ef413699da6fe52926"
 )
 
 
@@ -240,6 +259,7 @@ class PgserverFixtureIngestionTestCase(unittest.TestCase):
         self.pab_payload, _, _ = load_fixture_for_ingestion(PAB_DEFAULT_OUTPUT_PATH)
         self.ba_payload, _, _ = load_fixture_for_ingestion(BA_DEFAULT_OUTPUT_PATH)
         self.scc_payload, _, _ = load_fixture_for_ingestion(SCC_DEFAULT_OUTPUT_PATH)
+        self.svc_payload, _, _ = load_fixture_for_ingestion(SVC_DEFAULT_OUTPUT_PATH)
 
     def tearDown(self):
         try:
@@ -283,6 +303,14 @@ class PgserverFixtureIngestionTestCase(unittest.TestCase):
             self.conn,
             self.scc_payload,
             fixture_path=SCC_DEFAULT_OUTPUT_PATH,
+            dry_run=dry_run,
+        )
+
+    def _ingest_svc(self, *, dry_run: bool = False):
+        return ingest_official_evidence_fixture_package(
+            self.conn,
+            self.svc_payload,
+            fixture_path=SVC_DEFAULT_OUTPUT_PATH,
             dry_run=dry_run,
         )
 
@@ -717,6 +745,96 @@ class TestSccFixtureValidation(unittest.TestCase):
 
     def test_scc_wrong_record_count_rejected(self):
         payload, _, _ = load_fixture_for_ingestion(SCC_DEFAULT_OUTPUT_PATH)
+        tampered = deepcopy(payload)
+        tampered["evidence_items"] = tampered["evidence_items"][:-1]
+        with self.assertRaises(OfficialEvidenceFixtureIngestionError):
+            validate_fixture_for_ingestion(tampered)
+
+
+class TestSvcPackageRegistration(unittest.TestCase):
+    """SVC-EXP-05R: guarded ingestion registration for Service Cloud Consultant."""
+
+    def test_svc_resolves_through_known_evidence_packages(self):
+        config = resolve_package_config(SVC_FIXTURE_VERSION)
+        self.assertEqual(config["evidence_config_id"], SVC_EVIDENCE_CONFIG_ID)
+        self.assertEqual(config["certification_exam_name"], SVC_EXAM_NAME)
+        self.assertEqual(config["expected_record_count"], 8)
+        self.assertEqual(config["expected_domain_count"], 8)
+        self.assertEqual(config["default_fixture_path"], SVC_DEFAULT_OUTPUT_PATH)
+
+    def test_svc_fixture_path_is_exact(self):
+        config = KNOWN_EVIDENCE_PACKAGES[SVC_FIXTURE_VERSION]
+        self.assertEqual(
+            config["default_fixture_path"].name,
+            "official_evidence_svc_v1.json",
+        )
+        self.assertEqual(config["default_fixture_path"], SVC_DEFAULT_OUTPUT_PATH)
+
+    def test_svc_expected_sha256_is_exact(self):
+        digest = hashlib.sha256(SVC_DEFAULT_OUTPUT_PATH.read_bytes()).hexdigest()
+        self.assertEqual(digest, _SVC_FIXTURE_SHA256)
+
+    def test_svc_approved_hosted_target_entry_exists(self):
+        approved = APPROVED_HOSTED_TARGETS[SVC_FIXTURE_VERSION]
+        self.assertEqual(approved["certification_exam_name"], SVC_EXAM_NAME)
+        self.assertEqual(approved["record_count"], 8)
+
+    def test_no_duplicate_registration_keys(self):
+        package_keys = list(KNOWN_EVIDENCE_PACKAGES)
+        hosted_keys = list(APPROVED_HOSTED_TARGETS)
+        self.assertEqual(len(package_keys), len(set(package_keys)))
+        self.assertEqual(len(hosted_keys), len(set(hosted_keys)))
+        self.assertIn(SVC_FIXTURE_VERSION, package_keys)
+        self.assertIn(SVC_FIXTURE_VERSION, hosted_keys)
+
+    def test_existing_pab_ba_scc_registrations_unchanged(self):
+        self.assertEqual(
+            KNOWN_EVIDENCE_PACKAGES[PAB_FIXTURE_VERSION]["expected_record_count"],
+            7,
+        )
+        self.assertEqual(
+            KNOWN_EVIDENCE_PACKAGES[BA_FIXTURE_VERSION]["expected_record_count"],
+            6,
+        )
+        self.assertEqual(
+            KNOWN_EVIDENCE_PACKAGES[SCC_FIXTURE_VERSION]["expected_record_count"],
+            5,
+        )
+        self.assertEqual(APPROVED_HOSTED_TARGETS[PAB_FIXTURE_VERSION]["record_count"], 7)
+        self.assertEqual(APPROVED_HOSTED_TARGETS[BA_FIXTURE_VERSION]["record_count"], 6)
+        self.assertEqual(APPROVED_HOSTED_TARGETS[SCC_FIXTURE_VERSION]["record_count"], 5)
+
+
+class TestSvcFixtureValidation(unittest.TestCase):
+    def test_svc_fixture_validation_passes(self):
+        payload, fixture_version, package_config = load_fixture_for_ingestion(
+            SVC_DEFAULT_OUTPUT_PATH
+        )
+        self.assertEqual(fixture_version, SVC_FIXTURE_VERSION)
+        self.assertEqual(package_config["evidence_config_id"], SVC_EVIDENCE_CONFIG_ID)
+        self.assertEqual(package_config["certification_exam_name"], SVC_EXAM_NAME)
+        self.assertEqual(package_config["expected_record_count"], 8)
+        self.assertEqual(package_config["expected_domain_count"], 8)
+        self.assertEqual(len(payload["evidence_items"]), 8)
+        domains = {item["domain"] for item in payload["evidence_items"]}
+        self.assertEqual(domains, set(_SVC_DOMAINS))
+
+    def test_svc_unknown_fixture_identity_rejected(self):
+        payload, _, _ = load_fixture_for_ingestion(SVC_DEFAULT_OUTPUT_PATH)
+        tampered = deepcopy(payload)
+        tampered["fixture_version"] = "official-evidence-unknown-v9"
+        with self.assertRaises(OfficialEvidenceFixtureIngestionError):
+            validate_fixture_for_ingestion(tampered)
+
+    def test_svc_wrong_certification_rejected(self):
+        payload, _, _ = load_fixture_for_ingestion(SVC_DEFAULT_OUTPUT_PATH)
+        tampered = deepcopy(payload)
+        tampered["certifications_covered"] = [PAB_EXAM_NAME]
+        with self.assertRaises(OfficialEvidenceFixtureIngestionError):
+            validate_fixture_for_ingestion(tampered)
+
+    def test_svc_wrong_record_count_rejected(self):
+        payload, _, _ = load_fixture_for_ingestion(SVC_DEFAULT_OUTPUT_PATH)
         tampered = deepcopy(payload)
         tampered["evidence_items"] = tampered["evidence_items"][:-1]
         with self.assertRaises(OfficialEvidenceFixtureIngestionError):
@@ -1273,6 +1391,70 @@ class TestSccFixtureIngestion(PgserverFixtureIngestionTestCase):
         self.assertEqual(self._count_table("official_resources", certification=PAB_EXAM_NAME), 7)
 
 
+@unittest.skipUnless(_pgserver_available(), "pgserver/psycopg2 unavailable")
+class TestSvcFixtureIngestion(PgserverFixtureIngestionTestCase):
+    def test_eight_record_ingestion(self):
+        result = self._ingest_svc()
+        self.assertEqual(result.item_count, 8)
+        self.assertEqual(self._count_table("official_resources", certification=SVC_EXAM_NAME), 8)
+        self.assertEqual(self._count_table("resource_versions", certification=SVC_EXAM_NAME), 8)
+        self.assertEqual(self._count_table("resource_chunks", certification=SVC_EXAM_NAME), 8)
+
+    def test_all_eight_domain_coverage(self):
+        self._ingest_svc()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT metadata->>'domain'
+                FROM public.official_resources
+                WHERE certification_exam_name = %s
+                ORDER BY 1
+                """,
+                (SVC_EXAM_NAME,),
+            )
+            domains = {row[0] for row in cur.fetchall()}
+        self.assertEqual(domains, set(_SVC_DOMAINS))
+
+    def test_exact_rerun_idempotency_no_duplicates(self):
+        first = self._ingest_svc()
+        second = self._ingest_svc()
+        self.assertEqual(first.item_count, 8)
+        self.assertEqual(first.resources_created, 8)
+        self.assertEqual(first.versions_created, 8)
+        self.assertEqual(second.item_count, 8)
+        self.assertEqual(second.resources_created, 0)
+        self.assertEqual(second.resources_existing, 8)
+        self.assertEqual(second.versions_created, 0)
+        self.assertEqual(second.versions_idempotent, 8)
+        self.assertEqual(second.chunks_created, 0)
+        self.assertEqual(self._count_table("official_resources", certification=SVC_EXAM_NAME), 8)
+        self.assertEqual(self._count_table("resource_versions", certification=SVC_EXAM_NAME), 8)
+        self.assertEqual(self._count_table("resource_chunks", certification=SVC_EXAM_NAME), 8)
+
+    def test_dry_run_package_validation_rolls_back(self):
+        result = self._ingest_svc(dry_run=True)
+        self.assertTrue(result.dry_run)
+        self.assertEqual(result.item_count, 8)
+        self.assertEqual(result.resources_created, 8)
+        self.assertEqual(result.resources_existing, 0)
+        self.assertEqual(self._count_table("official_resources", certification=SVC_EXAM_NAME), 0)
+
+    def test_pab_ingestion_unchanged_after_svc_registration(self):
+        result = self._ingest_pab()
+        self.assertEqual(result.item_count, 7)
+        self.assertEqual(self._count_table("official_resources", certification=PAB_EXAM_NAME), 7)
+
+    def test_ba_ingestion_unchanged_after_svc_registration(self):
+        result = self._ingest_ba()
+        self.assertEqual(result.item_count, 6)
+        self.assertEqual(self._count_table("official_resources", certification=BA_EXAM_NAME), 6)
+
+    def test_scc_ingestion_unchanged_after_svc_registration(self):
+        result = self._ingest_scc()
+        self.assertEqual(result.item_count, 5)
+        self.assertEqual(self._count_table("official_resources", certification=SCC_EXAM_NAME), 5)
+
+
 class TestFixtureIngestionSafety(unittest.TestCase):
     def test_production_dsn_rejected_for_spoofed_hostname(self):
         with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
@@ -1333,6 +1515,11 @@ _SCC_APPROVED_KWARGS = dict(
     fixture_version=SCC_FIXTURE_VERSION,
     certification_exam_name=SCC_EXAM_NAME,
     record_count=5,
+)
+_SVC_APPROVED_KWARGS = dict(
+    fixture_version=SVC_FIXTURE_VERSION,
+    certification_exam_name=SVC_EXAM_NAME,
+    record_count=8,
 )
 
 
@@ -1674,6 +1861,58 @@ class TestApprovedHostedSupabaseTargetOverride(unittest.TestCase):
                             allow_hosted_cli_flag=True,
                             fixture_version=SCC_FIXTURE_VERSION,
                             certification_exam_name=SCC_EXAM_NAME,
+                            record_count=bad_count,
+                        )
+
+    def test_svc_all_required_conditions_together_permit_hosted_target(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                assert_approved_hosted_supabase_target(
+                    database_url=_HOSTED_DSN,
+                    allow_hosted_cli_flag=True,
+                    **_SVC_APPROVED_KWARGS,
+                )
+
+    def test_svc_non_svc_certification_rejected_even_with_all_flags(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                    assert_approved_hosted_supabase_target(
+                        database_url=_HOSTED_DSN,
+                        allow_hosted_cli_flag=True,
+                        fixture_version=SVC_FIXTURE_VERSION,
+                        certification_exam_name=SCC_EXAM_NAME,
+                        record_count=8,
+                    )
+
+    def test_svc_record_count_other_than_eight_rejected_even_with_all_flags(self):
+        with self._clear_hosted_flags():
+            with patch.dict(
+                os.environ,
+                {
+                    ALLOW_FIXTURE_INGEST_FLAG: "1",
+                    ALLOW_APPROVED_SUPABASE_INGEST_FLAG: "1",
+                },
+            ):
+                for bad_count in (0, 1, 7, 9, 10, 100):
+                    with self.assertRaises(OfficialEvidenceFixtureIngestionSafetyError):
+                        assert_approved_hosted_supabase_target(
+                            database_url=_HOSTED_DSN,
+                            allow_hosted_cli_flag=True,
+                            fixture_version=SVC_FIXTURE_VERSION,
+                            certification_exam_name=SVC_EXAM_NAME,
                             record_count=bad_count,
                         )
 
