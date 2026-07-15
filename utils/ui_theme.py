@@ -157,7 +157,7 @@ def theme_css() -> str:
     }}
     .cb-kpi-grid {{
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
         gap: var(--cb-space-md);
         width: 100%;
     }}
@@ -261,10 +261,17 @@ def theme_css() -> str:
         padding: 0.55rem 0.95rem;
         border-radius: 999px;
         background: var(--cb-primary-navy);
-        color: var(--cb-text-inverse);
-        text-decoration: none;
+        color: #FFFFFF !important;
+        text-decoration: none !important;
         font-weight: 700;
         font-size: 0.88rem;
+    }}
+    div[data-testid="stMarkdownContainer"] a.cb-action-link,
+    div[data-testid="stMarkdownContainer"] a.cb-action-link:visited,
+    div[data-testid="stMarkdownContainer"] a.cb-action-link:hover,
+    div[data-testid="stMarkdownContainer"] a.cb-action-link:active {{
+        color: #FFFFFF !important;
+        text-decoration: none !important;
     }}
     .cb-activity-grid {{
         display: grid;

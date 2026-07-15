@@ -127,6 +127,15 @@ class TestNavigationHelpers(unittest.TestCase):
         self.assertEqual(build_mock_exam_href("abc"), "/?fr_session=abc")
 
 
+class TestWeakAreaPanel(unittest.TestCase):
+    def test_insufficient_evidence_uses_evidence_building_action(self):
+        from utils.dashboard_components import render_weak_area_action_panel
+
+        source = inspect.getsource(render_weak_area_action_panel)
+        self.assertIn("Build verified mock evidence", source)
+        self.assertIn("before targeting this domain", source)
+
+
 class TestStatusLabels(unittest.TestCase):
     def test_status_labels_exist_for_color_and_text(self):
         self.assertEqual(status_badge_class("high_risk"), "cb-badge-danger")

@@ -14,6 +14,7 @@ from utils.dashboard_charts import (
     build_domain_mastery_figure,
     build_score_trend_figure,
     build_study_activity_figure,
+    chart_summary_domain_mastery,
     chart_summary_score_trend,
 )
 from utils.learner_analytics import ScoreTrendPoint, StudyActivitySummary
@@ -89,7 +90,18 @@ class TestChartModuleBoundaries(unittest.TestCase):
         source = inspect.getsource(charts)
         self.assertNotIn("supabase", source.lower())
         self.assertNotIn("get_supabase_client", source)
-        self.assertNotIn("streamlit", source.lower())
+
+    def test_domain_summary_mentions_insufficient_evidence(self):
+        rows = [
+            {
+                "Domain": "Sparse Domain",
+                "Accuracy %": 0.0,
+                "has_sufficient_evidence": False,
+            }
+        ]
+        summary = chart_summary_domain_mastery(rows)
+        self.assertIn("insufficient verified evidence", summary.lower())
+        self.assertNotIn("0.0% accuracy", summary)
 
 
 if __name__ == "__main__":

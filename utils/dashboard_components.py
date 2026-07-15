@@ -29,6 +29,16 @@ def _esc(value: Any) -> str:
     return html.escape(str(value if value is not None else ""))
 
 
+_ACTION_LINK_STYLE = "color:#FFFFFF !important;text-decoration:none !important;"
+
+
+def _action_link(label: str, href: str) -> str:
+    return (
+        f'<a class="cb-action-link" href="{_esc(href)}" target="_self" '
+        f'style="{_ACTION_LINK_STYLE}">{_esc(label)}</a>'
+    )
+
+
 def format_score_value(value: Optional[float], *, suffix: str = "%") -> str:
     if value is None:
         return "—"
@@ -90,7 +100,7 @@ def render_empty_state(
 ) -> None:
     action_html = ""
     if action_label and action_href:
-        action_html = f'<a class="cb-action-link" href="{_esc(action_href)}" target="_self">{_esc(action_label)}</a>'
+        action_html = _action_link(action_label, action_href)
     st.markdown(
         f"""
         <div class="cb-empty-state">
@@ -169,7 +179,7 @@ def render_readiness_hero(
                 </p>
                 <div style="display:flex;gap:0.35rem;">{segments}</div>
                 <p class="cb-caption">{remaining} verified mock{'s' if remaining != 1 else ''} remaining before unlock.</p>
-                <a class="cb-action-link" href="{_esc(mock_exam_href)}" target="_self">Start a verified mock exam</a>
+                {_action_link("Start a verified mock exam", mock_exam_href)}
             </div>
             """,
             unsafe_allow_html=True,
@@ -270,7 +280,7 @@ def render_verified_kpi_row(
 def render_plotly_chart(fig: Any, *, caption: str = "", key: Optional[str] = None) -> None:
     if fig is None:
         return
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=key)
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key=key)
     if caption:
         st.caption(caption)
 
@@ -375,8 +385,14 @@ def render_weak_area_action_panel(
     status = "insufficient" if not sufficient else str(domain_row.get("status") or "below_target")
     badge_class = status_badge_class(status)
     status_text = status_label_text(status)
-    action_href = build_practice_href("pages/Practice_By_Category.py", exam_name, domain, session_token)
     accuracy_text = "Insufficient evidence" if not sufficient else f"{accuracy}% verified accuracy"
+    action_href = build_practice_href("pages/Practice_By_Category.py", exam_name, domain, session_token)
+    action_label = "Practice this domain"
+    caption = "Recommended action: complete a targeted practice session in this domain."
+    if not sufficient:
+        action_href = build_mock_exam_href(session_token)
+        action_label = "Build verified mock evidence"
+        caption = "Complete a verified mock exam before targeting this domain."
 
     st.markdown(
         f"""
@@ -385,8 +401,8 @@ def render_weak_area_action_panel(
             <div class="cb-card-heading">{_esc(domain)}</div>
             <div style="margin-bottom:0.55rem;"><span class="cb-badge {badge_class}">{_esc(status_text)}</span></div>
             <p class="cb-body">{_esc(accuracy_text)} · Exam weight {weight}% · {attempts_counted} attempts counted</p>
-            <p class="cb-caption">Recommended action: complete a targeted practice session in this domain.</p>
-            <a class="cb-action-link" href="{_esc(action_href)}" target="_self">Practice this domain</a>
+            <p class="cb-caption">{_esc(caption)}</p>
+            {_action_link(action_label, action_href)}
         </div>
         """,
         unsafe_allow_html=True,

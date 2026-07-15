@@ -183,13 +183,15 @@ def build_domain_mastery_figure(
         )
     )
     height = max(220, min(520, 56 * len(labels) + 80)) if not compact else max(180, 48 * len(labels) + 60)
+    longest_label = max((len(label) for label in labels), default=0)
+    left_margin = max(180 if not compact else 140, min(420, 8 * longest_label))
     layout = _base_layout("Verified Domain Mastery" if not compact else "")
     layout.update(
         {
             "height": height,
             "xaxis": {"title": "Verified accuracy %", "range": [0, 100], "gridcolor": CHART_THEME.grid_color},
             "yaxis": {"autorange": "reversed", "tickfont": {"size": 11}},
-            "margin": {"l": 180 if not compact else 140, "r": 24, "t": 40 if not compact else 16, "b": 36},
+            "margin": {"l": left_margin, "r": 24, "t": 40 if not compact else 16, "b": 36},
         }
     )
     fig.update_layout(**layout)
@@ -245,9 +247,15 @@ def chart_summary_domain_mastery(domain_rows: Sequence[Mapping[str, Any]]) -> st
     if not domain_rows:
         return "No verified domain evidence yet."
     weakest = domain_rows[0]
+    domain_name = weakest.get("Domain")
+    if not weakest.get("has_sufficient_evidence", True):
+        return (
+            f"Verified domain mastery for {len(domain_rows)} domains. "
+            f"Priority focus: {domain_name} has insufficient verified evidence."
+        )
     return (
         f"Verified domain mastery for {len(domain_rows)} domains. "
-        f"Priority focus: {weakest.get('Domain')} at {weakest.get('Accuracy %')}% accuracy."
+        f"Priority focus: {domain_name} at {weakest.get('Accuracy %')}% accuracy."
     )
 
 
