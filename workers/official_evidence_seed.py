@@ -902,7 +902,8 @@ def resolve_evidence_config_id_for_certification(
 
     Platform App Builder returns ``official_evidence_pab_v1``. Business Analyst
     returns ``official_evidence_ba_v1``. Sales Cloud Consultant returns
-    ``official_evidence_scc_v1``. Administrator returns ``None`` -- its
+    ``official_evidence_scc_v1``. Service Cloud Consultant returns
+    ``official_evidence_svc_v1``. Administrator returns ``None`` -- its
     generation callers may supply free-form ``source_evidence`` without an
     enforced config id, preserving historical behavior.
     """
@@ -924,6 +925,8 @@ def prepare_generation_source_evidence(
     ``official_evidence_ba_v1`` (injecting when absent, rejecting when wrong).
     For Sales Cloud Consultant, ``evidence_config_id`` is always set to
     ``official_evidence_scc_v1`` (injecting when absent, rejecting when wrong).
+    For Service Cloud Consultant, ``evidence_config_id`` is always set to
+    ``official_evidence_svc_v1`` (injecting when absent, rejecting when wrong).
     For Administrator, ``source_evidence`` is returned unchanged so the
     historical ADM fixture identity is never mutated.
     """

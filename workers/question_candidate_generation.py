@@ -1107,6 +1107,16 @@ def load_audit_retry_context(
         )
     except CertificationRegistryError as exc:
         raise CandidateValidationError(str(exc)) from exc
+    try:
+        request = replace(
+            request,
+            source_evidence=prepare_generation_source_evidence(
+                request.certification_exam_name,
+                request.source_evidence,
+            ),
+        )
+    except OfficialEvidenceSeedError as exc:
+        raise CandidateValidationError(str(exc)) from exc
     return AuditRetryContext(
         candidate_id=str(row["id"]),
         content_hash=row["content_hash"],
