@@ -11,6 +11,7 @@ from utils.access_control import (
     has_premium_access,
     get_supabase_client,
 )
+from utils.activity_modes import PAID_MOCK_EXAM
 from utils.readiness import (
     build_verified_domain_table_rows,
     build_verified_mock_performance_metrics,
@@ -259,7 +260,7 @@ def get_correct_count(attempt: Dict[str, Any]) -> int:
 def paid_full_mock_count(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> int:
     count = 0
     for attempt in attempts or []:
-        if str(attempt.get("mode") or "").strip() == "Paid Mock Exam" and _safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
+        if str(attempt.get("mode") or "").strip() == PAID_MOCK_EXAM and _safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
             count += 1
     return count
 
@@ -269,7 +270,7 @@ def filter_readiness_attempts(attempts: List[Dict[str, Any]], expected_question_
     """Keep only full-length Paid Mock Exam attempts for readiness."""
     filtered: List[Dict[str, Any]] = []
     for attempt in attempts or []:
-        if str(attempt.get("mode") or "").strip() == "Paid Mock Exam" and _safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
+        if str(attempt.get("mode") or "").strip() == PAID_MOCK_EXAM and _safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
             filtered.append(attempt)
     return filtered
 

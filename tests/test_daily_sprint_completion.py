@@ -11,10 +11,11 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from utils.activity_modes import DAILY_SPRINT, PRACTICE_BY_CATEGORY
+
 PRACTICE_PAGE = os.path.join(ROOT, "pages", "Practice_By_Category.py")
 
 HELPER_NAMES = {
-    "DAILY_SPRINT_MODE_LABEL",
     "DAILY_SPRINT_DASHBOARD_PAGE",
     "is_daily_sprint_session",
     "practice_results_heading",
@@ -42,7 +43,10 @@ def _load_practice_completion_helpers():
         elif isinstance(node, ast.FunctionDef) and node.name in HELPER_NAMES:
             selected_nodes.append(node)
     module_source = ast.unparse(ast.Module(body=selected_nodes, type_ignores=[]))
-    namespace: dict = {}
+    namespace: dict = {
+        "DAILY_SPRINT": DAILY_SPRINT,
+        "PRACTICE_BY_CATEGORY": PRACTICE_BY_CATEGORY,
+    }
     exec(compile(module_source, PRACTICE_PAGE, "exec"), namespace)
     return namespace
 
@@ -53,14 +57,14 @@ def helpers():
 
 
 def test_sprint_specific_completion_heading(helpers):
-    session_state = FakeSessionState({"practice_mode_label": helpers["DAILY_SPRINT_MODE_LABEL"]})
+    session_state = FakeSessionState({"practice_mode_label": DAILY_SPRINT})
     view = helpers["build_practice_completion_view"](80.0, 8, 10, session_state)
 
     assert view["heading"] == "Daily Sprint Complete"
 
 
 def test_score_and_correct_count_display(helpers):
-    session_state = FakeSessionState({"practice_mode_label": helpers["DAILY_SPRINT_MODE_LABEL"]})
+    session_state = FakeSessionState({"practice_mode_label": DAILY_SPRINT})
     view = helpers["build_practice_completion_view"](70.0, 7, 10, session_state)
 
     assert view["score_metric"] == "70.0%"
@@ -68,7 +72,7 @@ def test_score_and_correct_count_display(helpers):
 
 
 def test_dashboard_return_action(helpers):
-    session_state = FakeSessionState({"practice_mode_label": helpers["DAILY_SPRINT_MODE_LABEL"]})
+    session_state = FakeSessionState({"practice_mode_label": DAILY_SPRINT})
     view = helpers["build_practice_completion_view"](90.0, 9, 10, session_state)
 
     assert view["show_dashboard_return"] is True
@@ -77,14 +81,14 @@ def test_dashboard_return_action(helpers):
 
 
 def test_preserved_review_flow(helpers):
-    session_state = FakeSessionState({"practice_mode_label": helpers["DAILY_SPRINT_MODE_LABEL"]})
+    session_state = FakeSessionState({"practice_mode_label": DAILY_SPRINT})
     view = helpers["build_practice_completion_view"](60.0, 6, 10, session_state)
 
     assert view["review_heading"] == "Answer Review"
 
 
 def test_non_sprint_results_behavior_unchanged(helpers):
-    session_state = FakeSessionState({"practice_mode_label": "Practice by Category"})
+    session_state = FakeSessionState({"practice_mode_label": PRACTICE_BY_CATEGORY})
     view = helpers["build_practice_completion_view"](85.0, 17, 20, session_state)
 
     assert view["heading"] == "Practice Results"

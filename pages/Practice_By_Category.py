@@ -31,11 +31,11 @@ from utils.practice_session_persistence import (
     restore_category_practice_session,
 )
 from utils.user_errors import PRACTICE_SAVE_ERROR_MESSAGE, log_and_get_user_message
+from utils.activity_modes import DAILY_SPRINT, PRACTICE_BY_CATEGORY
 from utils.version import APP_VERSION
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 DAILY_SPRINT_QUESTION_COUNT = 10
 DAILY_SPRINT_AUTO_START_GUARD = "daily_sprint_auto_start_attempted"
-DAILY_SPRINT_MODE_LABEL = "Daily Sprint"
 DAILY_SPRINT_DASHBOARD_PAGE = "pages/Dashboard.py"
 
 st.set_page_config(page_title="Practice by Category", layout="wide", initial_sidebar_state="expanded")
@@ -220,7 +220,7 @@ def maybe_auto_start_daily_sprint(
         selected_count,
         daily_sprint_exam_name,
         language_code,
-        "Daily Sprint",
+        DAILY_SPRINT,
         session_state,
     )
     rerun_fn()
@@ -228,7 +228,7 @@ def maybe_auto_start_daily_sprint(
 
 
 def is_daily_sprint_session(session_state) -> bool:
-    return str(session_state.get("practice_mode_label") or "").strip() == DAILY_SPRINT_MODE_LABEL
+    return str(session_state.get("practice_mode_label") or "").strip() == DAILY_SPRINT
 
 
 def practice_results_heading(session_state) -> str:
@@ -516,7 +516,7 @@ def save_practice_attempt(score, correct, total, category, domain_breakdown, dif
 
     payload = {
         "user_email": user_email,
-        "mode": st.session_state.get("practice_mode_label", "Practice by Category"),
+        "mode": st.session_state.get("practice_mode_label", PRACTICE_BY_CATEGORY),
         "category": category,
         "score": float(score),
         "correct_answers": int(correct),
@@ -768,7 +768,7 @@ if not st.session_state.get("practice_started", False):
             selected_count,
             selected_exam,
             language_code,
-            "Daily Sprint" if is_daily_sprint else "Practice by Category",
+            DAILY_SPRINT if is_daily_sprint else PRACTICE_BY_CATEGORY,
             st.session_state,
         )
         reset_practice_timing()

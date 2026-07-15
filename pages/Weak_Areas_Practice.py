@@ -32,14 +32,8 @@ from utils.practice_session_persistence import (
     restore_weak_practice_session,
 )
 from utils.user_errors import PRACTICE_SAVE_ERROR_MESSAGE, log_and_get_user_message
+from utils.activity_modes import DAILY_SPRINT, PRACTICE_BY_CATEGORY, WEAK_AREA_EVIDENCE_MODES, WEAK_AREAS_PRACTICE
 from utils.version import APP_VERSION
-WEAK_AREAS_EVIDENCE_MODES = frozenset({
-    "Paid Mock Exam",
-    "Daily Sprint",
-    "Practice by Category",
-    "Weak Areas Practice",
-    "Free Mock Exam",
-})
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
 st.set_page_config(page_title="Weak Areas Practice", layout="wide", initial_sidebar_state="expanded")
@@ -269,7 +263,7 @@ def filter_weak_areas_evidence_attempts(attempts):
     filtered = []
     for attempt in attempts or []:
         mode = str(attempt.get("mode") or "").strip()
-        if mode not in WEAK_AREAS_EVIDENCE_MODES:
+        if mode not in WEAK_AREA_EVIDENCE_MODES:
             continue
         if _parse_attempt_id(attempt.get("id")) is None:
             continue
@@ -442,7 +436,7 @@ def save_weak_attempt(score, correct, total, category_label, domain_breakdown, d
 
     payload = {
         "user_email": user_email,
-        "mode": "Weak Areas Practice",
+        "mode": WEAK_AREAS_PRACTICE,
         "category": category_label,
         "score": float(score),
         "correct_answers": int(correct),

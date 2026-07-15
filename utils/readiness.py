@@ -22,6 +22,8 @@ import statistics
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from utils.activity_modes import PAID_MOCK_EXAM, is_readiness_eligible_mode
+
 READINESS_VERSION = "READINESS_V5_VERIFIED_EVIDENCE"
 
 EMA_ALPHA = 0.40
@@ -371,7 +373,7 @@ def v5_grade_attempt(
     """
     # ── INVALID gate ──────────────────────────────────────────────────────────
     mode = str(attempt.get("mode") or "").strip().lower()
-    if mode != "paid mock exam":
+    if not is_readiness_eligible_mode(mode):
         return GRADE_INVALID
 
     total_q = _safe_int(attempt.get("total_questions"), 0)
@@ -1388,9 +1390,8 @@ def _parse_sort_value(attempt: Dict[str, Any]) -> str:
 
 def is_full_mock_attempt(attempt: Dict[str, Any], expected_question_count: int = 60) -> bool:
     """Return True only for full-length Paid Mock Exam attempts eligible for readiness."""
-    mode = str(attempt.get("mode") or "").strip().lower()
     total = _safe_int(attempt.get("total_questions"), 0)
-    return mode == "paid mock exam" and total >= int(expected_question_count or 60)
+    return is_readiness_eligible_mode(attempt.get("mode")) and total >= int(expected_question_count or 60)
 
 
 def full_mock_count(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> int:

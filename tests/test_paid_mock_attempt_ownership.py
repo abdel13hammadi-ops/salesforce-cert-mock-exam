@@ -46,6 +46,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_exam_attempt_tracking import FakeSupabase, _FakeTable, make_60_questions, make_answers_for
+from utils.activity_modes import FREE_MOCK_EXAM, PAID_MOCK_EXAM
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_PAGE = os.path.join(ROOT, "app.py")
@@ -53,7 +54,7 @@ APP_PAGE = os.path.join(ROOT, "app.py")
 DEFAULT_USER_EMAIL = "learner@example.test"
 DEFAULT_EXAM_NAME = "Exam X"
 DEFAULT_LANGUAGE_CODE = "en"
-PAID_MODE = "Paid Mock Exam"
+PAID_MODE = PAID_MOCK_EXAM
 
 
 # ── Shared fakes ───────────────────────────────────────────────────────────────
@@ -137,6 +138,8 @@ def _extract_functions(path, names):
         "timedelta": timedelta,
         "time": time,
         "math": math,
+        "PAID_MOCK_EXAM": PAID_MOCK_EXAM,
+        "FREE_MOCK_EXAM": FREE_MOCK_EXAM,
     }
     exec(compile(module_source, path, "exec"), namespace)
     return namespace

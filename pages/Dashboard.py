@@ -18,6 +18,7 @@ from utils.access_control import (
     render_app_chrome,
     render_session_page_link,
 )
+from utils.activity_modes import PAID_MOCK_EXAM
 from utils.datetime_display import DEFAULT_DISPLAY_TIMEZONE, format_user_datetime
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.version import APP_VERSION
@@ -80,7 +81,7 @@ def parse_dt(value: Any) -> datetime:
 def paid_full_mock_count(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> int:
     count = 0
     for attempt in attempts or []:
-        if safe_str(attempt.get("mode")) == "Paid Mock Exam" and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
+        if safe_str(attempt.get("mode")) == PAID_MOCK_EXAM and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
             count += 1
     return count
 
@@ -90,7 +91,7 @@ def filter_readiness_attempts(attempts: List[Dict[str, Any]], expected_question_
     """Keep only full-length Paid Mock Exam attempts for readiness."""
     filtered: List[Dict[str, Any]] = []
     for attempt in attempts or []:
-        if safe_str(attempt.get("mode")) == "Paid Mock Exam" and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
+        if safe_str(attempt.get("mode")) == PAID_MOCK_EXAM and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
             filtered.append(attempt)
     return filtered
 

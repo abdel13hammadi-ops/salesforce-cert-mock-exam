@@ -11,6 +11,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from supabase import create_client
 from utils.access_control import render_app_chrome, get_current_user_email as shared_get_current_user_email, get_user_subscription_status as shared_get_user_subscription_status, get_preferred_language_code as shared_get_preferred_language_code, PAID_STATUS_VALUES
+from utils.activity_modes import FREE_MOCK_EXAM, PAID_MOCK_EXAM
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.user_errors import EXAM_BANK_LOAD_ERROR_MESSAGE, log_and_get_user_message
 from utils.version import APP_VERSION
@@ -792,7 +793,7 @@ def load_paid_mock_history(supabase, user_email: str, exam_name: str) -> dict:
         .select("id, completed_at")
         .eq("user_email", user_email)
         .eq("exam_name", exam_name)
-        .eq("mode", "Paid Mock Exam")
+        .eq("mode", PAID_MOCK_EXAM)
         .not_("completed_at", "is", "null")
         .order("completed_at", desc=True)
         .execute()
@@ -1262,7 +1263,7 @@ def apply_pending_exam_state_if_valid(bank, exam_key, *, exam_name, language_cod
                 verified_attempt_id = verify_exam_attempt_ownership(
                     get_supabase_client(), restored_attempt_id,
                     expected_user_email=restoring_user_email,
-                    expected_mode="Paid Mock Exam",
+                    expected_mode=PAID_MOCK_EXAM,
                     expected_exam_name=exam_name,
                     expected_language_code=language_code,
                 )
@@ -1593,7 +1594,7 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
         log_save_exam_attempt_result,
     )
 
-    mode = "Paid Mock Exam" if st.session_state.get("exam_access_type") == "paid" else "Free Mock Exam"
+    mode = PAID_MOCK_EXAM if st.session_state.get("exam_access_type") == "paid" else FREE_MOCK_EXAM
     log_save_exam_attempt_enter(mode=mode)
 
     user_email = get_current_user_email()
@@ -1608,7 +1609,7 @@ def save_exam_attempt(score, correct, total_questions, domain_breakdown, difficu
     except Exception:
         started_at = completed_at
 
-    is_paid = (mode == "Paid Mock Exam")
+    is_paid = (mode == PAID_MOCK_EXAM)
 
     # 1) PARENT ID REUSE — the authoritative guard against duplicate parents.
     # If this submission already created a parent (any prior rerun/retry), reuse

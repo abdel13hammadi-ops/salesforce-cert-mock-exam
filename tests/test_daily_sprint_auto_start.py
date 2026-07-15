@@ -15,6 +15,8 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from utils.activity_modes import DAILY_SPRINT, PRACTICE_BY_CATEGORY
+
 EXAM_NAME = "Salesforce Certified Platform Administrator"
 DOMAIN = "Security and Access"
 PRACTICE_PAGE = os.path.join(ROOT, "pages", "Practice_By_Category.py")
@@ -51,6 +53,8 @@ def _load_practice_helpers():
         "defaultdict": defaultdict,
         "random": random,
         "time": time,
+        "DAILY_SPRINT": DAILY_SPRINT,
+        "PRACTICE_BY_CATEGORY": PRACTICE_BY_CATEGORY,
     }
     exec(compile(module_source, PRACTICE_PAGE, "exec"), namespace)
     return namespace
@@ -112,7 +116,7 @@ def test_valid_daily_sprint_deep_link_auto_starts(helpers, session_state):
     assert started is True
     assert reruns == [True]
     assert session_state["practice_started"] is True
-    assert session_state["practice_mode_label"] == "Daily Sprint"
+    assert session_state["practice_mode_label"] == DAILY_SPRINT
     assert session_state["practice_count"] == helpers["DAILY_SPRINT_QUESTION_COUNT"]
     assert len(session_state["practice_questions"]) == 10
     assert session_state[helpers["DAILY_SPRINT_AUTO_START_GUARD"]] is True
@@ -206,10 +210,10 @@ def test_non_daily_sprint_flow_unchanged(helpers, session_state):
         10,
         EXAM_NAME,
         "en",
-        "Practice by Category",
+        PRACTICE_BY_CATEGORY,
         session_state,
     )
 
-    assert session_state["practice_mode_label"] == "Practice by Category"
+    assert session_state["practice_mode_label"] == PRACTICE_BY_CATEGORY
     assert session_state["practice_count"] == 10
     assert len(session_state["practice_questions"]) == 10
