@@ -298,5 +298,82 @@ def theme_css() -> str:
         font-size: 0.82rem;
         color: var(--cb-text-muted);
     }}
+    .cb-shell-brand {{
+        font-size: 1.05rem;
+        font-weight: 800;
+        color: var(--cb-primary-navy);
+        margin-bottom: 0.35rem;
+        letter-spacing: 0.01em;
+    }}
+    .cb-shell-caption {{
+        font-size: 0.78rem;
+        color: var(--cb-text-muted);
+        margin-bottom: 0.65rem;
+    }}
+    .cb-nav-section {{
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--cb-text-muted);
+        margin: 0.85rem 0 0.35rem;
+    }}
+    .cb-nav-link {{
+        display: block;
+        padding: 0.42rem 0.55rem;
+        margin: 0.08rem 0;
+        text-decoration: none;
+        color: var(--cb-text);
+        border-radius: 0.45rem;
+        border: 1px solid transparent;
+        font-size: 0.92rem;
+        line-height: 1.25;
+        word-break: break-word;
+    }}
+    div[data-testid="stMarkdownContainer"] a.cb-nav-link,
+    div[data-testid="stMarkdownContainer"] a.cb-nav-link:visited {{
+        color: var(--cb-text) !important;
+        text-decoration: none !important;
+    }}
+    .cb-nav-link:hover {{
+        background: var(--cb-surface-subtle);
+        border-color: var(--cb-border);
+    }}
+    .cb-nav-link-active {{
+        background: var(--cb-surface-muted);
+        border-color: var(--cb-border-strong);
+        font-weight: 700;
+        color: var(--cb-primary-navy);
+    }}
+    .cb-nav-link-active::before {{
+        content: "● ";
+        color: var(--cb-accent);
+        font-size: 0.65rem;
+        vertical-align: middle;
+    }}
+    .cb-page-header {{
+        margin-bottom: var(--cb-space-lg);
+    }}
+    .cb-page-title {{
+        font-size: 1.85rem;
+        font-weight: 800;
+        color: var(--cb-primary-navy);
+        margin: 0 0 0.35rem;
+        line-height: 1.15;
+        word-break: break-word;
+    }}
+    .cb-page-description {{
+        color: var(--cb-text-muted);
+        margin: 0;
+        font-size: 0.95rem;
+        max-width: 70ch;
+    }}
+    .cb-page-header-row {{
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }}
     </style>
     """

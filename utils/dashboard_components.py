@@ -25,6 +25,11 @@ def inject_certbound_theme() -> None:
     st.markdown(theme_css(), unsafe_allow_html=True)
 
 
+def inject_shell_theme() -> None:
+    """Inject shared shell and dashboard styling."""
+    inject_certbound_theme()
+
+
 def _esc(value: Any) -> str:
     return html.escape(str(value if value is not None else ""))
 
@@ -79,16 +84,20 @@ def status_label_text(status: str) -> str:
 
 
 def build_practice_href(page_path: str, exam_name: str, category: str, session_token: str = "") -> str:
-    route = "/Practice_By_Category" if "Practice_By_Category" in page_path else page_path
-    params = {"exam_name": exam_name, "category": category}
-    if session_token:
-        params["fr_session"] = session_token
-    query = "&".join(f"{quote(str(k))}={quote(str(v))}" for k, v in params.items())
-    return f"{route}?{query}"
+    from utils.navigation import build_practice_domain_href
+
+    return build_practice_domain_href(
+        exam_name,
+        category,
+        session_token=session_token,
+        page_path=page_path,
+    )
 
 
 def build_mock_exam_href(session_token: str = "") -> str:
-    return f"/?{quote('fr_session')}={quote(session_token)}" if session_token else "/"
+    from utils.navigation import build_nav_href
+
+    return build_nav_href("app.py", session_token=session_token)
 
 
 def render_empty_state(
@@ -133,6 +142,46 @@ def render_cert_context_header(
             <div class="cb-card-heading">{_esc(title)}</div>
             <p class="cb-body">{_esc(subtitle)}</p>
             <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.65rem;">{passing_html}{access_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_page_header(
+    title: str,
+    *,
+    description: str = "",
+    badge: str = "",
+    certification_name: str = "",
+    action_label: str = "",
+    action_href: str = "",
+) -> None:
+    badge_html = f'<span class="cb-badge cb-badge-neutral">{_esc(badge)}</span>' if badge else ""
+    cert_html = (
+        f'<span class="cb-badge cb-badge-neutral">{_esc(certification_name)}</span>'
+        if certification_name
+        else ""
+    )
+    action_html = _action_link(action_label, action_href) if action_label and action_href else ""
+    meta_html = "".join(part for part in (badge_html, cert_html) if part)
+    meta_block = (
+        f'<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.55rem;">{meta_html}</div>'
+        if meta_html
+        else ""
+    )
+    action_block = f'<div style="margin-top:0.65rem;">{action_html}</div>' if action_html else ""
+    st.markdown(
+        f"""
+        <div class="cb-page-header cb-shell">
+            <div class="cb-page-header-row">
+                <div>
+                    <h1 class="cb-page-title">{_esc(title)}</h1>
+                    {f'<p class="cb-page-description">{_esc(description)}</p>' if description else ''}
+                    {meta_block}
+                </div>
+            </div>
+            {action_block}
         </div>
         """,
         unsafe_allow_html=True,

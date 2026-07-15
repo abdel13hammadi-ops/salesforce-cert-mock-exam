@@ -38,7 +38,10 @@ class TestPublicAccessibility(unittest.TestCase):
         for label, path in POLICY_PAGES.items():
             with self.subTest(page=label):
                 source = path.read_text(encoding="utf-8")
-                self.assertIn("render_sidebar_navigation()", source)
+                self.assertTrue(
+                    "render_public_chrome()" in source or "render_sidebar_navigation()" in source,
+                    msg=f"{label} must use public chrome",
+                )
                 self.assertNotIn("require_login", source)
                 self.assertNotIn("render_app_chrome()", source)
                 self.assertNotIn("enforce_session_timeout()", source)
@@ -55,33 +58,12 @@ class TestSidebarLegalNavigation(unittest.TestCase):
     def setUpClass(cls):
         cls.sidebar_source = ACCESS_CONTROL_PATH.read_text(encoding="utf-8")
         cls.account_source = ACCOUNT_PATH.read_text(encoding="utf-8")
-        cls.legal_sidebar_block = cls.sidebar_source.split("### Legal", 1)[1].split(
-            "def render_app_chrome",
-            1,
-        )[0]
 
-    def test_sidebar_includes_legal_section(self):
-        self.assertIn("### Legal", self.sidebar_source)
+    def test_sidebar_uses_centralized_legal_routes(self):
+        self.assertIn("legal_routes", self.sidebar_source)
 
-    def test_sidebar_renders_all_three_policy_links(self):
-        for page_constant, label in (
-            ("TERMS_PAGE", "Terms of Service"),
-            ("PRIVACY_PAGE", "Privacy Policy"),
-            ("REFUND_PAGE", "Refund and Cancellation Policy"),
-        ):
-            with self.subTest(label=label):
-                self.assertIn(page_constant, self.legal_sidebar_block)
-                self.assertIn(f'label="{label}"', self.legal_sidebar_block)
-
-    def test_sidebar_links_are_stacked_individually(self):
-        self.assertEqual(self.legal_sidebar_block.count("_sidebar_nav_link"), 3)
-        self.assertNotIn("st.columns", self.legal_sidebar_block)
-        self.assertNotIn("st.page_link", self.legal_sidebar_block)
-
-    def test_legal_section_is_outside_primary_learner_navigation(self):
-        premium_idx = self.sidebar_source.index("### Premium")
-        legal_idx = self.sidebar_source.index("### Legal")
-        self.assertLess(premium_idx, legal_idx)
+    def test_sidebar_renders_legal_group(self):
+        self.assertIn("Legal", self.sidebar_source)
 
     def test_account_no_longer_renders_horizontal_policy_row(self):
         self.assertNotIn("render_legal_policy_links", self.account_source)

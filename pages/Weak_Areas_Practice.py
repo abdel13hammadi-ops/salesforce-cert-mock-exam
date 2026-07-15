@@ -33,6 +33,7 @@ from utils.practice_session_persistence import (
 )
 from utils.user_errors import PRACTICE_SAVE_ERROR_MESSAGE, log_and_get_user_message
 from utils.activity_modes import DAILY_SPRINT, PRACTICE_BY_CATEGORY, WEAK_AREA_EVIDENCE_MODES, WEAK_AREAS_PRACTICE
+from utils.dashboard_components import inject_certbound_theme, render_page_header
 from utils.version import APP_VERSION
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
@@ -43,6 +44,13 @@ render_app_chrome()
 # SESSION_TIMEOUT_APPLIED
 enforce_session_timeout()
 show_session_expired_notice()
+
+inject_certbound_theme()
+render_page_header(
+    "Weak Areas Practice",
+    description="Practice verified weak domains based on your attempt history.",
+)
+st.caption(f"App Version: {APP_VERSION}")
 
 
 @st.cache_resource

@@ -28,6 +28,7 @@ from utils.access_control import (
     unlock_admin,
 )
 
+from utils.dashboard_components import render_page_header
 from utils.version import APP_VERSION
 from utils.billing_config import CHECKOUT_PENDING_MESSAGE, CHECKOUT_SUCCESS_SIGNIN_MESSAGE
 from utils.billing_stripe import (
@@ -480,7 +481,7 @@ def send_password_reset_email(email: str) -> None:
             raise
     raise RuntimeError(f"Password reset is not supported by the installed Supabase client: {last_error}")
 
-st.title("Account")
+render_page_header("Account", description="Manage login, profile, subscription, and admin unlock.")
 st.caption(f"App Version: {APP_VERSION}")
 
 languages = load_languages()

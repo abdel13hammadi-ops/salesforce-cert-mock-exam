@@ -14,6 +14,7 @@ from utils.access_control import (
     require_login,
 )
 
+from utils.dashboard_components import render_page_header
 from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Support", layout="wide")
@@ -106,7 +107,7 @@ def status_label(status: str) -> str:
     return labels.get(status, status.replace("_", " ").title())
 
 
-st.title("Support")
+render_page_header("Support", description="Get help with questions, explanations, technical issues, or account access.")
 st.caption(f"App Version: {APP_VERSION}")
 
 current_email = normalize_email(require_login() or "")

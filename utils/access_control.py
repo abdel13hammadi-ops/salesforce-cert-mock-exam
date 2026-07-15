@@ -19,7 +19,7 @@ import hmac
 import json
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 from urllib.parse import quote
 
 import streamlit as st
@@ -691,116 +691,192 @@ def _hide_native_sidebar_nav_css() -> None:
 
 def _streamlit_route_for_page(page_path: str) -> str:
     """Return Streamlit multipage route path for a script path."""
-    page_path = str(page_path or "").strip()
-    if page_path == "app.py":
-        return "/"
-    if page_path.startswith("pages/") and page_path.endswith(".py"):
-        return "/" + page_path.rsplit("/", 1)[-1][:-3]
-    return "/"
+    from utils.navigation import streamlit_route_for_page
+
+    return streamlit_route_for_page(page_path)
 
 
-def _session_preserving_href(page_path: str) -> str:
+def _session_preserving_href(page_path: str, *, extra_params: Optional[Dict[str, str]] = None) -> str:
     """Build a navigation URL that keeps the signed session query parameter."""
-    route = _streamlit_route_for_page(page_path)
-    token = _current_signed_session_token()
-    if token:
-        return f"{route}?{SESSION_PARAM}={quote(token, safe='')}"
-    return route
+    from utils.navigation import build_nav_href
+
+    return build_nav_href(
+        page_path,
+        session_token=_current_signed_session_token(),
+        extra_params=extra_params,
+    )
 
 
-def _sidebar_nav_link(page_path: str, label: str, icon: str = "") -> None:
+def _sidebar_nav_link(
+    page_path: str,
+    label: str,
+    icon: str = "",
+    *,
+    is_active: bool = False,
+) -> None:
     """Render a sidebar link that preserves fr_session across Streamlit pages."""
     href = _session_preserving_href(page_path)
     safe_label = str(label).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     safe_icon = str(icon).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    active_class = " cb-nav-link-active" if is_active else ""
+    current_attr = ' aria-current="page"' if is_active else ""
     st.markdown(
         f"""
-        <a href="{href}" target="_self" style="
-            display: block;
-            padding: 0.35rem 0.25rem;
-            text-decoration: none;
-            color: inherit;
-            border-radius: 0.35rem;
-        ">{safe_icon} {safe_label}</a>
+        <a href="{href}" target="_self" class="cb-nav-link{active_class}"{current_attr}
+           style="color: inherit; text-decoration: none;">
+            {safe_icon} {safe_label}
+        </a>
         """,
         unsafe_allow_html=True,
     )
 
 
-
-
-def render_session_page_link(page_path: str, label: str, icon: str = "") -> None:
+def render_session_page_link(
+    page_path: str,
+    label: str,
+    icon: str = "",
+    *,
+    extra_params: Optional[Dict[str, str]] = None,
+) -> None:
     """Render a page link that preserves fr_session across hard refreshes.
 
     Do not use st.page_link for authenticated navigation because it drops query
     parameters. This anchor keeps the signed session token in the URL.
     """
-    href = _session_preserving_href(page_path)
+    href = _session_preserving_href(page_path, extra_params=extra_params)
     safe_label = str(label).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     safe_icon = str(icon).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     st.markdown(
         f"""
-        <a href="{href}" target="_self" style="
-            display: inline-block;
-            padding: 0.45rem 0.70rem;
-            margin: 0.15rem 0;
-            text-decoration: none;
-            color: inherit;
-            border: 1px solid rgba(49, 51, 63, 0.20);
-            border-radius: 0.45rem;
-        ">{safe_icon} {safe_label}</a>
+        <a href="{href}" target="_self" class="cb-nav-link"
+           style="display: inline-block; padding: 0.45rem 0.70rem; margin: 0.15rem 0;
+                  text-decoration: none; color: inherit; border: 1px solid rgba(49, 51, 63, 0.20);
+                  border-radius: 0.45rem;">
+            {safe_icon} {safe_label}
+        </a>
         """,
         unsafe_allow_html=True,
     )
 
+
+def _render_navigation_group(
+    title: str,
+    routes: Sequence[Any],
+    *,
+    current_page_path: str,
+) -> None:
+    from utils.navigation import is_route_active
+
+    if not routes:
+        return
+    st.markdown(f'<div class="cb-nav-section">{title}</div>', unsafe_allow_html=True)
+    for route in routes:
+        _sidebar_nav_link(
+            route.page_path,
+            route.label,
+            route.icon,
+            is_active=is_route_active(route, current_page_path),
+        )
+
+
 def render_sidebar_navigation() -> None:
+    from utils.navigation import (
+        admin_routes,
+        detect_current_page_path,
+        is_route_visible,
+        legal_routes,
+        practice_routes,
+        primary_learner_routes,
+    )
+
     restore_login_from_signed_url()
     _hide_native_sidebar_nav_css()
     email = get_current_user_email()
     level = get_user_access_level(email) if email else "logged_out"
+    admin_email = is_admin_user(email)
+    admin_unlocked = is_admin_unlocked()
+    current_page_path = detect_current_page_path()
 
     with st.sidebar:
-        st.markdown("### Certification Prep")
+        st.markdown('<div class="cb-shell-brand">CertBound</div>', unsafe_allow_html=True)
         if email:
-            st.caption(f"Signed in: {email}")
-            st.caption(f"Access: {level}")
+            st.markdown(
+                f'<div class="cb-shell-caption">Signed in: {email}<br/>Access: {level}</div>',
+                unsafe_allow_html=True,
+            )
         else:
-            st.caption("Not signed in")
+            st.markdown('<div class="cb-shell-caption">Not signed in</div>', unsafe_allow_html=True)
 
-        _sidebar_nav_link("pages/Dashboard.py", label="Dashboard", icon="🏠")
-        _sidebar_nav_link("app.py", label="Mock Exam / Free Preview", icon="📝")
-        _sidebar_nav_link("pages/Account.py", label="Account", icon="👤")
-        _sidebar_nav_link("pages/Support.py", label="Support", icon="🛟")
+        primary = [
+            route
+            for route in primary_learner_routes()
+            if is_route_visible(
+                route,
+                access_level=level,
+                is_admin_email=admin_email,
+                admin_unlocked=admin_unlocked,
+            )
+        ]
+        _render_navigation_group("Learner", primary, current_page_path=current_page_path)
 
-        st.divider()
-        st.markdown("### Premium")
-        _sidebar_nav_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
-        _sidebar_nav_link("pages/Weak_Areas_Practice.py", label="Weak Areas Practice", icon="🎯")
-        _sidebar_nav_link("pages/My_Progress.py", label="My Progress", icon="📈")
-        if level not in {"paid", "admin"}:
-            st.caption("Premium access required")
-
-        if email and is_admin_user(email):
+        practice = [
+            route
+            for route in practice_routes()
+            if is_route_visible(
+                route,
+                access_level=level,
+                is_admin_email=admin_email,
+                admin_unlocked=admin_unlocked,
+            )
+        ]
+        if practice:
             st.divider()
-            _sidebar_nav_link("pages/Account.py", label="Admin Unlock", icon="🔐")
-            if is_admin_unlocked():
-                _sidebar_nav_link("pages/Admin_Users.py", label="Admin Users", icon="👥")
-                _sidebar_nav_link("pages/Admin_Import.py", label="Admin Import", icon="⬆️")
-                _sidebar_nav_link("pages/Admin_Question_Review.py", label="Admin Question Review", icon="✅")
-                _sidebar_nav_link("pages/Admin_Free_Mock_Curation.py", label="Free Mock Curation", icon="📋")
-                _sidebar_nav_link("pages/Admin_Audit_Review.py", label="Admin Audit Review", icon="🔍")
-                _sidebar_nav_link("pages/Admin_Support_Tickets.py", label="Admin Support Tickets", icon="🎫")
+            _render_navigation_group("Practice destinations", practice, current_page_path=current_page_path)
+            if level not in {"paid", "admin"}:
+                st.caption("Premium access required")
+
+        if admin_email:
+            st.divider()
+            if not admin_unlocked:
+                _sidebar_nav_link("pages/Account.py", "Admin Unlock", "🔐", is_active=False)
+            else:
+                admin_visible = [
+                    route
+                    for route in admin_routes()
+                    if is_route_visible(
+                        route,
+                        access_level=level,
+                        is_admin_email=admin_email,
+                        admin_unlocked=admin_unlocked,
+                    )
+                ]
+                _render_navigation_group("Admin", admin_visible, current_page_path=current_page_path)
 
         st.divider()
-        st.markdown("### Legal")
-        from utils.legal_policy_pages import PRIVACY_PAGE, REFUND_PAGE, TERMS_PAGE
+        legal_visible = [
+            route
+            for route in legal_routes()
+            if is_route_visible(
+                route,
+                access_level=level,
+                is_admin_email=admin_email,
+                admin_unlocked=admin_unlocked,
+            )
+        ]
+        _render_navigation_group("Legal", legal_visible, current_page_path=current_page_path)
 
-        _sidebar_nav_link(TERMS_PAGE, label="Terms of Service")
-        _sidebar_nav_link(PRIVACY_PAGE, label="Privacy Policy")
-        _sidebar_nav_link(REFUND_PAGE, label="Refund and Cancellation Policy")
+
+def render_public_chrome() -> None:
+    """Public-safe shared shell for legal and password-recovery pages."""
+    from utils.dashboard_components import inject_shell_theme
+
+    inject_shell_theme()
+    render_sidebar_navigation()
 
 
 def render_app_chrome() -> None:
+    from utils.dashboard_components import inject_shell_theme
+
     try:
         from utils.sentry_config import init_sentry  # noqa: PLC0415
         init_sentry()
@@ -809,4 +885,5 @@ def render_app_chrome() -> None:
     bootstrap_signed_session()
     _sync_existing_session_token_to_url()
     _render_browser_session_bridge()
+    inject_shell_theme()
     render_sidebar_navigation()

@@ -37,6 +37,7 @@ from utils.dashboard_components import (
     render_score_trend_section,
     render_study_activity_section,
     render_verified_kpi_row,
+    render_page_header,
     render_weak_area_action_panel,
 )
 from utils.readiness_persistence import extract_captured_bank_size
@@ -45,7 +46,7 @@ from utils.session_timeout import enforce_session_timeout, show_session_expired_
 from utils.user_errors import PROGRESS_LOAD_ERROR_MESSAGE, log_and_get_user_message
 from utils.version import APP_VERSION
 
-st.set_page_config(page_title="My Progress", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Progress", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
 
 # SESSION_TIMEOUT_APPLIED
@@ -418,7 +419,10 @@ def render_locked_progress_preview(user_email: str, subscription_status: str) ->
     st.info("Complete the Free Preview to sample the exam flow. Full progress tracking unlocks real attempt history, readiness scoring, and weak-area analysis.")
 
 
-st.title("My Progress")
+render_page_header(
+    "Progress",
+    description="Review readiness, verified mock performance, and domain mastery for your selected certification.",
+)
 st.caption(f"App Version: {APP_VERSION}")
 inject_certbound_theme()
 

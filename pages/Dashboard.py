@@ -41,6 +41,7 @@ from utils.dashboard_components import (
     render_score_trend_section,
     render_study_activity_section,
     render_verified_kpi_row,
+    render_page_header,
     render_weak_area_action_panel,
 )
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
@@ -58,7 +59,7 @@ DEFAULT_ADMIN_EXAM = "Salesforce Certified Platform Administrator"
 DEFAULT_BA_EXAM = "Salesforce Certified Business Analyst"
 DAILY_SPRINT_QUESTION_COUNT = 10
 
-st.set_page_config(page_title="Dashboard", page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Home", page_icon="🏠", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
 
 # SESSION_TIMEOUT_APPLIED
@@ -448,7 +449,11 @@ def attempt_correct_count(attempt: Dict[str, Any]) -> int:
 
 
 def render_public_onboarding() -> None:
-    st.title("CertBound Dashboard")
+    render_page_header(
+        "Home",
+        description="Start with a free mock exam. Upgrade only when the data is useful.",
+        badge="Free Preview",
+    )
     st.caption(f"App Version: {APP_VERSION}")
 
     st.markdown(
@@ -505,7 +510,7 @@ def render_locked_premium_cards() -> None:
     cards = [
         ("Practice By Category", "Preview domain-based drilling without exposing paid questions.", "pages/Practice_By_Category.py", "📚"),
         ("Weak Areas Practice", "Preview targeted practice based on sample weak-domain data.", "pages/Weak_Areas_Practice.py", "🎯"),
-        ("My Progress", "Preview readiness, weak areas, and attempt-history tracking.", "pages/My_Progress.py", "📈"),
+        ("Progress", "Preview readiness, weak areas, and attempt-history tracking.", "pages/My_Progress.py", "📈"),
     ]
     for col, (title, body, path, icon) in zip(cols, cards):
         with col:
@@ -528,7 +533,12 @@ def render_logged_in_dashboard(email: str) -> None:
     full_name = safe_str(profile.get("full_name") or st.session_state.get("full_name"), "")
     display_name = full_name or email.split("@", 1)[0]
 
-    st.title(f"Welcome, {display_name}")
+    render_page_header(
+        "Home",
+        description=f"Welcome back, {display_name}. Track readiness and decide what to study next.",
+        badge=access_level.title(),
+        certification_name=safe_str(st.session_state.get("selected_exam_name"), ""),
+    )
     st.caption(f"App Version: {APP_VERSION}")
 
     profile_col, status_col, language_col, account_col = st.columns([2, 1, 1, 1])

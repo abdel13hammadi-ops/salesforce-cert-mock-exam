@@ -5,7 +5,7 @@ from urllib.parse import parse_qs, urlparse
 import streamlit as st
 import streamlit.components.v1 as components
 
-from utils.access_control import get_supabase_auth_client, render_sidebar_navigation
+from utils.access_control import get_supabase_auth_client, render_public_chrome
 from utils.password_reset_errors import (
     CATEGORY_RECOVERY_INVALID,
     CATEGORY_SAME_PASSWORD,
@@ -25,7 +25,7 @@ except Exception:
 from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Reset Password", page_icon="🔐", layout="wide")
-render_sidebar_navigation()
+render_public_chrome()
 
 st.caption(f"App Version: {APP_VERSION}")
 st.title("🔐 Reset Password")
