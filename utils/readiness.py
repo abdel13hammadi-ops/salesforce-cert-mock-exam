@@ -528,38 +528,18 @@ def build_verified_domain_table_rows(
     expected_question_count: int = 60,
 ) -> List[Dict[str, Any]]:
     """Build Weak Areas by Domain rows from verified question attempts only."""
-    verified_qa = filter_verified_question_attempts(
-        attempts,
-        question_attempts,
-        expected_question_count,
-    )
-    if not verified_qa:
-        return []
+    from utils.learner_analytics import build_verified_domain_table_rows as _build_rows
 
-    stats = _build_domain_stats(verified_qa, [])
-    rows: List[Dict[str, Any]] = []
-    for name, data in stats.items():
-        total = _safe_float(data.get("total"), 0.0)
-        correct = _safe_float(data.get("correct"), 0.0)
-        rows.append(
-            {
-                "Domain": name,
-                "Correct": int(correct),
-                "Total": int(total),
-                "Accuracy %": round((correct / total) * 100, 2) if total > 0 else 0.0,
-            }
-        )
-    rows.sort(key=lambda row: row["Accuracy %"])
-    return rows
+    return _build_rows(attempts, question_attempts, expected_question_count)
 
 
 def select_weakest_verified_domain(
     domain_rows: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
     """Return the lowest-accuracy domain row from build_verified_domain_table_rows output."""
-    if not domain_rows:
-        return None
-    return domain_rows[0]
+    from utils.learner_analytics import select_weakest_verified_domain as _select_weakest
+
+    return _select_weakest(domain_rows)
 
 
 def build_verified_mock_performance_metrics(
@@ -568,30 +548,9 @@ def build_verified_mock_performance_metrics(
     expected_question_count: int = 60,
 ) -> Dict[str, Any]:
     """Summarize score metrics from VERIFIED paid mock attempts only."""
-    verified_attempts = filter_verified_mock_attempts(
-        attempts,
-        question_attempts,
-        expected_question_count,
-    )
-    if not verified_attempts:
-        return {
-            "has_verified_mocks": False,
-            "latest_score": None,
-            "average_score": None,
-            "best_score": None,
-            "verified_mock_count": 0,
-            "trend_attempts": [],
-        }
+    from utils.learner_analytics import build_verified_mock_performance_metrics as _build_metrics
 
-    scores = [_safe_float(attempt.get("score"), 0.0) for attempt in verified_attempts]
-    return {
-        "has_verified_mocks": True,
-        "latest_score": scores[0],
-        "average_score": round(sum(scores) / len(scores), 2),
-        "best_score": round(max(scores), 2),
-        "verified_mock_count": len(verified_attempts),
-        "trend_attempts": list(reversed(verified_attempts)),
-    }
+    return _build_metrics(attempts, question_attempts, expected_question_count)
 
 
 # ---------------------------------------------------------------------------

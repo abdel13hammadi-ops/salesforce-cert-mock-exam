@@ -18,8 +18,16 @@ from utils.access_control import (
     render_app_chrome,
     render_session_page_link,
 )
-from utils.activity_modes import PAID_MOCK_EXAM
 from utils.datetime_display import DEFAULT_DISPLAY_TIMEZONE, format_user_datetime
+from utils.learner_analytics import (
+    build_all_activity_score_summary,
+    build_readiness_display_contract,
+    build_verified_domain_performance,
+    build_verified_mock_performance,
+    filter_question_attempts_for_attempts,
+    filter_readiness_attempts,
+    rank_weak_domains,
+)
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
 from utils.version import APP_VERSION
 
@@ -79,33 +87,26 @@ def parse_dt(value: Any) -> datetime:
 
 
 def paid_full_mock_count(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> int:
-    count = 0
-    for attempt in attempts or []:
-        if safe_str(attempt.get("mode")) == PAID_MOCK_EXAM and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
-            count += 1
-    return count
+    return len(filter_readiness_attempts(attempts, expected_question_count))
 
 
-
-def filter_readiness_attempts(attempts: List[Dict[str, Any]], expected_question_count: int = 60) -> List[Dict[str, Any]]:
-    """Keep only full-length Paid Mock Exam attempts for readiness."""
-    filtered: List[Dict[str, Any]] = []
-    for attempt in attempts or []:
-        if safe_str(attempt.get("mode")) == PAID_MOCK_EXAM and safe_int(attempt.get("total_questions"), 0) >= int(expected_question_count or 60):
-            filtered.append(attempt)
-    return filtered
-
-
-def filter_question_attempts_for_attempts(question_attempts: List[Dict[str, Any]], attempts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Keep only question attempts linked to readiness-eligible full mock attempts."""
-    eligible_ids = {safe_str(attempt.get("id")) for attempt in attempts or [] if attempt.get("id") is not None}
-    if not eligible_ids:
-        return []
-    return [
-        row for row in question_attempts or []
-        if safe_str(row.get("exam_attempt_id")) in eligible_ids
-    ]
-
+def verified_domain_rows_to_dataframe(domain_rows: List[Dict[str, Any]]) -> pd.DataFrame:
+    if not domain_rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(
+        [
+            {
+                "Domain": row.get("Domain"),
+                "Accuracy %": row.get("Accuracy %"),
+                "Correct": row.get("Correct"),
+                "Total": row.get("Total"),
+            }
+            for row in domain_rows
+        ]
+    )
+    if not df.empty:
+        df = df.sort_values("Accuracy %", ascending=True)
+    return df
 
 
 def get_daily_sprint_domain(readiness: Dict[str, Any], domain_df: pd.DataFrame) -> str:
@@ -431,39 +432,6 @@ def attempt_correct_count(attempt: Dict[str, Any]) -> int:
     return safe_int(attempt.get("correct_count"), 0)
 
 
-def build_domain_summary(attempts: List[Dict[str, Any]]) -> pd.DataFrame:
-    totals: Dict[str, Dict[str, float]] = {}
-    for attempt in attempts:
-        breakdown = normalize_breakdown(attempt.get("domain_breakdown"))
-        for domain, data in breakdown.items():
-            if not isinstance(data, dict):
-                continue
-            correct = safe_float(data.get("correct"), 0.0)
-            total = safe_float(data.get("total"), 0.0)
-            if total <= 0:
-                continue
-            totals.setdefault(str(domain), {"correct": 0.0, "total": 0.0})
-            totals[str(domain)]["correct"] += correct
-            totals[str(domain)]["total"] += total
-
-    rows = []
-    for domain, data in totals.items():
-        total = data["total"]
-        correct = data["correct"]
-        rows.append(
-            {
-                "Domain": domain,
-                "Accuracy %": round((correct / total) * 100, 2) if total else 0.0,
-                "Correct": int(correct),
-                "Total": int(total),
-            }
-        )
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df = df.sort_values("Accuracy %", ascending=True)
-    return df
-
-
 def render_public_onboarding() -> None:
     st.title("CertBound Dashboard")
     st.caption(f"App Version: {APP_VERSION}")
@@ -621,27 +589,56 @@ def render_logged_in_dashboard(email: str) -> None:
 
     st.divider()
     st.subheader("Current status")
-    latest_score = safe_float(attempts[0].get("score"), 0.0) if attempts else 0.0
-    best_score = max([safe_float(a.get("score"), 0.0) for a in attempts], default=0.0)
-    avg_score = round(sum([safe_float(a.get("score"), 0.0) for a in attempts]) / len(attempts), 2) if attempts else 0.0
+    expected_question_count = safe_int(cert.get("question_count"), 60) or 60
+    passing_score = safe_float(cert.get("passing_score"), 72 if "Business Analyst" in selected_exam else 68)
+    domain_weights = fetch_domain_weights(selected_exam)
+    verified_performance = build_verified_mock_performance(
+        attempts,
+        question_attempts,
+        expected_question_count,
+        passing_threshold=passing_score,
+    )
+    all_activity_scores = build_all_activity_score_summary(attempts)
+    verified_domain_rows = build_verified_domain_performance(
+        attempts,
+        question_attempts,
+        expected_question_count,
+        domain_weights=domain_weights,
+        passing_threshold=passing_score,
+    )
+    domain_df = verified_domain_rows_to_dataframe(verified_domain_rows)
 
+    st.caption(
+        "Verified scores use full paid mocks with saved question-level evidence. "
+        "All-activity score includes every saved attempt mode."
+    )
     s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Latest Score", f"{latest_score}%" if attempts else "No attempt")
-    s2.metric("Average Score", f"{avg_score}%" if attempts else "No attempt")
-    s3.metric("Best Score", f"{round(best_score, 2)}%" if attempts else "No attempt")
+    if verified_performance.has_verified_mocks:
+        s1.metric("Latest Score", f"{verified_performance.latest_score}%")
+        s2.metric("Average Score", f"{verified_performance.average_score}%")
+        s3.metric("Best Score", f"{verified_performance.best_score}%")
+    else:
+        s1.metric("Latest Score", "No verified mocks")
+        s2.metric("Average Score", "No verified mocks")
+        s3.metric("Best Score", "No verified mocks")
     s4.metric("All Exam Attempts", len(attempts))
+
+    if all_activity_scores.has_attempts:
+        st.metric(
+            "All-activity Average Score",
+            f"{all_activity_scores.average_score}%",
+        )
 
     h1, h2, h3 = st.columns(3)
     h1.metric("Approved Questions", question_health.get("approved_questions", 0))
     h2.metric("Free Preview Questions", question_health.get("free_questions", 0))
     h3.metric("Domains Covered", question_health.get("domains", 0))
 
-    domain_df = build_domain_summary(attempts) if attempts else pd.DataFrame()
     practice_domain_counts = fetch_practice_domain_counts(selected_exam, preferred_language)
     if calculate_readiness is not None:
-        daily_domain_weights = fetch_domain_weights(selected_exam)
-        daily_passing_score = safe_float(cert.get("passing_score"), 72 if "Business Analyst" in selected_exam else 68)
-        daily_expected_question_count = safe_int(cert.get("question_count"), 60) or 60
+        daily_domain_weights = domain_weights
+        daily_passing_score = passing_score
+        daily_expected_question_count = expected_question_count
         daily_readiness_attempts = filter_readiness_attempts(attempts, daily_expected_question_count)
         daily_readiness_question_attempts = filter_question_attempts_for_attempts(question_attempts, daily_readiness_attempts)
         daily_readiness = calculate_readiness(
@@ -665,9 +662,6 @@ def render_logged_in_dashboard(email: str) -> None:
 
     st.divider()
     if calculate_readiness is not None:
-        domain_weights = fetch_domain_weights(selected_exam)
-        passing_score = safe_float(cert.get("passing_score"), 72 if "Business Analyst" in selected_exam else 68)
-        expected_question_count = safe_int(cert.get("question_count"), 60) or 60
         readiness_attempts = filter_readiness_attempts(attempts, expected_question_count)
         readiness_question_attempts = filter_question_attempts_for_attempts(question_attempts, readiness_attempts)
         readiness = calculate_readiness(
@@ -680,30 +674,38 @@ def render_logged_in_dashboard(email: str) -> None:
             time_limit_minutes=safe_int(cert.get("time_limit_minutes"), 105),
             captured_bank_size=extract_captured_bank_size(readiness_attempts) if extract_captured_bank_size else None,
         )
-        full_mocks = safe_int(readiness.get("eligible_mock_count"), len(readiness_attempts))
-        required_mocks = safe_int(readiness.get("required_mock_count"), 3)
-        if readiness.get("is_locked", full_mocks < required_mocks):
-            render_readiness_locked(full_mocks, required_mocks)
+        readiness_display = build_readiness_display_contract(readiness)
+        if readiness_display.is_locked:
+            render_readiness_locked(
+                readiness_display.completed_verified_mock_count,
+                readiness_display.required_mock_count,
+            )
             r1, r2, r3 = st.columns(3)
-            r1.metric("Full Mocks Completed", f"{full_mocks} / {required_mocks}")
+            r1.metric(
+                "Full Mocks Completed",
+                f"{readiness_display.completed_verified_mock_count} / {readiness_display.required_mock_count}",
+            )
             r2.metric("Unique Questions Seen", safe_int(readiness.get("unique_questions_seen"), 0))
-            r3.metric("Estimate Confidence", f"{safe_float(readiness.get('confidence_score'), 0):.0f}% — {safe_str(readiness.get('confidence_label'), 'Low')}")
+            r3.metric(
+                "Estimate Confidence",
+                f"{readiness_display.confidence_score:.0f}% — {readiness_display.confidence_label}",
+            )
             st.info(readiness_methodology_text())
         else:
             # Primary row
             r1, r2, r3, r4 = st.columns(4)
-            r1.metric("Readiness", f"{round(safe_float(readiness.get('score')), 2)}%")
-            r2.metric("Status", safe_str(readiness.get("label"), "Not Enough Data"))
+            r1.metric("Readiness", f"{round(readiness_display.readiness_score or 0.0, 2)}%")
+            r2.metric("Status", readiness_display.readiness_label)
             r3.metric(
                 "Estimate Confidence",
-                f"{safe_float(readiness.get('confidence_score'), 0):.0f}% — {safe_str(readiness.get('confidence_label'), 'Low')}",
+                f"{readiness_display.confidence_score:.0f}% — {readiness_display.confidence_label}",
             )
             r4.metric("Recent Mock Accuracy", f"{safe_float(readiness.get('recent_accuracy'), 0):.2f}%")
 
             # Diagnostics row
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Domain Robustness", f"{safe_float(readiness.get('domain_robustness'), 0):.2f}%")
-            c2.metric("Trend", safe_str(readiness.get("trend_label"), "Stable"))
+            c2.metric("Trend", readiness_display.score_trend_indicator)
             c3.metric("Consistency (SD)", f"±{safe_float(readiness.get('consistency_standard_deviation'), 0):.1f}pts")
             c4.metric("Pacing", safe_str(readiness.get("pacing_status"), "Insufficient Timing Data"))
 
@@ -711,15 +713,32 @@ def render_logged_in_dashboard(email: str) -> None:
                 "Confidence measures how well-supported the estimate is. "
                 "It is not your probability of passing."
             )
-            recommendation = safe_str(readiness.get("recommendation"), "Complete more attempts to improve the readiness signal.")
-            st.info(recommendation)
+            st.info(readiness_display.recommended_next_action)
 
     st.subheader("Weakest domains")
-    if domain_df.empty:
-        st.warning("No domain breakdown saved yet. Future attempts should save domain_breakdown for better recommendations.")
+    weak_domain_rows = rank_weak_domains(verified_domain_rows, limit=5)
+    if not weak_domain_rows:
+        st.warning(
+            "No verified mock domain evidence yet. Complete a full paid mock exam with saved "
+            "question-level results to see verified weak domains."
+        )
     else:
-        st.dataframe(domain_df.head(5), use_container_width=True, hide_index=True)
-        weakest = domain_df.iloc[0]
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Domain": row.get("Domain"),
+                        "Correct": row.get("Correct"),
+                        "Total": row.get("Total"),
+                        "Accuracy %": row.get("Accuracy %"),
+                    }
+                    for row in weak_domain_rows
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        weakest = weak_domain_rows[0]
         st.warning(f"Highest-risk domain: {weakest['Domain']} ({weakest['Accuracy %']}%)")
 
     st.subheader("Recent attempts")
