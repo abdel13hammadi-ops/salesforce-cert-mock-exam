@@ -29,6 +29,15 @@ from utils.access_control import (
 )
 
 from utils.dashboard_components import render_page_header
+from utils.secondary_components import (
+    inject_secondary_theme,
+    portal_manage_link_css,
+    render_access_status_pill,
+    render_auth_panel_end,
+    render_auth_panel_start,
+    render_secondary_section,
+    render_subscription_plan_summary,
+)
 from utils.version import APP_VERSION
 from utils.billing_config import CHECKOUT_PENDING_MESSAGE, CHECKOUT_SUCCESS_SIGNIN_MESSAGE
 from utils.billing_stripe import (
@@ -42,6 +51,7 @@ from utils.billing_stripe import (
 
 st.set_page_config(page_title="Account", layout="wide", initial_sidebar_state="expanded")
 render_app_chrome()
+inject_secondary_theme()
 
 
 # SESSION_TIMEOUT_APPLIED
@@ -50,24 +60,6 @@ show_session_expired_notice()
 
 
 DUPLICATE_ACCOUNT_MESSAGE = "An account already exists for this email. Please log in or use a different email."
-PORTAL_LINK_STYLE = """
-<style>
-a.portal-manage-link {
-    display: inline-block;
-    padding: 0.45rem 1rem;
-    background-color: rgb(255, 75, 75);
-    color: #ffffff !important;
-    text-decoration: none;
-    border-radius: 0.5rem;
-    font-weight: 650;
-    line-height: 1.4;
-}
-a.portal-manage-link:hover {
-    color: #ffffff !important;
-    opacity: 0.92;
-}
-</style>
-"""
 
 
 def normalize_email(email: str | None) -> str:
@@ -511,15 +503,19 @@ if current_email:
         merged["email"] = current_email
         save_logged_in_user(merged, persist=True)
 
-    st.success(f"Signed in as {current_email}")
-    st.caption("Login persistence enabled: refresh should keep you signed in on this browser.")
+    render_secondary_section(
+        kicker="Authentication",
+        title="Signed in",
+        body=f"Account: {current_email}. Login persistence keeps you signed in on this browser.",
+    )
+
     status = get_subscription_status(current_email)
-    st.write(f"Subscription status: **{status}**")
+    premium = has_premium_access(current_email)
 
     if billing_return == "portal":
         st.success("Welcome back. Your CertBound session has been restored.")
     elif billing_return == "success":
-        if has_premium_access(current_email):
+        if premium:
             st.success("Premium access is active on your account.")
         else:
             st.info(CHECKOUT_PENDING_MESSAGE)
@@ -527,19 +523,27 @@ if current_email:
         release_pending_checkout_claim(current_email, secrets_getter=get_secret_value)
         st.warning("Checkout was canceled. You can upgrade whenever you are ready.")
 
-    st.subheader("Premium Billing")
+    render_secondary_section(
+        kicker="Access and subscription",
+        title="Your access level",
+        body="Review your current plan, billing status, and Premium benefits.",
+    )
+    render_access_status_pill(has_premium=premium, subscription_status=status)
     stripe_customer_id = str(profile.get("stripe_customer_id") or "").strip()
     stripe_sub_status = str(profile.get("stripe_subscription_status") or "").strip().lower()
     stripe_cancel_at_period_end = bool(profile.get("stripe_cancel_at_period_end"))
-    if has_premium_access(current_email):
-        st.success("Premium access is enabled for your account.")
-        if stripe_sub_status:
-            st.caption(f"Stripe subscription status: {stripe_sub_status}")
-        if stripe_cancel_at_period_end:
-            st.info(
-                "Your subscription is scheduled to cancel at the end of the current billing period. "
-                "Premium access remains active until then."
-            )
+    render_subscription_plan_summary(
+        has_premium=premium,
+        stripe_sub_status=stripe_sub_status,
+        cancel_at_period_end=stripe_cancel_at_period_end,
+    )
+
+    render_secondary_section(
+        kicker="Billing management",
+        title="Premium billing",
+        body="Upgrade through Stripe Checkout or manage an existing subscription in the Stripe Customer Portal.",
+    )
+    if premium:
         if stripe_customer_id:
             try:
                 portal_url = resolve_portal_session_url(
@@ -547,7 +551,7 @@ if current_email:
                     session_state=st.session_state,
                     secrets_getter=get_secret_value,
                 )
-                st.markdown(PORTAL_LINK_STYLE, unsafe_allow_html=True)
+                st.markdown(portal_manage_link_css(), unsafe_allow_html=True)
                 st.markdown(
                     render_portal_session_link_markdown(portal_url),
                     unsafe_allow_html=True,
@@ -557,7 +561,6 @@ if current_email:
         else:
             st.caption("Premium access was granted without a Stripe subscription mapping.")
     else:
-        st.info("Upgrade to unlock full mock exams, practice modes, progress tracking, and readiness.")
         if st.button("Upgrade to Premium", type="primary"):
             try:
                 checkout_url = create_checkout_session_url(
@@ -572,7 +575,11 @@ if current_email:
         if checkout_url:
             st.link_button("Continue to Stripe Checkout", checkout_url, type="primary")
 
-    st.subheader("Profile")
+    render_secondary_section(
+        kicker="Profile",
+        title="Profile preferences",
+        body="Update your display name and preferred exam language.",
+    )
     saved_language = profile.get("preferred_language_code") or st.session_state.get("preferred_language_code", detected_default_language)
     if saved_language not in language_codes:
         saved_language = "en" if "en" in language_codes else language_codes[0]
@@ -586,26 +593,29 @@ if current_email:
     )
     st.caption(f"Timezone: {effective_timezone} — detected automatically from this browser.")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Save Profile", type="primary"):
-            updated = upsert_profile(
-                email=current_email,
-                full_name=full_name,
-                language_code=selected_language,
-                # Do not trust session_state for identity writes. The DB profile is the source of truth.
-                auth_user_id=profile.get("auth_user_id"),
-                preferred_timezone=effective_timezone,
-            )
-            save_logged_in_user(updated, persist=True)
-            st.success("Profile saved ✅")
-            st.rerun()
-    with c2:
-        if st.button("Log Out"):
-            clear_cached_portal_session(st.session_state)
-            clear_login_state()
-            st.success("Logged out.")
-            st.rerun()
+    if st.button("Save Profile", type="primary"):
+        updated = upsert_profile(
+            email=current_email,
+            full_name=full_name,
+            language_code=selected_language,
+            # Do not trust session_state for identity writes. The DB profile is the source of truth.
+            auth_user_id=profile.get("auth_user_id"),
+            preferred_timezone=effective_timezone,
+        )
+        save_logged_in_user(updated, persist=True)
+        st.success("Profile saved ✅")
+        st.rerun()
+
+    render_secondary_section(
+        kicker="Security and password actions",
+        title="Session controls",
+        body="Log out on this browser or use Forgot Password in the logged-out Account view to request a reset email.",
+    )
+    if st.button("Log Out"):
+        clear_cached_portal_session(st.session_state)
+        clear_login_state()
+        st.success("Logged out.")
+        st.rerun()
 
     if is_admin_user(current_email):
         st.divider()
@@ -630,10 +640,15 @@ else:
     elif billing_return == "cancel":
         st.warning("Checkout was canceled. Sign in and upgrade again whenever you are ready.")
 
-    st.info("Create an account or log in to access the platform.")
+    render_secondary_section(
+        kicker="Authentication",
+        title="Account access",
+        body="Create an account or log in to access mock exams, practice, and progress tracking.",
+    )
     sign_in_tab, sign_up_tab, reset_tab = st.tabs(["Log In", "Create Account", "Forgot Password"])
 
     with sign_in_tab:
+        render_auth_panel_start()
         st.subheader("Log In")
         login_email = st.text_input("Email", key="login_email").strip().lower()
         login_password = st.text_input("Password", type="password", key="login_password")
@@ -678,11 +693,12 @@ else:
                         st.success("Logged in ✅")
                         st.info("If the page does not refresh automatically, click Account again in the sidebar.")
                         st.rerun()
-                except Exception as exc:
+                except Exception:
                     st.error("Login failed. Please check your credentials or reset your password.")
-                    st.code(f"{type(exc).__name__}: {repr(exc)}")
+        render_auth_panel_end()
 
     with sign_up_tab:
+        render_auth_panel_start()
         st.subheader("Create Account")
         name_col1, name_col2 = st.columns(2)
         with name_col1:
@@ -756,11 +772,12 @@ else:
                     if "already" in msg or "duplicate" in msg or "unique" in msg or "registered" in msg:
                         st.error(DUPLICATE_ACCOUNT_MESSAGE)
                     else:
-                        st.error("Account creation is temporarily unavailable because the existing-email check failed.")
-                        st.caption(str(exc))
+                        st.error("Account creation is temporarily unavailable. Please try again later.")
                     st.stop()
+        render_auth_panel_end()
 
     with reset_tab:
+        render_auth_panel_start()
         st.subheader("Reset Password")
         st.caption("Enter your account email. If the email exists, Supabase will send a secure password reset link.")
         reset_email = st.text_input("Email", key="reset_email").strip().lower()
@@ -780,8 +797,7 @@ else:
                         st.info("Admin note: set APP_BASE_URL in Render Environment so reset links return to the Reset Password page.")
                 except Exception as exc:
                     st.error(format_password_reset_error(exc))
-                    if not is_auth_email_rate_limit_error(exc):
-                        st.caption(str(exc))
+        render_auth_panel_end()
 
 
 st.divider()

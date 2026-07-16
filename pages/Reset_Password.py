@@ -6,6 +6,13 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from utils.access_control import get_supabase_auth_client, render_public_chrome
+from utils.secondary_components import (
+    inject_secondary_theme,
+    render_auth_panel_end,
+    render_auth_panel_start,
+    render_password_reset_header,
+    render_secondary_section,
+)
 from utils.password_reset_errors import (
     CATEGORY_RECOVERY_INVALID,
     CATEGORY_SAME_PASSWORD,
@@ -26,10 +33,10 @@ from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Reset Password", page_icon="🔐", layout="wide")
 render_public_chrome()
+inject_secondary_theme()
 
 st.caption(f"App Version: {APP_VERSION}")
-st.title("🔐 Reset Password")
-st.caption("Use this page after clicking the password reset link sent by email.")
+render_password_reset_header()
 
 
 def get_query_value(key: str) -> str:
@@ -163,8 +170,11 @@ with st.expander("Reset link status", expanded=False):
     st.write("Query-token detected:", bool(get_query_value("access_token")))
 
 if not access_token or not refresh_token:
-    st.warning("No valid password reset session was found on this page.")
-    st.info("Open the newest password reset email link in the same browser. Do not copy only the base URL — use the full email link.")
+    render_secondary_section(
+        kicker="Recovery session",
+        title="No valid reset session found",
+        body="Open the newest password reset email link in the same browser. Do not copy only the base URL.",
+    )
     st.page_link("pages/Account.py", label="Go to Account", icon="👤")
     st.stop()
 
@@ -174,6 +184,7 @@ if recovery_type and recovery_type != "recovery":
 
 st.success("Valid password reset session detected. Enter a new password below.")
 
+render_auth_panel_start()
 new_password = st.text_input("New password", type="password")
 confirm_password = st.text_input("Confirm new password", type="password")
 
@@ -241,6 +252,8 @@ if st.button("Update Password", type="primary"):
                     """,
                     height=0,
                 )
+
+render_auth_panel_end()
 
 st.divider()
 st.caption("Independent exam-prep platform. Not affiliated with Salesforce.")

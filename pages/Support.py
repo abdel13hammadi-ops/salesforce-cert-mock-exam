@@ -15,10 +15,17 @@ from utils.access_control import (
 )
 
 from utils.dashboard_components import render_page_header
+from utils.secondary_components import (
+    inject_secondary_theme,
+    render_secondary_section,
+    render_support_empty_state,
+    render_support_ticket_card,
+)
 from utils.version import APP_VERSION
 
 st.set_page_config(page_title="Support", layout="wide")
 render_app_chrome()
+inject_secondary_theme()
 
 
 # SESSION_TIMEOUT_APPLIED
@@ -114,11 +121,10 @@ current_email = normalize_email(require_login() or "")
 lookup_email = current_email
 user_timezone = get_preferred_timezone(current_email) or "UTC"
 
-st.markdown(
-    """
-Get help with question issues, confusing explanations, typos, technical problems, or account access.
-Keep reports specific. Vague tickets waste everyone’s time and slow down fixes.
-"""
+render_secondary_section(
+    kicker="Support center",
+    title="How we can help",
+    body="Keep reports specific. Include the certification, question text, and what looks wrong when reporting question issues.",
 )
 
 summary_left, summary_mid, summary_right = st.columns(3)
@@ -130,9 +136,13 @@ st.info(f"Tickets will be submitted under your signed-in email: {current_email}"
 
 supabase = get_supabase_client()
 
-with st.form("support_ticket_form", clear_on_submit=False):
-    st.subheader("Submit a Support Ticket")
+render_secondary_section(
+    kicker="Submit a ticket",
+    title="Support request form",
+    body="Support tickets are tied to your signed-in account email.",
+)
 
+with st.form("support_ticket_form", clear_on_submit=False):
     user_email = st.text_input(
         "Email",
         value=current_email,
@@ -203,19 +213,16 @@ if submitted:
             supabase.table("support_tickets").insert(ticket_data).execute()
             st.success("Support ticket submitted.")
             st.info("Status: Open. Check recent tickets below for updates.")
-        except Exception as e:
-            st.error("Could not save the support ticket.")
-            st.write("This usually means the support_tickets table is missing one of these columns:")
-            st.code(
-                "user_email, issue_type, related_question_id, subject, message, status, created_at",
-                language="text",
-            )
-            with st.expander("Show technical error"):
-                st.exception(e)
+        except Exception:
+            st.error("Could not save the support ticket. Please try again later or contact support by email.")
 
 st.divider()
 
-st.subheader("My Recent Tickets")
+render_secondary_section(
+    kicker="Support history",
+    title="My recent tickets",
+    body=f"Showing tickets for {lookup_email}. Times shown in {user_timezone or 'UTC'}.",
+)
 email_for_lookup = get_saved_email()
 
 if not email_for_lookup:
@@ -233,29 +240,21 @@ else:
         rows = result.data or []
 
         if not rows:
-            st.info("No support tickets found for this email yet.")
+            render_support_empty_state()
         else:
-            st.caption(f"Showing tickets for {email_for_lookup}. Times shown in {user_timezone or 'UTC'}.")
             for row in rows:
-                ticket_id = safe_text(row.get("id"), "N/A")
                 ticket_subject = safe_text(row.get("subject"), "No subject")
                 ticket_status = status_label(row.get("status"))
                 ticket_created = format_for_user_timezone(row.get("created_at"), user_timezone)
                 ticket_issue_type = safe_text(row.get("issue_type"), "N/A")
                 ticket_message = safe_text(row.get("message"), "No message saved.").strip() or "No message saved."
-
-                with st.expander(f"Ticket No: {ticket_id} — {ticket_subject} · {ticket_status}", expanded=False):
-                    detail_left, detail_right = st.columns([2, 1])
-                    detail_left.markdown(f"**Subject:** {ticket_subject}")
-                    detail_right.markdown(f"**Status:** {ticket_status}")
-                    st.write(f"**Ticket No:** {ticket_id}")
-                    st.write(f"**Issue type:** {ticket_issue_type}")
-                    st.write(f"**Created:** {ticket_created}")
-                    if row.get("related_question_id"):
-                        st.write(f"**Question ID:** {row.get('related_question_id')}")
-                    st.markdown("**Details**")
-                    st.write(ticket_message)
-    except Exception as e:
+                render_support_ticket_card(
+                    subject=ticket_subject,
+                    status=ticket_status,
+                    issue_type=ticket_issue_type,
+                    created_label=ticket_created,
+                    message=ticket_message,
+                    related_question_id=safe_text(row.get("related_question_id"), ""),
+                )
+    except Exception:
         st.warning("Recent tickets could not be loaded yet. Ticket submission may still work.")
-        with st.expander("Show technical error"):
-            st.exception(e)
