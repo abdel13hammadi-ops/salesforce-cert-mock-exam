@@ -158,8 +158,17 @@ def secondary_css() -> str:
 
 
 def inject_secondary_theme() -> None:
-    st.markdown(theme_css() + secondary_css(), unsafe_allow_html=True)
-    st.markdown('<div class="cb-secondary-page cb-shell">', unsafe_allow_html=True)
+    """Inject secondary-page styling on top of the shared shell theme.
+
+    Shell pages already call inject_shell_theme via render_app_chrome or
+    render_public_chrome. Re-applying theme_css here duplicates styles and can
+    cause Streamlit to leak trailing HTML closers into code blocks.
+    """
+    scoped_css = secondary_css().replace(
+        ".cb-secondary-page .block-container",
+        "section.main div.block-container",
+    )
+    st.markdown(scoped_css, unsafe_allow_html=True)
 
 
 def portal_manage_link_css() -> str:
@@ -294,7 +303,7 @@ def render_legal_document_start() -> None:
 
 
 def render_legal_document_end() -> None:
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('<span class="cb-legal-doc-end" aria-hidden="true"></span></div>', unsafe_allow_html=True)
 
 
 def render_password_reset_header() -> None:
@@ -310,7 +319,9 @@ def render_auth_panel_start() -> None:
 
 
 def render_auth_panel_end() -> None:
-    st.markdown("</div>", unsafe_allow_html=True)
+    # Bare closing tags are interpreted by Streamlit as code blocks; prefix with
+    # a hidden marker so the auth-panel wrapper closes without leaking markup.
+    st.markdown('<span class="cb-auth-panel-end" aria-hidden="true"></span></div>', unsafe_allow_html=True)
 
 
 def format_placeholder(value: Optional[Any], fallback: str = "—") -> str:

@@ -28,7 +28,6 @@ from utils.access_control import (
     unlock_admin,
 )
 
-from utils.dashboard_components import render_page_header
 from utils.secondary_components import (
     inject_secondary_theme,
     portal_manage_link_css,
@@ -473,7 +472,11 @@ def send_password_reset_email(email: str) -> None:
             raise
     raise RuntimeError(f"Password reset is not supported by the installed Supabase client: {last_error}")
 
-render_page_header("Account", description="Manage login, profile, subscription, and admin unlock.")
+render_secondary_section(
+    kicker="Account",
+    title="Account",
+    body="Manage login, profile, subscription, and admin unlock.",
+)
 st.caption(f"App Version: {APP_VERSION}")
 
 languages = load_languages()
