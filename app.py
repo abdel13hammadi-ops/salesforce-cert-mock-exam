@@ -185,183 +185,26 @@ enforce_session_timeout(exempt_active_exam=_is_active_exam)
 show_session_expired_notice()
 
 
-def inject_exam_layout_css():
-    """Centralized exam-page layout CSS.
+from utils.activity_components import (
+    format_breakdown_rows,
+    inject_activity_theme,
+    render_activity_empty_state,
+    render_activity_header,
+    render_activity_launch_card,
+    render_activity_progress,
+    render_answer_guidance,
+    render_exam_timer,
+    render_navigator_help,
+    render_question_card_end,
+    render_question_card_start,
+    render_question_stem,
+    render_result_hero,
+    render_review_summary,
+    render_save_status,
+)
+from utils.activity_charts import build_breakdown_figure, breakdown_chart_caption
 
-    Keep this early in the file so top widgets like the certification selector
-    do not render before spacing rules load on Streamlit Cloud.
-    """
-    st.markdown(
-        """
-        <style>
-        /* Global page spacing */
-        .block-container {
-            max-width: 1180px;
-            padding-top: 2.75rem !important;
-            padding-left: 2rem !important;
-            padding-right: 2rem !important;
-            padding-bottom: 3rem !important;
-        }
-        header[data-testid="stHeader"] { height: 0px; }
-
-        /* Hide Streamlit's native multipage nav; app renders its own sidebar */
-        [data-testid="stSidebarNav"] { display: none !important; }
-        section[data-testid="stSidebar"] > div:first-child { padding-top: 0.75rem; }
-        section[data-testid="stSidebar"] div.stButton > button {
-            width: 100%;
-            padding: 0.35rem 0.5rem;
-            font-size: 14px;
-        }
-        div.stButton > button { border-radius: 8px; font-weight: 650; }
-
-        /* Top certification selector */
-        .exam-shell-top {
-            border: 1px solid #d8dde6;
-            border-radius: 14px;
-            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-            padding: 18px 20px 16px 20px;
-            margin: 10px 0 18px 0;
-            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
-        }
-        .exam-kicker {
-            font-size: 12px;
-            font-weight: 800;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            color: #54698d;
-            margin-bottom: 4px;
-        }
-        .exam-page-title {
-            font-size: 28px;
-            line-height: 1.15;
-            font-weight: 800;
-            color: #16325c;
-            margin-bottom: 4px;
-        }
-        .exam-page-subtitle {
-            color: #5f6368;
-            font-size: 14px;
-            margin-bottom: 0;
-        }
-
-        /* Exam banner/status */
-        .exam-banner {
-            background: #16325c;
-            color: white;
-            padding: 18px 22px;
-            border-radius: 12px 12px 0 0;
-            font-size: 27px;
-            font-weight: 800;
-            line-height: 1.25;
-            margin-top: 10px;
-        }
-        .exam-sub-banner {
-            background: #f4f6f9;
-            border: 1px solid #d8dde6;
-            border-top: none;
-            padding: 12px 20px;
-            border-radius: 0 0 12px 12px;
-            margin-bottom: 26px;
-            color: #16325c;
-            font-size: 15px;
-        }
-        .exam-card {
-            border: 1px solid #d8dde6;
-            border-radius: 12px;
-            padding: 18px 20px;
-            background: #ffffff;
-            margin-bottom: 18px;
-            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-        }
-        .question-card {
-            border: 1px solid #d8dde6;
-            border-radius: 14px;
-            padding: 24px;
-            background: #ffffff;
-            margin-top: 12px;
-            margin-bottom: 18px;
-            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
-        }
-        .status-strip {
-            background: #f8f9fb;
-            border: 1px solid #d8dde6;
-            border-radius: 12px;
-            padding: 12px 16px;
-            margin-bottom: 15px;
-        }
-
-        /* V26 timer persistence */
-        .exam-floating-timer{
-            will-change: transform;
-            backface-visibility:hidden;
-            transform:translateZ(0);
-        }
-
-        /* Production-style floating exam timer */
-        .exam-floating-timer {
-            position: fixed;
-            top: 68px;
-            right: 30px;
-            z-index: 1001;
-            min-width: 170px;
-            background: #fff4d6;
-            border: 1px solid #e0b84f;
-            border-radius: 12px;
-            padding: 10px 14px;
-            box-shadow: 0 6px 20px rgba(15, 23, 42, 0.16);
-            text-align: center;
-        }
-        .exam-floating-timer-label {
-            font-size: 12px;
-            font-weight: 800;
-            color: #5f4b00;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            margin-bottom: 3px;
-        }
-        .exam-floating-timer-value {
-            font-size: 28px;
-            font-weight: 900;
-            color: #1f2937;
-            letter-spacing: 0.04em;
-            line-height: 1;
-        }
-        .question-nav-title {
-            font-weight: 800;
-            font-size: 16px;
-            margin-top: 10px;
-            margin-bottom: 8px;
-            color: #1f2937;
-        }
-        .small-help {
-            color: #5f6368;
-            font-size: 13px;
-            margin-bottom: 8px;
-        }
-        .exam-question-meta {
-            color: #54698d;
-            font-size: 13px;
-            font-weight: 700;
-            margin-bottom: 10px;
-        }
-        @media (max-width: 900px) {
-            .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
-            .exam-floating-timer {
-                position: sticky;
-                top: 0;
-                right: auto;
-                width: 100%;
-                margin-bottom: 12px;
-                min-width: 0;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-inject_exam_layout_css()
+inject_activity_theme()
 
 
 def load_config():
@@ -1338,15 +1181,10 @@ if current_exam not in CERT_NAMES:
     st.session_state.selected_exam_name = current_exam
 
 if not st.session_state.get("started", False):
-    st.markdown(
-        """
-        <div class="exam-shell-top">
-            <div class="exam-kicker">Certification Practice Exam</div>
-            <div class="exam-page-title">Choose your mock exam</div>
-            <div class="exam-page-subtitle">Pick a certification, then start the free preview or full mock exam based on your access.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_activity_launch_card(
+        kicker="Certification Practice Exam",
+        title="Choose your mock exam",
+        body="Pick a certification, then start the free preview or full mock exam based on your access.",
     )
 
     selector_col, access_col = st.columns([2.2, 1])
@@ -1782,14 +1620,9 @@ def reset_exam():
 
 # Layout CSS is injected near the top of the file before widgets render.
 
-st.markdown(
-    f"""
-    <div class="exam-banner">{EXAM_TITLE}</div>
-    <div class="exam-sub-banner">
-        {CERTIFICATION} | {len(all_questions)} questions | {EXAM_MINUTES} minutes | Passing score: {PASSING_SCORE}%
-    </div>
-    """,
-    unsafe_allow_html=True,
+render_activity_header(
+    EXAM_TITLE,
+    certification=f"{CERTIFICATION} | {len(all_questions)} questions | {EXAM_MINUTES} minutes | Passing score: {PASSING_SCORE}%",
 )
 
 st.caption(f"App Version: {APP_VERSION}")
@@ -1810,21 +1643,17 @@ if not st.session_state.started:
         st.warning("Please open the Account page and save/sign in with your email before starting the exam. This is required so your result can be associated with your account.")
         st.info("After saving your email in Account, return to this page to start the free sample mock exam.")
 
-    st.markdown(
-        """
-        <div class="exam-card">
-            <p>Choose the certification above. Your exam language is pulled automatically from your Account profile.</p>
-            <p>Free users get a fixed sample mock exam. Paid users get randomized full mock exams.</p>
-            <p>Answers and explanations are hidden until after final submission.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_activity_launch_card(
+        kicker="Mock Exam Instructions",
+        title="Before you begin",
+        body="Answers and explanations stay hidden until after final submission. You may mark questions for review and return before submitting.",
+        access_label="Paid randomized mock" if has_paid_access else "Free fixed sample mock",
+        metrics=[
+            ("Questions", str(len(all_questions))),
+            ("Time Limit", f"{EXAM_MINUTES} min"),
+            ("Passing Score", f"{PASSING_SCORE}%"),
+        ],
     )
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Questions", len(all_questions))
-    c2.metric("Time Limit", f"{EXAM_MINUTES} min")
-    c3.metric("Passing Score", f"{PASSING_SCORE}%")
 
     st.subheader("Exam Domain Breakdown")
     for row in DOMAIN_ROWS:
@@ -1879,23 +1708,9 @@ elif not st.session_state.submitted:
     mins = int(remaining // 60)
     secs = int(remaining % 60)
 
-    st.markdown(
-        f"""
-        <div class="exam-floating-timer">
-            <div class="exam-floating-timer-label">Time Remaining</div>
-            <div class="exam-floating-timer-value">{mins:02d}:{secs:02d}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    render_exam_timer(mins, secs)
 
-    st.sidebar.markdown(
-        """
-        <div class="question-nav-title">Question Navigator</div>
-        <div class="small-help">✓ answered &nbsp;&nbsp; 🚩 marked</div>
-        """,
-        unsafe_allow_html=True,
-    )
+    render_navigator_help()
 
     for i in range(len(questions)):
         label = f"Question {i + 1}"
@@ -1915,13 +1730,17 @@ elif not st.session_state.submitted:
         unanswered = len(questions) - answered
         marked = len(st.session_state.marked)
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Answered", answered)
-        c2.metric("Unanswered", unanswered)
-        c3.metric("Marked", marked)
-
-        if unanswered > 0:
-            st.warning(f"You still have {unanswered} unanswered question(s). You can submit, but unanswered questions count as incorrect.")
+        render_review_summary(
+            answered=answered,
+            unanswered=unanswered,
+            marked=marked,
+            remaining_time=f"{mins:02d}:{secs:02d}",
+            warning_message=(
+                f"You still have {unanswered} unanswered question(s). Final submission cannot be undone; unanswered questions count as incorrect."
+                if unanswered > 0
+                else "Final submission cannot be undone."
+            ),
+        )
 
         st.divider()
         for i in range(len(questions)):
@@ -1951,34 +1770,26 @@ elif not st.session_state.submitted:
         answered = len(st.session_state.answers)
         marked = len(st.session_state.marked)
 
-        st.markdown(
-            f"""
-            <div class="status-strip">
-                <strong>Question:</strong> {q_index + 1} of {len(questions)}
-                &nbsp;&nbsp; | &nbsp;&nbsp;
-                <strong>Answered:</strong> {answered}
-                &nbsp;&nbsp; | &nbsp;&nbsp;
-                <strong>Marked:</strong> {marked}
-                &nbsp;&nbsp; | &nbsp;&nbsp;
-                <strong>Time:</strong> {mins:02d}:{secs:02d}
-            </div>
-            """,
-            unsafe_allow_html=True,
+        render_activity_progress(
+            q_index + 1,
+            len(questions),
+            answered=answered,
+            marked=marked,
+            timer_label=f"{mins:02d}:{secs:02d}",
         )
 
-        st.progress((q_index + 1) / len(questions))
-        st.markdown('<div class="question-card">', unsafe_allow_html=True)
-        st.markdown(
-            f"<div class='exam-question-meta'>Domain: {q.get('category', 'Uncategorized')} &nbsp; | &nbsp; Difficulty: {format_diff(q.get('difficulty', 'medium'))}</div>",
-            unsafe_allow_html=True,
+        render_question_card_start(
+            domain=str(q.get("category", "Uncategorized")),
+            difficulty=format_diff(q.get("difficulty", "medium")),
         )
-        st.subheader(q["question"])
+        render_question_stem(q["question"])
 
         from utils.question_answer_key import (
             apply_multi_select_answer_ui,
             is_multiple_select,
         )
 
+        render_answer_guidance(multiple_select=is_multiple_select(q), required_count=len(q.get("answers", [])) if is_multiple_select(q) else None)
         if is_multiple_select(q):
             selected_answers = apply_multi_select_answer_ui(
                 q,
@@ -2007,7 +1818,7 @@ elif not st.session_state.submitted:
             if selected:
                 st.session_state.answers[q_index] = [selected]
 
-        st.markdown("</div>", unsafe_allow_html=True)
+        render_question_card_end()
         persist_exam_state_to_query(questions)
 
         col1, col2, col3, col4 = st.columns(4)
@@ -2136,51 +1947,61 @@ else:
     persist_exam_state_to_query(snap_questions)
 
     # ── RESULTS UI (only after persistence resolves) ──────────────────────────
-    st.header("Exam Results")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Score", f"{score}%")
-    c2.metric("Correct", f"{correct} / {total}")
-    c3.metric("Passing Score", f"{PASSING_SCORE}%")
-
-    if score >= PASSING_SCORE:
-        st.success("PASS")
-    else:
-        st.error("FAIL")
+    passed = score >= PASSING_SCORE
+    render_result_hero(
+        title="Exam Results",
+        score=score,
+        correct=correct,
+        total=total,
+        passing_score=PASSING_SCORE,
+        passed=passed,
+    )
 
     if save_state == STATE_SAVED:
-        st.success("Attempt saved to progress tracking ✅")
+        render_save_status(state="saved")
     elif save_state == STATE_FAILED:
-        # Visible, safe error (no raw DB message) + an explicit repair action.
-        st.warning(
-            st.session_state.get("attempt_save_error")
-            or "Attempt was scored, but saving to Supabase did not fully complete."
+        render_save_status(
+            state="failed",
+            message=st.session_state.get("attempt_save_error")
+            or "Attempt was scored, but saving to progress tracking did not fully complete.",
         )
         if st.button("Retry Saving Result", type="primary"):
             from utils.paid_mock_diagnostics import log_save_retry_requested
             log_save_retry_requested()
             st.session_state.save_retry_requested = True
             st.rerun()
+    elif save_state == "saving":
+        render_save_status(state="saving")
 
     st.divider()
     st.header("Performance Breakdown")
 
-    st.subheader("By Domain")
-    for domain in CATEGORY_COUNTS.keys():
-        data = domain_breakdown_json.get(domain, {"correct": 0, "total": 0})
-        if data.get("total", 0) == 0:
-            continue
-        percent = round((data["correct"] / data["total"]) * 100, 2)
-        st.write(f"**{domain}:** {data['correct']} / {data['total']} correct ({percent}%)")
+    domain_rows = format_breakdown_rows(domain_breakdown_json, order=list(CATEGORY_COUNTS.keys()))
+    domain_fig = build_breakdown_figure(domain_rows, title="By Domain", passing_threshold=float(PASSING_SCORE))
+    if domain_fig is not None:
+        st.caption(breakdown_chart_caption(len(domain_rows), kind="domain"))
+        st.plotly_chart(domain_fig, use_container_width=True)
+    else:
+        render_activity_empty_state("No domain breakdown", "Domain performance data is not available for this attempt.")
 
     if st.session_state.get("exam_access_type") == "paid":
-        st.subheader("By Difficulty")
-        for difficulty in ["easy", "medium", "hard"]:
-            data = difficulty_breakdown_json.get(difficulty, {"correct": 0, "total": 0})
-            if data.get("total", 0) == 0:
-                continue
-            percent = round((data["correct"] / data["total"]) * 100, 2)
-            st.write(f"**{format_diff(difficulty)}:** {data['correct']} / {data['total']} correct ({percent}%)")
+        difficulty_rows = format_breakdown_rows(
+            difficulty_breakdown_json,
+            order=["easy", "medium", "hard"],
+        )
+        difficulty_fig = build_breakdown_figure(
+            difficulty_rows,
+            title="By Difficulty",
+            horizontal=False,
+        )
+        if difficulty_fig is not None:
+            st.caption(breakdown_chart_caption(len(difficulty_rows), kind="difficulty"))
+            st.plotly_chart(difficulty_fig, use_container_width=True)
+        else:
+            render_activity_empty_state(
+                "No difficulty breakdown",
+                "Difficulty performance data is not available for this attempt.",
+            )
 
     st.divider()
     st.header("Answer Review")

@@ -33,7 +33,23 @@ from utils.practice_session_persistence import (
 )
 from utils.user_errors import PRACTICE_SAVE_ERROR_MESSAGE, log_and_get_user_message
 from utils.activity_modes import DAILY_SPRINT, PRACTICE_BY_CATEGORY, WEAK_AREA_EVIDENCE_MODES, WEAK_AREAS_PRACTICE
-from utils.dashboard_components import inject_certbound_theme, render_page_header
+from utils.dashboard_components import render_page_header
+from utils.activity_components import (
+    inject_activity_theme,
+    render_activity_empty_state,
+    render_activity_launch_card,
+    render_activity_progress,
+    render_answer_guidance,
+    render_feedback_panel,
+    render_locked_preview_panel,
+    render_question_card_end,
+    render_question_card_start,
+    render_question_stem,
+    render_result_hero,
+    render_save_status,
+    format_breakdown_rows,
+)
+from utils.activity_charts import build_breakdown_figure, breakdown_chart_caption
 from utils.version import APP_VERSION
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 
@@ -45,7 +61,7 @@ render_app_chrome()
 enforce_session_timeout()
 show_session_expired_notice()
 
-inject_certbound_theme()
+inject_activity_theme()
 render_page_header(
     "Weak Areas Practice",
     description="Practice verified weak domains based on your attempt history.",
@@ -503,18 +519,14 @@ def reset_weak():
 
 def render_locked_weak_areas_preview(user_email, language_code, access_level):
     """Show a premium preview for free users without exposing real weak-area practice questions."""
-    st.markdown(
-        """
-        <div class="weak-card locked-preview-card">
-            <div class="locked-eyebrow">Premium weak-area preview</div>
-            <h2 style="margin:0 0 8px 0;">Practice where your scores are actually leaking points.</h2>
-            <p class="small-muted" style="font-size:15px;line-height:1.5;margin-bottom:0;">
-                Weak Areas Practice builds targeted practice sets from your saved mock exams and practice history.
-                This preview uses sample data only and does not expose the paid question bank.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_locked_preview_panel(
+        eyebrow="Premium weak-area preview",
+        title="Practice where your scores are actually leaking points.",
+        body=(
+            "Weak Areas Practice builds targeted practice sets from your saved mock exams and practice history. "
+            "This preview uses sample data only and does not expose the paid question bank."
+        ),
+        sample_label="Locked preview",
     )
 
     st.info(f"Signed in as {user_email} | Access: {access_level} | Preferred language: {language_label(language_code)}")
@@ -526,20 +538,13 @@ def render_locked_weak_areas_preview(user_email, language_code, access_level):
 
     left, right = st.columns([1.15, 1])
     with left:
-        st.markdown(
-            """
-            <div class="weak-card">
-                <h3 style="margin-top:0;">What premium users can do</h3>
-                <ul style="line-height:1.8;margin-bottom:0;">
-                    <li>Automatically detect weak domains from saved attempts.</li>
-                    <li>Build practice sets focused on the lowest-scoring domains.</li>
-                    <li>Review explanations after each question.</li>
-                    <li>Save weak-area practice results into My Progress.</li>
-                    <li>Use results to improve readiness scoring over time.</li>
-                </ul>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        render_activity_launch_card(
+            kicker="Premium access",
+            title="What premium users can do",
+            body=(
+                "Automatically detect weak domains from saved attempts, build focused practice sets, "
+                "review explanations after each question, and save results into My Progress."
+            ),
         )
     with right:
         sample_domains = pd.DataFrame(
@@ -549,31 +554,16 @@ def render_locked_weak_areas_preview(user_email, language_code, access_level):
                 {"Sample Weak Domain": "Data Management", "Accuracy %": 69, "Priority": "Medium"},
             ]
         )
-        st.markdown('<div class="weak-card sample-panel"><h3 style="margin-top:0;">Sample weak-area signal</h3>', unsafe_allow_html=True)
+        render_activity_launch_card(
+            kicker="Sample weak-area signal",
+            title="Sample performance snapshot",
+            body="Illustrative domain accuracy values for preview only.",
+            access_label="Sample data only",
+        )
         st.dataframe(sample_domains, use_container_width=True, hide_index=True)
-        st.markdown('<span class="locked-pill">Locked preview</span></div>', unsafe_allow_html=True)
 
     st.warning("Weak Areas Practice is locked on free accounts. Complete a free mock exam now, or unlock premium access to generate real weak-area drills.")
 
-
-st.markdown(
-    """
-    <style>
-    .block-container { max-width:1120px; padding-top:2rem !important; }
-    .weak-banner { background:#16325c;color:white;padding:18px 22px;border-radius:8px;font-size:27px;font-weight:700;margin-bottom:18px; }
-    .weak-card { border:1px solid #d8dde6;border-radius:8px;padding:20px;background:white;margin-bottom:18px; }
-    .locked-preview-card { border:1px solid #c9d7f5;background:linear-gradient(135deg,#ffffff 0%,#f4f8ff 100%); }
-    .locked-eyebrow { color:#1b4d89;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px; }
-    .sample-panel { background:#f8fafc; }
-    .locked-pill { display:inline-block;margin-top:10px;padding:6px 10px;border-radius:999px;background:#e8f0fe;color:#1b4d89;font-size:12px;font-weight:700; }
-    .small-muted { color:#5f6368;font-size:13px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown('<div class="weak-banner">Weak Areas Practice</div>', unsafe_allow_html=True)
-st.caption(f"App Version: {APP_VERSION}")
 
 user_email = require_login()
 
@@ -653,14 +643,21 @@ if not st.session_state.get("weak_started", False):
     available_categories.extend(extra_categories)
 
     weak_domains = aggregate_domains_from_evidence(attempts, question_attempts)
-    st.header("Build Practice from Your Weak Areas")
+    render_activity_launch_card(
+        kicker="Weak areas configuration",
+        title="Build practice from your weak areas",
+        body=(
+            "No weak-area data found yet for this certification/language. Complete a mock exam or practice set first, or manually choose a domain."
+            if not weak_domains
+            else "Your weakest domains were detected from saved question-level practice evidence for this certification."
+        ),
+        access_label="Weak Areas Practice",
+    )
 
     if not weak_domains:
-        st.warning("No weak-area data found yet for this certification/language. Complete a mock exam or practice set first, or manually choose a domain.")
         recommended_categories = recommend_practice_categories(weak_domains, available_categories)
     else:
         recommended_categories = recommend_practice_categories(weak_domains, available_categories)
-        st.success("Your weakest domains were detected from saved question-level practice evidence for this certification.")
         st.subheader("Weakest Domains")
         st.dataframe(pd.DataFrame(weak_domains[:5]).rename(columns={"name": "Domain", "accuracy": "Accuracy %", "correct": "Correct", "total": "Total"}), use_container_width=True, hide_index=True)
 
@@ -698,14 +695,20 @@ elif not st.session_state.get("weak_submitted", False):
     questions = st.session_state.weak_questions
     q_index = st.session_state.get("weak_current_index", 0)
     q = questions[q_index]
-    st.markdown(f"""
-    <div class="weak-card">
-        <strong>Question:</strong> {q_index + 1} of {len(questions)}<br>
-        <span class="small-muted">Certification: {display_by_exam.get(st.session_state.weak_exam_name, st.session_state.weak_exam_name)} | Domain: {q['category']} | Difficulty: {q['difficulty'].title()}</span>
-    </div>
-    """, unsafe_allow_html=True)
-    st.progress((q_index + 1) / len(questions))
-    st.subheader(q["question"])
+    cert_name = display_by_exam.get(st.session_state.weak_exam_name, st.session_state.weak_exam_name)
+    render_activity_progress(q_index + 1, len(questions))
+    render_question_card_start(
+        domain=str(q["category"]),
+        difficulty=str(q["difficulty"]).title(),
+        question_number=q_index + 1,
+        question_total=len(questions),
+        certification=cert_name,
+    )
+    render_question_stem(q["question"])
+    render_answer_guidance(
+        multiple_select=is_multiple_select(q),
+        required_count=len(q.get("correct_ids", [])) if is_multiple_select(q) else None,
+    )
 
     current_answer = st.session_state.get("weak_answers", {}).get(q_index, [])
     selected_ids: list = []
@@ -733,6 +736,8 @@ elif not st.session_state.get("weak_submitted", False):
         st.session_state.weak_answers[q_index] = selected_ids
     elif q_index in st.session_state.get("weak_answers", {}):
         del st.session_state.weak_answers[q_index]
+
+    render_question_card_end()
 
     user_answer = st.session_state.weak_answers.get(q_index, [])
     answer_complete = is_answer_selection_complete(user_answer, q)
@@ -769,15 +774,14 @@ elif not st.session_state.get("weak_submitted", False):
         q,
     ):
         user_ids = user_answer
-        if is_correct(user_ids, q["correct_ids"], question=q):
-            st.success("Correct")
-        else:
-            st.error("Incorrect")
         correct_texts = [opt["text"] for opt in q["options"] if opt["id"] in q["correct_ids"]]
         selected_texts = [opt["text"] for opt in q["options"] if opt["id"] in user_ids]
-        st.write("Your answer: " + (", ".join(selected_texts) if selected_texts else "No answer selected"))
-        st.write("Correct answer: " + ", ".join(correct_texts))
-        st.info(q["explanation"])
+        render_feedback_panel(
+            is_correct_answer=is_correct(user_ids, q["correct_ids"], question=q),
+            learner_answer=", ".join(selected_texts) if selected_texts else "No answer selected",
+            correct_answer=", ".join(correct_texts),
+            explanation=q["explanation"],
+        )
 
     persist_weak_practice_state(st.session_state, user_email)
 
@@ -791,9 +795,16 @@ else:
     difficulty_breakdown = build_breakdown(questions, answers, "difficulty")
     category_label = ", ".join(st.session_state.get("weak_categories", [])) or "Weak Areas"
 
-    st.header("Weak Areas Practice Results")
+    render_result_hero(
+        title="Weak Areas Practice Results",
+        score=score,
+        correct=correct,
+        total=total,
+        passing_score=None,
+        passed=None,
+    )
     c1, c2, c3 = st.columns(3)
-    c1.metric("Score", f"{score}%")
+    c1.metric("Accuracy", f"{score}%")
     c2.metric("Correct", f"{correct} / {total}")
     c3.metric("Focus Domains", len(st.session_state.get("weak_categories", [])))
 
@@ -803,20 +814,23 @@ else:
             save_weak_attempt(score, correct, total, category_label, domain_breakdown, difficulty_breakdown, st.session_state.weak_exam_name, st.session_state.weak_language_code)
             st.session_state.weak_saved = True
             clear_weak_practice_state()
-            st.success("Weak areas practice attempt saved to progress tracking ✅")
+            render_save_status(state="saved")
         except Exception as exc:
             log_and_get_user_message(
                 "weak areas practice save failed",
                 PRACTICE_SAVE_ERROR_MESSAGE,
                 exc=exc,
             )
-            st.error(PRACTICE_SAVE_ERROR_MESSAGE)
+            render_save_status(state="failed", message=PRACTICE_SAVE_ERROR_MESSAGE)
 
     st.divider()
-    st.subheader("Breakdown by Domain")
-    for name, data in domain_breakdown.items():
-        pct = round((data["correct"] / data["total"]) * 100, 2) if data["total"] else 0
-        st.write(f"**{name}:** {data['correct']} / {data['total']} correct ({pct}%)")
+    domain_rows = format_breakdown_rows(domain_breakdown)
+    domain_fig = build_breakdown_figure(domain_rows, title="Breakdown by Domain")
+    if domain_fig is not None:
+        st.caption(breakdown_chart_caption(len(domain_rows), kind="domain"))
+        st.plotly_chart(domain_fig, use_container_width=True)
+    else:
+        render_activity_empty_state("No domain breakdown", "Domain performance data is not available for this session.")
 
     st.divider()
     st.header("Answer Review")

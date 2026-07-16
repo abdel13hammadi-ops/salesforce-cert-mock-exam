@@ -32,7 +32,23 @@ from utils.practice_session_persistence import (
 )
 from utils.user_errors import PRACTICE_SAVE_ERROR_MESSAGE, log_and_get_user_message
 from utils.activity_modes import DAILY_SPRINT, PRACTICE_BY_CATEGORY
-from utils.dashboard_components import inject_certbound_theme, render_page_header
+from utils.dashboard_components import render_page_header
+from utils.activity_components import (
+    inject_activity_theme,
+    render_activity_empty_state,
+    render_activity_launch_card,
+    render_activity_progress,
+    render_answer_guidance,
+    render_feedback_panel,
+    render_locked_preview_panel,
+    render_question_card_end,
+    render_question_card_start,
+    render_question_stem,
+    render_result_hero,
+    render_save_status,
+)
+from utils.activity_charts import build_breakdown_figure, breakdown_chart_caption
+from utils.activity_components import format_breakdown_rows
 from utils.version import APP_VERSION
 QUESTION_COUNT_OPTIONS = [10, 20, 30]
 DAILY_SPRINT_QUESTION_COUNT = 10
@@ -47,7 +63,7 @@ render_app_chrome()
 enforce_session_timeout()
 show_session_expired_notice()
 
-inject_certbound_theme()
+inject_activity_theme()
 render_page_header(
     "Practice By Category",
     description="Drill one certification domain at a time using your saved question bank.",
@@ -570,18 +586,14 @@ def save_practice_attempt(score, correct, total, category, domain_breakdown, dif
 
 def render_locked_practice_preview(user_email, language_code):
     """Show a premium preview for free users without exposing real paid practice questions."""
-    st.markdown(
-        """
-        <div class="practice-card locked-preview-card">
-            <div class="locked-eyebrow">Premium practice preview</div>
-            <h2 style="margin:0 0 8px 0;">Target weak domains before exam day.</h2>
-            <p class="small-muted" style="font-size:15px;line-height:1.5;margin-bottom:0;">
-                Practice by Category unlocks focused question sets by certification domain, instant explanations,
-                and saved progress tracking. This preview uses sample data only.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_locked_preview_panel(
+        eyebrow="Premium practice preview",
+        title="Target weak domains before exam day.",
+        body=(
+            "Practice by Category unlocks focused question sets by certification domain, instant explanations, "
+            "and saved progress tracking. This preview uses sample data only."
+        ),
+        sample_label="Locked preview",
     )
 
     st.info(f"Signed in as {user_email} | Preferred language: {language_label(language_code)}")
@@ -593,57 +605,24 @@ def render_locked_practice_preview(user_email, language_code):
 
     left, right = st.columns([1.2, 1])
     with left:
-        st.markdown(
-            """
-            <div class="practice-card">
-                <h3 style="margin-top:0;">What premium users can do</h3>
-                <ul style="line-height:1.8;margin-bottom:0;">
-                    <li>Choose a certification and drill one domain at a time.</li>
-                    <li>Pick focused sets of 10, 20, or 30 approved questions.</li>
-                    <li>See explanations immediately after each answer.</li>
-                    <li>Save every practice session into My Progress.</li>
-                    <li>Feed weak-area data into readiness tracking.</li>
-                </ul>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        render_activity_launch_card(
+            kicker="Premium access",
+            title="What premium users can do",
+            body=(
+                "Choose a certification and drill one domain at a time with focused sets of 10, 20, or 30 "
+                "approved questions, instant explanations, saved sessions, and readiness tracking."
+            ),
         )
     with right:
-        st.markdown(
-            """
-            <div class="practice-card sample-panel">
-                <h3 style="margin-top:0;">Sample domain drill</h3>
-                <div class="sample-row"><span>Configuration and Setup</span><strong>20 questions</strong></div>
-                <div class="sample-row"><span>Object Manager</span><strong>10 questions</strong></div>
-                <div class="sample-row"><span>Security and Access</span><strong>30 questions</strong></div>
-                <div class="locked-pill">Locked preview</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        render_activity_launch_card(
+            kicker="Sample domain drill",
+            title="Sample configuration",
+            body="Configuration and Setup — 20 questions | Object Manager — 10 questions | Security and Access — 30 questions",
+            access_label="Sample data only",
         )
 
     st.warning("Practice by Category is locked on free accounts. Use the free mock exam now, or unlock premium access to practice by domain.")
 
-
-st.markdown(
-    """
-    <style>
-    .block-container { max-width: 1120px; padding-top: 2rem !important; }
-    .practice-banner { background:#16325c;color:white;padding:18px 22px;border-radius:8px;font-size:27px;font-weight:700;margin-bottom:18px; }
-    .practice-card { border:1px solid #d8dde6;border-radius:8px;padding:20px;background:white;margin-bottom:18px; }
-    .locked-preview-card { border:1px solid #c9d7f5;background:linear-gradient(135deg,#ffffff 0%,#f4f8ff 100%); }
-    .locked-eyebrow { color:#1b4d89;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px; }
-    .sample-panel { background:#f8fafc; }
-    .sample-row { display:flex;justify-content:space-between;border-bottom:1px solid #e5e7eb;padding:10px 0;font-size:14px;gap:12px; }
-    .locked-pill { display:inline-block;margin-top:14px;padding:6px 10px;border-radius:999px;background:#e8f0fe;color:#1b4d89;font-size:12px;font-weight:700; }
-    .small-muted { color:#5f6368;font-size:13px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown('<div class="practice-banner">Practice by Category</div>', unsafe_allow_html=True)
-st.caption(f"App Version: {APP_VERSION}")
 
 user_email = require_login()
 
@@ -734,12 +713,6 @@ if not st.session_state.get("practice_started", False):
     domains = fetch_domains(selected_exam)
     question_bank = fetch_question_bank(selected_exam, language_code)
 
-    st.header("Choose Practice Settings")
-    if is_daily_sprint and daily_sprint_category:
-        st.success(f"Daily Sprint loaded: 10 questions focused on {daily_sprint_category}.")
-    else:
-        st.info("Practice one domain at a time. Explanations are shown during practice and again in the final review.")
-
     if not question_bank:
         st.error(f"No approved questions found for {display_by_exam.get(selected_exam, selected_exam)} in {language_label(language_code)}.")
         st.stop()
@@ -761,10 +734,21 @@ if not st.session_state.get("practice_started", False):
 
     selected_count = st.selectbox("Number of questions", valid_counts, index=default_count_index)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Available Questions", available_count)
-    c2.metric("Practice Questions", selected_count)
-    c3.metric("Mode", "Untimed")
+    render_activity_launch_card(
+        kicker="Practice configuration",
+        title="Choose practice settings",
+        body=(
+            "Practice one domain at a time. Explanations appear after you submit each answer and again in the final review."
+            if not (is_daily_sprint and daily_sprint_category)
+            else f"Daily Sprint loaded: 10 questions focused on {daily_sprint_category}."
+        ),
+        access_label="Daily Sprint" if is_daily_sprint else "Practice by Category",
+        metrics=[
+            ("Available Questions", str(available_count)),
+            ("Practice Questions", str(selected_count)),
+            ("Mode", "Untimed"),
+        ],
+    )
 
     start_label = "Start Daily Sprint" if is_daily_sprint else "Start Practice"
     if st.button(start_label, type="primary"):
@@ -786,14 +770,20 @@ elif not st.session_state.get("practice_submitted", False):
     questions = st.session_state.practice_questions
     index = st.session_state.get("practice_current_index", 0)
     q = questions[index]
-    st.markdown(f"""
-    <div class="practice-card">
-        <strong>Question {index + 1} of {len(questions)}</strong><br>
-        <span class="small-muted">Certification: {display_by_exam.get(st.session_state.practice_exam_name, st.session_state.practice_exam_name)} | Domain: {q['category']} | Difficulty: {q['difficulty'].title()}</span>
-    </div>
-    """, unsafe_allow_html=True)
-    st.progress((index + 1) / len(questions))
-    st.subheader(q["question"])
+    cert_name = display_by_exam.get(st.session_state.practice_exam_name, st.session_state.practice_exam_name)
+    render_activity_progress(index + 1, len(questions))
+    render_question_card_start(
+        domain=str(q["category"]),
+        difficulty=str(q["difficulty"]).title(),
+        question_number=index + 1,
+        question_total=len(questions),
+        certification=cert_name,
+    )
+    render_question_stem(q["question"])
+    render_answer_guidance(
+        multiple_select=is_multiple_select(q),
+        required_count=len(q.get("correct_ids", [])) if is_multiple_select(q) else None,
+    )
 
     previous_answer = st.session_state.get("practice_answers", {}).get(index, [])
     if is_multiple_select(q):
@@ -819,6 +809,8 @@ elif not st.session_state.get("practice_submitted", False):
         selected_text = st.radio("Choose one answer.", option_texts, index=option_texts.index(previous_text) if previous_text in option_texts else None, key=f"practice_radio_{index}")
         if selected_text:
             st.session_state.practice_answers[index] = [id_by_text[selected_text]]
+
+    render_question_card_end()
 
     user_answer = st.session_state.practice_answers.get(index, [])
     answer_complete = is_answer_selection_complete(user_answer, q)
@@ -855,15 +847,14 @@ elif not st.session_state.get("practice_submitted", False):
         q,
     ):
         correct_now = is_correct(user_answer, q["correct_ids"], question=q)
-        if correct_now:
-            st.success("Correct ✅")
-        else:
-            st.error("Incorrect")
         correct_texts = [opt["text"] for opt in q["options"] if opt["id"] in q["correct_ids"]]
         selected_texts = [opt["text"] for opt in q["options"] if opt["id"] in user_answer]
-        st.write("Your answer: " + (", ".join(selected_texts) if selected_texts else "No answer selected"))
-        st.write("Correct answer: " + ", ".join(correct_texts))
-        st.info(q["explanation"])
+        render_feedback_panel(
+            is_correct_answer=correct_now,
+            learner_answer=", ".join(selected_texts) if selected_texts else "No answer selected",
+            correct_answer=", ".join(correct_texts),
+            explanation=q["explanation"],
+        )
 
     persist_category_practice_state(st.session_state, user_email)
 
@@ -886,19 +877,26 @@ else:
             save_practice_attempt(score, correct, total, st.session_state.practice_category, domain_breakdown, difficulty_breakdown, st.session_state.practice_exam_name, st.session_state.practice_language_code)
             st.session_state.practice_saved = True
             clear_category_practice_state()
-            st.success("Practice attempt saved to progress tracking ✅")
+            render_save_status(state="saved")
         except Exception as exc:
             log_and_get_user_message(
                 "category practice save failed",
                 PRACTICE_SAVE_ERROR_MESSAGE,
                 exc=exc,
             )
-            st.warning(PRACTICE_SAVE_ERROR_MESSAGE)
+            render_save_status(state="failed", message=PRACTICE_SAVE_ERROR_MESSAGE)
 
     completion_view = build_practice_completion_view(score, correct, total, st.session_state)
-    st.header(completion_view["heading"])
+    render_result_hero(
+        title=completion_view["heading"],
+        score=score,
+        correct=correct,
+        total=total,
+        passing_score=None,
+        passed=None,
+    )
     c1, c2, c3 = st.columns(3)
-    c1.metric("Score", completion_view["score_metric"])
+    c1.metric("Accuracy", completion_view["score_metric"])
     c2.metric("Correct", completion_view["correct_metric"])
     c3.metric("Category", st.session_state.practice_category)
 
@@ -908,6 +906,14 @@ else:
             label=completion_view["dashboard_label"],
             icon="🏠",
         )
+
+    domain_rows = format_breakdown_rows(domain_breakdown)
+    domain_fig = build_breakdown_figure(domain_rows, title="By Domain")
+    if domain_fig is not None:
+        st.caption(breakdown_chart_caption(len(domain_rows), kind="domain"))
+        st.plotly_chart(domain_fig, use_container_width=True)
+    else:
+        render_activity_empty_state("No domain breakdown", "Domain performance data is not available for this session.")
 
     st.subheader(completion_view["review_heading"])
     for i, q in enumerate(questions):
