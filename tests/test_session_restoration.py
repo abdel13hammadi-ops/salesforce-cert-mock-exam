@@ -22,6 +22,7 @@ from utils.access_control import (
 )
 from utils.billing_mapping import map_stripe_subscription_status_to_certbound, stripe_status_grants_premium
 from utils.billing_stripe import _portal_return_url_with_marker
+from utils.secondary_components import render_subscription_plan_summary
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ACCOUNT_PATH = REPO_ROOT / "pages" / "Account.py"
@@ -181,9 +182,33 @@ class TestCancelAtPeriodEndAccess(unittest.TestCase):
         self.assertEqual(map_stripe_subscription_status_to_certbound("active"), "active")
 
     def test_account_shows_scheduled_cancellation_message(self):
+        # Wiring: Account.py must still read the Stripe flag and hand it to the
+        # shared subscription-summary component (the message itself now lives
+        # in utils/secondary_components.py, not inlined in Account.py).
         text = ACCOUNT_PATH.read_text(encoding="utf-8")
         self.assertIn("stripe_cancel_at_period_end", text)
-        self.assertIn("scheduled to cancel at the end of the current billing period", text)
+        self.assertIn("render_subscription_plan_summary", text)
+
+        # User-visible contract: rendering the shared component with
+        # cancel_at_period_end=True must communicate that cancellation is
+        # scheduled and that access remains active until the current billing
+        # period ends.
+        calls: list[str] = []
+
+        def fake_markdown(value, **_kwargs):
+            calls.append(value)
+
+        with patch("utils.secondary_components.st.markdown", side_effect=fake_markdown):
+            render_subscription_plan_summary(
+                has_premium=True,
+                stripe_sub_status="active",
+                cancel_at_period_end=True,
+            )
+
+        self.assertTrue(calls)
+        rendered = calls[0]
+        self.assertIn("Cancellation scheduled", rendered)
+        self.assertIn("remains active until the end of the current billing period", rendered)
 
 
 class TestBrowserStorageContract(unittest.TestCase):

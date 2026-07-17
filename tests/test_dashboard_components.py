@@ -6,9 +6,12 @@ import inspect
 import os
 import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 from utils.activity_modes import DAILY_SPRINT, PAID_MOCK_EXAM
 from utils.dashboard_components import (
@@ -85,11 +88,15 @@ class TestActivityHistoryPresentation(unittest.TestCase):
 
 class TestSharedImports(unittest.TestCase):
     def test_dashboard_and_progress_import_shared_components(self):
-        import pages.Dashboard as dashboard
-        import pages.My_Progress as my_progress
-
-        dashboard_source = inspect.getsource(dashboard)
-        progress_source = inspect.getsource(my_progress)
+        # Static source inspection only. Do not import these page modules for
+        # real: each is a Streamlit script whose top-level body calls
+        # Supabase-backed helpers on import, and the first access to
+        # st.secrets anywhere in the process copies every key in
+        # .streamlit/secrets.toml into os.environ for the rest of the pytest
+        # run, silently poisoning unrelated tests that rely on injected
+        # secrets_getter values (e.g. Stripe portal-return-URL tests).
+        dashboard_source = (REPO_ROOT / "pages" / "Dashboard.py").read_text(encoding="utf-8")
+        progress_source = (REPO_ROOT / "pages" / "My_Progress.py").read_text(encoding="utf-8")
         for token in (
             "utils.dashboard_components",
             "inject_certbound_theme",
@@ -105,11 +112,8 @@ class TestSharedImports(unittest.TestCase):
             self.assertIn(token, progress_source)
 
     def test_pages_do_not_define_duplicate_chart_builders(self):
-        import pages.Dashboard as dashboard
-        import pages.My_Progress as my_progress
-
-        dashboard_source = inspect.getsource(dashboard)
-        progress_source = inspect.getsource(my_progress)
+        dashboard_source = (REPO_ROOT / "pages" / "Dashboard.py").read_text(encoding="utf-8")
+        progress_source = (REPO_ROOT / "pages" / "My_Progress.py").read_text(encoding="utf-8")
         self.assertNotIn("def build_score_trend_figure", dashboard_source)
         self.assertNotIn("def build_score_trend_figure", progress_source)
         self.assertNotIn("st.line_chart", progress_source)

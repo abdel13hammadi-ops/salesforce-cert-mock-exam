@@ -7,8 +7,11 @@ import os
 import sys
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 from utils.activity_modes import (
     DAILY_SPRINT,
@@ -309,11 +312,15 @@ class TestActivityHistoryNormalization(unittest.TestCase):
 
 class TestSharedPageIntegration(unittest.TestCase):
     def test_dashboard_and_my_progress_use_shared_functions(self):
-        import pages.Dashboard as dashboard
-        import pages.My_Progress as my_progress
-
-        dashboard_source = inspect.getsource(dashboard)
-        progress_source = inspect.getsource(my_progress)
+        # Static source inspection only. Do not import these page modules for
+        # real: each is a Streamlit script whose top-level body calls
+        # Supabase-backed helpers on import, and the first access to
+        # st.secrets anywhere in the process copies every key in
+        # .streamlit/secrets.toml into os.environ for the rest of the pytest
+        # run, silently poisoning unrelated tests that rely on injected
+        # secrets_getter values (e.g. Stripe portal-return-URL tests).
+        dashboard_source = (REPO_ROOT / "pages" / "Dashboard.py").read_text(encoding="utf-8")
+        progress_source = (REPO_ROOT / "pages" / "My_Progress.py").read_text(encoding="utf-8")
 
         shared_calls = [
             "utils.learner_analytics",

@@ -157,14 +157,20 @@ class TestCompatibility(unittest.TestCase):
         self.assertIn("classify_recovery_session_error", reset_source)
 
     def test_secondary_pages_import_shared_components(self):
-        for module_name in (
-            "pages.Account",
-            "pages.Support",
-            "pages.Reset_Password",
-            "pages.Terms_of_Service",
+        # Static source inspection only. Do not import these page modules for
+        # real: each is a Streamlit script whose top-level body calls
+        # Supabase-backed helpers on import, and the first access to
+        # st.secrets anywhere in the process copies every key in
+        # .streamlit/secrets.toml (e.g. a local-dev STRIPE_PORTAL_RETURN_URL)
+        # into os.environ for the rest of the pytest run, silently poisoning
+        # unrelated tests that rely on injected secrets_getter values.
+        for page_path in (
+            "pages/Account.py",
+            "pages/Support.py",
+            "pages/Reset_Password.py",
+            "pages/Terms_of_Service.py",
         ):
-            module = __import__(module_name, fromlist=["*"])
-            source = inspect.getsource(module)
+            source = (REPO_ROOT / page_path).read_text(encoding="utf-8")
             self.assertIn("utils.secondary_components", source)
             self.assertIn("inject_secondary_theme", source)
 

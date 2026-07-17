@@ -7,6 +7,7 @@ import inspect
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,6 +26,8 @@ from utils.activity_components import (
     render_save_status,
 )
 from utils.ui_theme import COLORS, validate_theme_tokens
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestActivityTheme(unittest.TestCase):
@@ -196,12 +199,15 @@ class TestPresentationPurity(unittest.TestCase):
 
 class TestSharedImports(unittest.TestCase):
     def test_activity_pages_import_shared_components(self):
-        import app
-        import pages.Practice_By_Category as practice
-        import pages.Weak_Areas_Practice as weak
-
-        for module in (app, practice, weak):
-            source = inspect.getsource(module)
+        # Static source inspection only. Do not import these page modules for
+        # real: each is a Streamlit script whose top-level body calls
+        # Supabase-backed helpers on import, and the first access to
+        # st.secrets anywhere in the process copies every key in
+        # .streamlit/secrets.toml into os.environ for the rest of the pytest
+        # run, silently poisoning unrelated tests that rely on injected
+        # secrets_getter values (e.g. Stripe portal-return-URL tests).
+        for page_path in ("app.py", "pages/Practice_By_Category.py", "pages/Weak_Areas_Practice.py"):
+            source = (REPO_ROOT / page_path).read_text(encoding="utf-8")
             self.assertIn("utils.activity_components", source)
             self.assertIn("inject_activity_theme", source)
 
