@@ -56,6 +56,7 @@ FREE_MOCK_RPC_SIGNATURES = (
 )
 APP_PATH = REPO_ROOT / "app.py"
 ACCESS_CONTROL_PATH = REPO_ROOT / "utils" / "access_control.py"
+NAVIGATION_PATH = REPO_ROOT / "utils" / "navigation.py"
 ADMIN_PAGE_PATH = REPO_ROOT / "pages" / "Admin_Free_Mock_Curation.py"
 
 
@@ -491,10 +492,16 @@ class TestPhase1Isolation(unittest.TestCase):
         self.assertNotIn("get_supabase_user_client", source)
 
     def test_admin_sidebar_link(self):
-        source = ACCESS_CONTROL_PATH.read_text(encoding="utf-8")
-        self.assertIn("pages/Admin_Free_Mock_Curation.py", source)
-        self.assertIn("Free Mock Curation", source)
-        self.assertIn("is_admin_unlocked()", source)
+        # Navigation definitions were centralized into utils/navigation.py; the
+        # route must still be registered there with a discoverable label.
+        # Admin authorization is enforced by the page itself via require_admin()
+        # (which gates on is_admin_unlocked()) and remains page-level and unchanged.
+        navigation_source = NAVIGATION_PATH.read_text(encoding="utf-8")
+        self.assertIn("pages/Admin_Free_Mock_Curation.py", navigation_source)
+        self.assertIn("Free Mock Curation", navigation_source)
+
+        access_control_source = ACCESS_CONTROL_PATH.read_text(encoding="utf-8")
+        self.assertIn("is_admin_unlocked()", access_control_source)
 
     def test_learner_runtime_still_expects_ten_questions(self):
         source = APP_PATH.read_text(encoding="utf-8")

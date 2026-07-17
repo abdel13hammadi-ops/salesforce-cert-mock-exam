@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.test_exam_attempt_tracking import FakeSupabase
+from utils.activity_modes import DAILY_SPRINT, PRACTICE_BY_CATEGORY, WEAK_AREA_EVIDENCE_MODES, WEAK_AREAS_PRACTICE
 from utils.question_selection import count_question_attempts, resolve_or_create_exam_attempt_id
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -82,7 +83,18 @@ def _extract_function(path, name):
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             module_source = ast.unparse(ast.Module(body=[node], type_ignores=[]))
-            namespace = {"datetime": datetime, "timezone": timezone}
+            # The extracted function body references these as bare module-level
+            # names (imported at the top of the real page module). Since only
+            # the single function is exec'd here, they must be seeded directly
+            # rather than imported transitively.
+            namespace = {
+                "datetime": datetime,
+                "timezone": timezone,
+                "DAILY_SPRINT": DAILY_SPRINT,
+                "PRACTICE_BY_CATEGORY": PRACTICE_BY_CATEGORY,
+                "WEAK_AREAS_PRACTICE": WEAK_AREAS_PRACTICE,
+                "WEAK_AREA_EVIDENCE_MODES": WEAK_AREA_EVIDENCE_MODES,
+            }
             exec(compile(module_source, path, "exec"), namespace)
             return namespace[name]
     raise AssertionError(f"{name} not found in {path}")

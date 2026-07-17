@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PAGE_PATH = REPO_ROOT / "pages" / "Admin_Question_Review.py"
 ACCESS_CONTROL_PATH = REPO_ROOT / "utils" / "access_control.py"
+NAVIGATION_PATH = REPO_ROOT / "utils" / "navigation.py"
 
 
 class TestAdminQuestionReviewReadOnly(unittest.TestCase):
@@ -79,8 +80,11 @@ class TestAdminQuestionReviewReadOnly(unittest.TestCase):
         self.assertNotIn("st.button(", self.source)
 
     def test_audit_review_remains_in_navigation(self):
-        self.assertIn('pages/Admin_Audit_Review.py', self.access_control_source)
-        self.assertIn("Admin Audit Review", self.access_control_source)
+        # Navigation definitions were centralized into utils/navigation.py; the
+        # route must still be registered there with a discoverable label.
+        navigation_source = NAVIGATION_PATH.read_text(encoding="utf-8")
+        self.assertIn("pages/Admin_Audit_Review.py", navigation_source)
+        self.assertIn("Audit Review", navigation_source)
 
     def test_page_imports_under_mock_streamlit(self):
         import utils.access_control  # noqa: F401 — ensure patch target is resolvable
