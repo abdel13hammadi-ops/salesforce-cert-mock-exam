@@ -1,0 +1,1033 @@
+{
+  "simulationId": "ba201-sim-meridian-health-01",
+  "title": "The Meridian Health Salesforce Rollout",
+  "certification": "BA-201",
+  "version": "1.0.0",
+  "description": "You are the Business Analyst on a full Salesforce implementation for Meridian Health, a mid-sized regional clinic network. Walk the entire project lifecycle \u2014 from your first discovery interview to go-live \u2014 making the calls a real BA would make. Your decisions shape stakeholder trust, project health, and schedule risk all the way to the end.",
+  "estimatedMinutes": 60,
+  "startScene": "s01_kickoff",
+  "domains": [
+    {
+      "id": "d1",
+      "label": "Customer Discovery",
+      "weight": "17%"
+    },
+    {
+      "id": "d2",
+      "label": "Collaboration with Stakeholders",
+      "weight": "23%"
+    },
+    {
+      "id": "d3",
+      "label": "Business Process Mapping",
+      "weight": "12%"
+    },
+    {
+      "id": "d4",
+      "label": "Requirements",
+      "weight": "18%"
+    },
+    {
+      "id": "d5",
+      "label": "User Stories",
+      "weight": "18%"
+    },
+    {
+      "id": "d6",
+      "label": "Development Support & UAT",
+      "weight": "12%"
+    }
+  ],
+  "initialState": {
+    "projectHealth": 100,
+    "stakeholderTrust": 100,
+    "scheduleRisk": 0
+  },
+  "scenes": [
+    {
+      "id": "s01_kickoff",
+      "domainId": "d1",
+      "narrative": "Week 1. You've just joined the Meridian Health Salesforce project as the Business Analyst. The CIO's project brief is one sentence: **'Fix our broken patient intake process.'** In your first stakeholder interview, the Intake Director walks you through intake \u2014 then, almost as an aside, mentions: *'Honestly, intake annoys people, but scheduling is what actually causes us to lose patients. We get double-bookings every single week.'* This wasn't mentioned anywhere in the original brief.",
+      "characterContext": {
+        "speakingAs": "Renata Diaz",
+        "role": "Intake Director"
+      },
+      "decision": {
+        "prompt": "What do you do with this finding?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Document it as a confirmed requirement and start designing a scheduling fix right away \u2014 no need to slow things down.",
+            "isCorrect": false,
+            "feedback": "Too fast. You've converted an unvalidated, single-source comment directly into a requirement and skipped the sponsor entirely.",
+            "stateChanges": {
+              "projectHealth": -6,
+              "scheduleRisk": 10
+            },
+            "setFlags": [
+              "skipped_validation"
+            ],
+            "nextScene": "s02b_pushback"
+          },
+          {
+            "id": "B",
+            "text": "Note it as a discovery finding, and raise it with the CIO to assess whether scheduling should be part of this project's scope.",
+            "isCorrect": true,
+            "feedback": "Correct instinct. You're capturing a real signal without unilaterally expanding scope.",
+            "stateChanges": {
+              "projectHealth": 2,
+              "stakeholderTrust": 2
+            },
+            "setFlags": [
+              "validated_scope_early"
+            ],
+            "nextScene": "s02a_cio_response"
+          },
+          {
+            "id": "C",
+            "text": "Thank her for the input, but stick strictly to intake since that's what the brief says.",
+            "isCorrect": false,
+            "feedback": "You may be ignoring the organization's actual top pain point because it wasn't in a one-sentence brief.",
+            "stateChanges": {
+              "projectHealth": -7,
+              "stakeholderTrust": -4
+            },
+            "setFlags": [
+              "ignored_signal"
+            ],
+            "nextScene": "s02b_pushback"
+          }
+        ]
+      },
+      "explanation": "**Customer Discovery is about uncovering the real problem, not just executing the stated one.** A one-line brief from an executive is almost never the full picture \u2014 operational staff often reveal the real pain points once you start asking questions. The correct move is neither to silently expand scope (A) nor to ignore new signals (C), but to surface the finding to the person with scoping authority (the CIO) and let them make an informed call. This protects both the project's governance and its relevance to what the business actually needs."
+    },
+    {
+      "id": "s02b_pushback",
+      "domainId": "d1",
+      "isDetour": true,
+      "narrative": "Two weeks later, the CIO emails you, copying her boss: *'Why am I hearing from three different directors that we're now \"looking at scheduling\"? That's not what we agreed to scope. I need this back on track.'* You've lost some trust before discovery is even finished.",
+      "decision": {
+        "prompt": "How do you respond?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Apologize, explain transparently what happened (a real signal surfaced, but you should have routed it through her first), and propose a quick scoping conversation now.",
+            "isCorrect": true,
+            "feedback": "Good recovery. Owning the process gap and proposing a concrete fix rebuilds credibility faster than defending the decision.",
+            "stateChanges": {
+              "stakeholderTrust": 2,
+              "projectHealth": 1
+            },
+            "nextScene": "s03_data_landscape"
+          },
+          {
+            "id": "B",
+            "text": "Defend the decision \u2014 the scheduling issue is clearly important, so raising it was the right call regardless of process.",
+            "isCorrect": false,
+            "feedback": "Being right about the finding doesn't excuse bypassing the governance process \u2014 this will read as defensiveness, not accountability.",
+            "stateChanges": {
+              "stakeholderTrust": -3
+            },
+            "nextScene": "s03_data_landscape"
+          }
+        ]
+      },
+      "explanation": "**When a process misstep damages trust, the fastest repair is transparent ownership plus a concrete next step** \u2014 not re-litigating whether the underlying finding was valid. The CIO's frustration is about being bypassed, not about whether scheduling matters. Address the actual complaint first."
+    },
+    {
+      "id": "s02a_cio_response",
+      "domainId": "d1",
+      "narrative": "The CIO appreciates being looped in early. *'Good catch \u2014 let's keep intake as primary, but spend two extra discovery interviews understanding scheduling before we lock scope. Don't commit to building anything yet.'* You now have a clear, sponsor-approved discovery boundary.",
+      "decision": {
+        "prompt": "How do you use the two extra interview slots?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Interview two more scheduling staff at different clinic locations, to see if the double-booking issue is consistent or location-specific.",
+            "isCorrect": true,
+            "feedback": "Smart \u2014 you're testing whether this is a systemic issue or a local anomaly before it shapes the project.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s03_data_landscape"
+          },
+          {
+            "id": "B",
+            "text": "Interview the CIO again, since she's the sponsor and her opinion matters most.",
+            "isCorrect": false,
+            "feedback": "The CIO already gave her view. You need operational evidence now, not more executive opinion.",
+            "stateChanges": {
+              "projectHealth": -2
+            },
+            "nextScene": "s03_data_landscape"
+          }
+        ]
+      },
+      "explanation": "**Once a scoping boundary is approved, the BA's job is to gather the evidence that will inform the actual scoping decision** \u2014 which means going back to the operational level, not re-confirming what the sponsor already said. Talking to staff at multiple locations tests whether the pain point is organization-wide (likely worth addressing) or isolated (likely not worth this project's scope)."
+    },
+    {
+      "id": "s03_data_landscape",
+      "domainId": "d1",
+      "narrative": "Your follow-up interviews confirm: double-booking happens at 4 of 5 clinic locations, roughly 3-5 times a week each. You also discover something else: patient contact data lives in three different systems \u2014 the EHR, an old scheduling tool, and a paper sign-in sheet at two locations that's never digitized at all.",
+      "decision": {
+        "prompt": "How do you handle this data fragmentation finding?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Document it as a significant constraint that will affect solution design and scope complexity, and flag it clearly in your discovery summary for the CIO.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 this is exactly the kind of finding that should shape scope and timeline conversations, not get buried in a footnote.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s04_problem_statement"
+          },
+          {
+            "id": "B",
+            "text": "Recommend immediately that all three systems be replaced by Salesforce before any further discovery happens.",
+            "isCorrect": false,
+            "feedback": "This is a major technology recommendation made far too early, without enough analysis to justify it.",
+            "stateChanges": {
+              "projectHealth": -4,
+              "scheduleRisk": 8
+            },
+            "nextScene": "s04_problem_statement"
+          }
+        ]
+      },
+      "explanation": "**Discovery surfaces constraints; it doesn't prescribe solutions.** A fragmented data landscape across three systems (including a non-digitized paper process) is a major scope and complexity factor that the sponsor needs visibility into before committing to a timeline or budget. Jumping to 'replace everything with Salesforce' is a premature technology recommendation that hasn't been earned by the discovery work done so far."
+    },
+    {
+      "id": "s04_problem_statement",
+      "domainId": "d1",
+      "narrative": "It's time to write the discovery summary for the CIO. You need a problem statement that will anchor the rest of the project.",
+      "decision": {
+        "prompt": "Which problem statement do you write?",
+        "options": [
+          {
+            "id": "A",
+            "text": "\"Meridian Health's intake and scheduling processes need improvement to provide a better patient experience.\"",
+            "isCorrect": false,
+            "feedback": "Too vague to anchor scope decisions or measure success against later.",
+            "stateChanges": {
+              "projectHealth": -3
+            },
+            "nextScene": "s05_workshop_setup"
+          },
+          {
+            "id": "B",
+            "text": "\"Scheduling double-bookings occur 3-5 times/week at 4 of 5 locations, driven partly by fragmented patient data across 3 disconnected systems (including a non-digitized paper process at 2 sites). This contributes to patient drop-off and staff rework time that this project should aim to reduce.\"",
+            "isCorrect": true,
+            "feedback": "Strong \u2014 specific, evidenced, and tied to a measurable business impact.",
+            "stateChanges": {
+              "projectHealth": 3,
+              "stakeholderTrust": 1
+            },
+            "nextScene": "s05_workshop_setup"
+          }
+        ]
+      },
+      "explanation": "**A strong problem statement is specific, evidenced by discovery data, and connects the problem to measurable business impact.** Option B does all three: it quantifies the frequency, names the root cause (data fragmentation), and links it to outcomes leadership cares about (patient drop-off, staff time). Option A could describe almost any healthcare CRM project and gives the team nothing concrete to design against or measure later."
+    },
+    {
+      "id": "s05_workshop_setup",
+      "domainId": "d2",
+      "narrative": "Discovery is approved and scoped: intake AND scheduling are in, full system consolidation is explicitly OUT for this phase. Now you're planning the first requirements workshop. You've identified 14 potential stakeholders across Intake, Scheduling, Nursing, IT, Billing, and clinic-level Office Managers.",
+      "decision": {
+        "prompt": "How do you approach inviting stakeholders to the first workshop?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Invite all 14 to one large kickoff workshop to make sure everyone feels included from day one.",
+            "isCorrect": false,
+            "feedback": "14 people in one room, several with only tangential interest, risks an unfocused session and wastes time for low-interest attendees.",
+            "stateChanges": {
+              "projectHealth": -3,
+              "stakeholderTrust": -2
+            },
+            "nextScene": "s06_conflict"
+          },
+          {
+            "id": "B",
+            "text": "Use a Power/Interest assessment to identify the 5-6 highest power/interest stakeholders for an initial working session, with a lighter-touch communication plan for the rest.",
+            "isCorrect": true,
+            "feedback": "Right-sized and strategic \u2014 you'll get a focused, productive session and a realistic plan for everyone else.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s06_conflict"
+          }
+        ]
+      },
+      "explanation": "**The Power/Interest Grid exists precisely for this situation** \u2014 large stakeholder lists need to be segmented so the highest power/highest interest group gets deep engagement (workshops, detailed input) while others get appropriately lighter engagement (updates, milestone check-ins). Inviting all 14 to one undifferentiated session usually produces a worse outcome than a focused session with the right people."
+    },
+    {
+      "id": "s06_conflict",
+      "domainId": "d2",
+      "narrative": "In the workshop, a sharp disagreement emerges. The **Nursing Director** wants any new scheduling system to prioritize clinical urgency (sick visits should always be slottable same-day, even if it disrupts the day's schedule). The **Scheduling Operations Manager** wants strict, predictable time-slot adherence to keep staffing and billing efficient. Both are adamant. Neither will yield in the room.",
+      "characterContext": {
+        "speakingAs": "Workshop tension",
+        "role": "Cross-functional conflict"
+      },
+      "decision": {
+        "prompt": "What do you do as the facilitator?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Make a judgment call yourself and tell the group which approach the system will support, to keep the workshop moving.",
+            "isCorrect": false,
+            "feedback": "This isn't your decision to make \u2014 you don't hold the organizational authority to resolve a clinical-vs-operational tradeoff.",
+            "stateChanges": {
+              "stakeholderTrust": -4,
+              "projectHealth": -3
+            },
+            "setFlags": [
+              "bad_facilitation"
+            ],
+            "nextScene": "s07b_escalation_detour"
+          },
+          {
+            "id": "B",
+            "text": "Acknowledge both positions as valid, and propose establishing a DACI for this specific decision \u2014 likely with the Medical Director as Approver \u2014 rather than resolving it in this room today.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 this is exactly the kind of decision that needs a designated Approver with real organizational authority, not a workshop vote.",
+            "stateChanges": {
+              "projectHealth": 3,
+              "stakeholderTrust": 2
+            },
+            "setFlags": [
+              "good_dac_resolution"
+            ],
+            "nextScene": "s07a_resolution"
+          }
+        ]
+      },
+      "explanation": "**Not every conflict should be resolved in the room it surfaces in.** A clinical-priority-vs-operational-efficiency tradeoff is a real business decision with consequences neither the BA nor the workshop group has the authority to make unilaterally. The correct move is recognizing this and proposing a proper decision-making structure (DACI, with an Approver who has the standing to make the call) rather than forcing an in-the-moment resolution."
+    },
+    {
+      "id": "s07b_escalation_detour",
+      "domainId": "d2",
+      "isDetour": true,
+      "narrative": "The Nursing Director leaves the workshop visibly upset. Three days later, she emails the CMO directly: *'The BA on this project just told us clinical urgency won't be a priority. I wasn't consulted, I was informed.'* The CMO now wants a meeting \u2014 with you, and with her.",
+      "decision": {
+        "prompt": "How do you handle the meeting?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Acknowledge that the decision should never have been made in the workshop, apologize directly to the Nursing Director, and propose a proper DACI-based resolution starting now \u2014 with the Medical Director as Approver.",
+            "isCorrect": true,
+            "feedback": "This walks back the error cleanly and gets the decision onto solid governance footing, even though it's now happening under more pressure.",
+            "stateChanges": {
+              "stakeholderTrust": 2,
+              "projectHealth": 2
+            },
+            "nextScene": "s08_workshop_dynamics"
+          },
+          {
+            "id": "B",
+            "text": "Stand by the original call, since revisiting it now might look weak in front of the CMO.",
+            "isCorrect": false,
+            "feedback": "Defending an inappropriate decision in front of an even more senior stakeholder compounds the damage significantly.",
+            "stateChanges": {
+              "stakeholderTrust": -6,
+              "projectHealth": -4
+            },
+            "nextScene": "s08_workshop_dynamics"
+          }
+        ]
+      },
+      "explanation": "**Recovering from an overreach is almost always better than defending it.** The original mistake (deciding unilaterally) is compounded by standing firm in front of a more senior stakeholder. The right move is the same one that should have happened in the workshop \u2014 route the decision to a proper Approver \u2014 just executed now, later and under more visible pressure than it needed to be."
+    },
+    {
+      "id": "s07a_resolution",
+      "domainId": "d2",
+      "narrative": "The Medical Director, as Approver, reviews input from both directors over the following week and lands on a hybrid rule: same-day sick visits get two reserved 'flex slots' per clinic per day, with all other scheduling remaining strict. Both directors accept it \u2014 not thrilled, but heard.",
+      "decision": {
+        "prompt": "Now that the decision is made, what should you do with it?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Document the decision in a decision log (what was decided, by whom, why) and communicate it to all workshop attendees, not just the two directors involved.",
+            "isCorrect": true,
+            "feedback": "Right \u2014 this prevents the decision from being relitigated later by someone who wasn't aware it had been made.",
+            "stateChanges": {
+              "projectHealth": 2,
+              "stakeholderTrust": 1
+            },
+            "nextScene": "s08_workshop_dynamics"
+          },
+          {
+            "id": "B",
+            "text": "Move on without formally documenting it \u2014 both directors already know, so it should be fine.",
+            "isCorrect": false,
+            "feedback": "Undocumented decisions tend to resurface as disputes later, especially once requirements get written and someone asks 'wait, who agreed to this?'",
+            "stateChanges": {
+              "projectHealth": -2
+            },
+            "nextScene": "s08_workshop_dynamics"
+          }
+        ]
+      },
+      "explanation": "**A decision log is one of the most undervalued BA artifacts.** It protects the project from a very common failure mode: a decision is made, only the people in the room remember it, and weeks later it's challenged by someone (or even one of the original participants, with a fuzzier memory) who claims it was never agreed. Documenting and broadly communicating decisions costs little and prevents real rework."
+    },
+    {
+      "id": "s08_workshop_dynamics",
+      "domainId": "d2",
+      "narrative": "Workshop 2 is underway. You notice the IT Director has dominated nearly every topic for 45 minutes, while the two clinic Office Managers \u2014 who will actually use this system daily \u2014 haven't said a word.",
+      "decision": {
+        "prompt": "What do you do?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Use a structured round-robin for the next topic, explicitly inviting the Office Managers to share their perspective before opening to general discussion.",
+            "isCorrect": true,
+            "feedback": "Good facilitation \u2014 this surfaces input from quieter, highly relevant voices without confrontation.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s09_signoff_gap"
+          },
+          {
+            "id": "B",
+            "text": "Let the conversation continue naturally \u2014 the IT Director clearly has the most to contribute on this topic.",
+            "isCorrect": false,
+            "feedback": "You're likely missing critical day-to-day usability input from the people who will actually use this system the most.",
+            "stateChanges": {
+              "projectHealth": -3
+            },
+            "nextScene": "s09_signoff_gap"
+          }
+        ]
+      },
+      "explanation": "**Balanced participation is a core facilitation responsibility, not a nice-to-have.** Round-robin techniques structurally create space for quieter voices without singling anyone out. The Office Managers' day-to-day operational perspective is exactly the kind of frontline input that often diverges meaningfully from what senior or more vocal stakeholders assume \u2014 losing it would weaken the requirements that follow."
+    },
+    {
+      "id": "s09_signoff_gap",
+      "domainId": "d2",
+      "narrative": "Three weeks later, you've scheduled a requirements sign-off meeting with 6 stakeholders, including the CIO (your designated DACI Approver for overall project scope). On the morning of the meeting, the CIO cancels with a scheduling conflict \u2014 but the other 5 are still available.",
+      "decision": {
+        "prompt": "What do you do?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Hold the session for review and refinement with the 5 present, but explicitly note that formal sign-off is deferred until the CIO has reviewed and approved.",
+            "isCorrect": true,
+            "feedback": "This preserves progress while respecting that the Approver's authority can't be informally substituted.",
+            "stateChanges": {
+              "projectHealth": 2,
+              "stakeholderTrust": 1
+            },
+            "nextScene": "s10_current_state"
+          },
+          {
+            "id": "B",
+            "text": "Proceed with full sign-off using the 5 present stakeholders, since a clear majority is in the room.",
+            "isCorrect": false,
+            "feedback": "A sign-off obtained without the designated Approver lacks real authority and could be challenged or reversed later.",
+            "stateChanges": {
+              "projectHealth": -4,
+              "scheduleRisk": 5
+            },
+            "nextScene": "s10_current_state"
+          }
+        ]
+      },
+      "explanation": "**An Approver's authority in a DACI structure isn't something a quorum can substitute for.** The meeting can still be productive \u2014 reviewing and refining requirements with the attendees present \u2014 but formal baseline sign-off should wait for the actual Approver's review, even if that means a short delay. A sign-off without the right authority behind it is fragile and can unravel later."
+    },
+    {
+      "id": "s10_current_state",
+      "domainId": "d3",
+      "narrative": "Requirements are baselined. Now you're mapping the current-state intake process using UPN. The process involves the Front Desk, a Nurse for vitals, and the Physician. You're deciding how to structure the swimlanes.",
+      "decision": {
+        "prompt": "How do you structure the map?",
+        "options": [
+          {
+            "id": "A",
+            "text": "One swimlane combining Front Desk and Nurse, since they're both 'support staff,' plus a separate lane for the Physician.",
+            "isCorrect": false,
+            "feedback": "Front Desk and Nurse perform clearly distinct actions with a real handoff between them \u2014 collapsing them loses that visibility.",
+            "stateChanges": {
+              "projectHealth": -3
+            },
+            "nextScene": "s11_exception_path"
+          },
+          {
+            "id": "B",
+            "text": "Three separate swimlanes \u2014 Front Desk, Nurse, and Physician \u2014 each representing their distinct responsibilities and the handoffs between them.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 this preserves the handoffs that matter most for understanding where delays or errors might occur.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s11_exception_path"
+          }
+        ]
+      },
+      "explanation": "**Swimlanes should reflect distinct responsibilities and the handoffs between them, not just rough categories like 'support staff' vs. 'clinical staff.'** Front Desk (check-in, insurance verification) and Nurse (vitals, intake questions) perform genuinely different actions with a real handoff in between \u2014 exactly the kind of transition point where process improvements often have the most impact. Combining them into one lane hides that."
+    },
+    {
+      "id": "s11_exception_path",
+      "domainId": "d3",
+      "narrative": "While walking the map with the Front Desk team, one staff member mentions: *'Officially we check insurance before checking the patient in, but honestly, when we're slammed, we just check them in and verify insurance after \u2014 sometimes a day later.'* This isn't in any official documentation.",
+      "decision": {
+        "prompt": "How do you handle this?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Add it to the current-state map as a labeled exception path (triggered by high patient volume), since it's a real, recurring pattern that affects how work actually flows.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 current-state maps should reflect reality, including informal workarounds, not just the documented procedure.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s12_future_state"
+          },
+          {
+            "id": "B",
+            "text": "Leave it off the map since it's an informal workaround, not the official process.",
+            "isCorrect": false,
+            "feedback": "Omitting a real, recurring practice produces an inaccurate map and could mean the future-state design misses an important real-world constraint.",
+            "stateChanges": {
+              "projectHealth": -3
+            },
+            "nextScene": "s12_future_state"
+          }
+        ]
+      },
+      "explanation": "**A current-state map's job is to reflect how work actually happens \u2014 including informal workarounds \u2014 not just the official, documented procedure.** Staff-level workarounds like delayed insurance verification under high volume are often exactly the kind of detail that should inform future-state design (e.g., should the new system explicitly support a 'verify later' flow for high-volume periods, rather than forcing a workaround to continue invisibly?)."
+    },
+    {
+      "id": "s12_future_state",
+      "domainId": "d3",
+      "narrative": "You're now presenting a future-state map showing how Salesforce automation will streamline check-in (auto-pulling insurance status, flagging incomplete records before the visit). A skeptical clinic manager in the room asks: *'This all sounds nice, but how do I know this is actually going to save us real time?'*",
+      "decision": {
+        "prompt": "How do you respond?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Annotate the future-state map with the specific time-per-step data already gathered during discovery (e.g., current manual insurance check averages 6 minutes; automated pre-check reduces front-desk time to under 1 minute), placed directly alongside the current-state comparison.",
+            "isCorrect": true,
+            "feedback": "Strong \u2014 quantified, evidence-backed comparisons are far more persuasive than describing the new flow alone.",
+            "stateChanges": {
+              "projectHealth": 2,
+              "stakeholderTrust": 1
+            },
+            "nextScene": "s13_vague_requirement"
+          },
+          {
+            "id": "B",
+            "text": "Reassure her that fewer manual steps always means a better process.",
+            "isCorrect": false,
+            "feedback": "This is an unsupported generalization that doesn't actually answer her question with evidence.",
+            "stateChanges": {
+              "projectHealth": -3,
+              "stakeholderTrust": -2
+            },
+            "nextScene": "s13_vague_requirement"
+          }
+        ]
+      },
+      "explanation": "**The most persuasive way to justify a future-state design is to tie it directly to quantified data gathered during discovery.** Annotating the current vs. future state comparison with real time-per-step figures (rather than asserting 'fewer steps = better') gives skeptical stakeholders concrete evidence rather than a generic efficiency claim \u2014 and it's exactly the kind of analysis a strong BA produces from their own discovery work."
+    },
+    {
+      "id": "s13_vague_requirement",
+      "domainId": "d4",
+      "narrative": "Requirements elicitation begins. The Scheduling Operations Manager says: *'The system needs to handle a high volume of appointment bookings without slowing down.'*",
+      "decision": {
+        "prompt": "How do you turn this into a usable requirement?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Document it as written: 'The system shall handle a high volume of bookings without slowing down,' and let the development team interpret what 'high volume' means.",
+            "isCorrect": false,
+            "feedback": "This passes an undefined business judgment downstream to developers, who shouldn't be guessing at business-critical capacity needs.",
+            "stateChanges": {
+              "projectHealth": -3
+            },
+            "nextScene": "s14_solution_disguised"
+          },
+          {
+            "id": "B",
+            "text": "Ask follow-up questions to quantify: how many bookings per day currently, expected growth, and whether there are known peak periods (e.g., Monday mornings, flu season) \u2014 then document a specific, measurable performance target.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 this converts a vague aspiration into a testable non-functional requirement.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s14_solution_disguised"
+          }
+        ]
+      },
+      "explanation": "**'High volume' and 'without slowing down' are relative, undefined terms that can't be tested as written.** The BA's job is to decompose this into concrete numbers \u2014 current and projected booking volumes, known peak periods \u2014 producing a measurable target (e.g., 'support up to 800 bookings/day, with peak-period bursts of 150/hour on Monday mornings, with page load under 2 seconds'). Leaving this to developer interpretation risks either under- or over-engineering the solution."
+    },
+    {
+      "id": "s14_solution_disguised",
+      "domainId": "d4",
+      "narrative": "A different stakeholder, the IT Director, hands you a written note: *'Build a custom Lightning Web Component that shows a calendar grid with color-coded appointment slots on the Contact record.'*",
+      "decision": {
+        "prompt": "How do you handle this input?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Document it exactly as written and pass it to the development team, since the IT Director clearly knows what they want.",
+            "isCorrect": false,
+            "feedback": "This locks in a specific technical implementation before anyone has confirmed it's actually the best way to meet the underlying need.",
+            "stateChanges": {
+              "projectHealth": -3
+            },
+            "nextScene": "s15_scope_creep"
+          },
+          {
+            "id": "B",
+            "text": "Ask what underlying need this is meant to solve (e.g., 'wanting to see a visual, at-a-glance view of a patient's upcoming appointments from their record'), document THAT as the requirement, and note the LWC suggestion separately as input for whoever designs the actual solution.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 you've preserved the business need while leaving the technical implementation open to the people best positioned to design it.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s15_scope_creep"
+          }
+        ]
+      },
+      "explanation": "**A specific technical implementation request is a solution disguised as a requirement.** The BA's job is to uncover the underlying business need ('see upcoming appointments at a glance from the patient record') and document that \u2014 while preserving the stakeholder's suggested approach as useful context for the team that ultimately designs the technical solution, rather than locking it in prematurely."
+    },
+    {
+      "id": "s15_scope_creep",
+      "domainId": "d4",
+      "narrative": "Mid-way through a requirements review, a stakeholder says: *'Oh \u2014 one more thing. We should also let patients reschedule their own appointments through a self-service portal.'* This was never part of the agreed project scope (intake + internal scheduling only).",
+      "decision": {
+        "prompt": "What do you do?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Acknowledge the suggestion, note that it falls outside the agreed scope, and route it through change control for the sponsor to formally evaluate \u2014 rather than deciding yourself.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 even a reasonable-sounding addition should go through proper governance, not informal inclusion.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s16a_change_control"
+          },
+          {
+            "id": "B",
+            "text": "Since it sounds valuable and the team has some capacity, just add it to the requirements document.",
+            "isCorrect": false,
+            "feedback": "This is scope creep \u2014 adding meaningful new functionality without governance, even if it sounds reasonable.",
+            "stateChanges": {
+              "projectHealth": -6,
+              "scheduleRisk": 12
+            },
+            "setFlags": [
+              "scope_creep_unmanaged"
+            ],
+            "nextScene": "s16b_scope_creep_detour"
+          }
+        ]
+      },
+      "explanation": "**The size or apparent reasonableness of a request doesn't exempt it from change control.** A patient self-service portal is a meaningful new capability \u2014 different audience (patients, not staff), different security/authentication considerations, different testing surface. Even when it sounds like a good idea, the BA routes it through the agreed governance process rather than informally expanding scope."
+    },
+    {
+      "id": "s16b_scope_creep_detour",
+      "domainId": "d4",
+      "isDetour": true,
+      "narrative": "Three weeks later, the development team flags that they're now behind schedule \u2014 the self-service portal work (which was never estimated, resourced, or approved through governance) has eaten significant capacity. The CIO asks pointedly: *'Who approved this addition?'* You don't have a good answer.",
+      "decision": {
+        "prompt": "How do you respond?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Own the gap directly \u2014 explain that the addition should have gone through change control and didn't, propose immediately formalizing a decision (keep it in scope with revised timeline, or descope it back out), and put a change control checkpoint in place going forward.",
+            "isCorrect": true,
+            "feedback": "Direct accountability plus a concrete fix going forward is the right way to recover credibility here.",
+            "stateChanges": {
+              "stakeholderTrust": 2,
+              "scheduleRisk": -5
+            },
+            "nextScene": "s17_nfr_vs_fr"
+          },
+          {
+            "id": "B",
+            "text": "Explain that the stakeholder who requested it seemed confident it was a good idea, so it felt reasonable to include.",
+            "isCorrect": false,
+            "feedback": "This deflects accountability onto the stakeholder rather than owning the governance gap, which will likely damage trust further.",
+            "stateChanges": {
+              "stakeholderTrust": -4,
+              "scheduleRisk": 5
+            },
+            "nextScene": "s17_nfr_vs_fr"
+          }
+        ]
+      },
+      "explanation": "**When a governance gap causes a real schedule impact, the recovery move is direct ownership plus a concrete process fix \u2014 not explaining why it felt reasonable at the time.** Deflecting onto the requesting stakeholder avoids the real issue: the BA, not the stakeholder, is responsible for routing scope changes through proper governance."
+    },
+    {
+      "id": "s16a_change_control",
+      "domainId": "d4",
+      "narrative": "The CIO reviews the self-service portal idea and decides: good idea, but out of scope for this phase \u2014 log it formally as a Phase 2 candidate. The current project stays focused on intake and internal scheduling.",
+      "decision": {
+        "prompt": "What's the right way to close this out?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Document the decision and the Phase 2 candidate idea in the project's decision log, and let the requesting stakeholder know directly so they don't feel ignored.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 this respects the stakeholder's input while keeping the current project properly scoped.",
+            "stateChanges": {
+              "projectHealth": 2,
+              "stakeholderTrust": 1
+            },
+            "nextScene": "s17_nfr_vs_fr"
+          },
+          {
+            "id": "B",
+            "text": "Let it quietly drop \u2014 the decision was made, so no further communication is needed.",
+            "isCorrect": false,
+            "feedback": "The requesting stakeholder deserves to know what happened to their idea, or they may feel ignored and raise it again later in frustration.",
+            "stateChanges": {
+              "stakeholderTrust": -2
+            },
+            "nextScene": "s17_nfr_vs_fr"
+          }
+        ]
+      },
+      "explanation": "**Closing the loop with the original requester matters as much as making the governance decision itself.** A stakeholder whose idea is deferred (not rejected) and who hears about it directly is far more likely to stay engaged and trust the process than one who simply never hears back and has to wonder what happened."
+    },
+    {
+      "id": "s17_nfr_vs_fr",
+      "domainId": "d4",
+      "narrative": "Reviewing the requirements doc, you find this line written by a previous contributor: *'The system must be available to staff 24/7 with zero downtime.'*",
+      "decision": {
+        "prompt": "What do you do with this requirement?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Leave it as written \u2014 24/7 with zero downtime is a clear, unambiguous goal.",
+            "isCorrect": false,
+            "feedback": "'Zero downtime' is not a realistic or testable target for any system \u2014 this needs to be made specific and achievable.",
+            "stateChanges": {
+              "projectHealth": -3
+            },
+            "nextScene": "s18_story_writing"
+          },
+          {
+            "id": "B",
+            "text": "Flag it for revision \u2014 work with stakeholders to define a realistic, measurable availability target (e.g., 99.9% uptime) and clarify whether planned maintenance windows are acceptable.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 this converts an unrealistic aspiration into a testable, contractually meaningful non-functional requirement.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s18_story_writing"
+          }
+        ]
+      },
+      "explanation": "**'Zero downtime' is unrealistic for any real-world system** \u2014 even Salesforce's own published SLAs don't promise 100% uptime. The BA's job is to facilitate a conversation that lands on a realistic, measurable, testable target (e.g., 99.9% uptime, with defined maintenance windows), rather than letting an unachievable requirement sit in the document unchallenged."
+    },
+    {
+      "id": "s18_story_writing",
+      "domainId": "d5",
+      "narrative": "Requirements are stable. Time to write user stories. For the insurance pre-check feature, a colleague drafts: *'As a user, I want the system to work well.'*",
+      "decision": {
+        "prompt": "How do you handle this draft story?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Rewrite it with a specific persona, action, and benefit: 'As a Front Desk Coordinator, I want the system to automatically flag any patient with incomplete insurance information before their visit, so that I can resolve it before they arrive instead of delaying check-in.'",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 specific persona, concrete action, and a clear benefit make this testable and design-ready.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s19_acceptance_criteria"
+          },
+          {
+            "id": "B",
+            "text": "Accept the draft as-is, since it follows the basic 'As a... I want...' format.",
+            "isCorrect": false,
+            "feedback": "Having the template filled in with generic terms doesn't make a story well-formed \u2014 the specificity of each part matters.",
+            "stateChanges": {
+              "projectHealth": -3
+            },
+            "nextScene": "s19_acceptance_criteria"
+          }
+        ]
+      },
+      "explanation": "**Surface-level template compliance isn't the same as a well-formed story.** 'As a user, I want the system to work well' has the right shape but no real content \u2014 no specific persona, no specific action, no testable benefit. The rewritten version names exactly who benefits (Front Desk Coordinator), exactly what they want (automatic flagging of incomplete insurance before the visit), and exactly why (avoiding check-in delays) \u2014 all the ingredients needed to design and test against."
+    },
+    {
+      "id": "s19_acceptance_criteria",
+      "domainId": "d5",
+      "narrative": "Now you're writing acceptance criteria for that story. A developer asks: *'What happens if insurance info IS complete \u2014 does anything show on screen, or just silence?'*",
+      "decision": {
+        "prompt": "How do you respond?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Write a second acceptance criterion explicitly covering the 'complete information' case (e.g., no flag is shown, and the record displays a normal/clear status), in addition to the existing 'incomplete' criterion \u2014 covering both outcomes, not just the flagged scenario.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 covering both the trigger condition and its inverse prevents ambiguity about what 'normal' looks like.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s20_story_too_big"
+          },
+          {
+            "id": "B",
+            "text": "Tell the developer that's an implementation detail they can decide on their own.",
+            "isCorrect": false,
+            "feedback": "Whether and how the system communicates a 'normal' state to the user is a real UX/business decision, not a minor implementation detail to leave to chance.",
+            "stateChanges": {
+              "projectHealth": -3
+            },
+            "nextScene": "s20_story_too_big"
+          }
+        ]
+      },
+      "explanation": "**Well-written acceptance criteria typically cover both the triggering condition and its complement** \u2014 what happens when the flag fires, AND what happens when it doesn't. Leaving the 'normal' case undefined risks an inconsistent or confusing experience, and is exactly the kind of clarifying question a good developer should be asking \u2014 and a good BA should be answering precisely, not deferring."
+    },
+    {
+      "id": "s20_story_too_big",
+      "domainId": "d5",
+      "narrative": "A stakeholder proposes this single story: *'As a Scheduling Coordinator, I want to create appointments, reschedule appointments, cancel appointments, send confirmation texts, send reminder texts, and generate a daily no-show report, so that scheduling runs smoothly.'*",
+      "decision": {
+        "prompt": "What's the right move?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Accept it as one story since it's all from the same persona's perspective and all relates to scheduling.",
+            "isCorrect": false,
+            "feedback": "This bundles at least six distinct, independently valuable capabilities into a single oversized story \u2014 far too large for a single sprint.",
+            "stateChanges": {
+              "projectHealth": -4
+            },
+            "nextScene": "s21_dev_question"
+          },
+          {
+            "id": "B",
+            "text": "Recognize this as an Epic and facilitate decomposing it into separate, independently valuable stories (create, reschedule, cancel, confirmation text, reminder text, no-show report), each sized for a single sprint.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 each capability can be built, tested, and delivered independently, which is exactly what good decomposition should achieve.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s21_dev_question"
+          }
+        ]
+      },
+      "explanation": "**This is a textbook Epic disguised as a single story.** Six distinct, independently testable capabilities (creating, rescheduling, cancelling, two kinds of text messages, a report) are bundled together \u2014 violating the 'Small' and arguably 'Independent' criteria of INVEST. The BA's job is to recognize this pattern and facilitate decomposition into properly sized, individually valuable stories that can actually be estimated, built, and delivered incrementally."
+    },
+    {
+      "id": "s21_dev_question",
+      "domainId": "d6",
+      "narrative": "Mid-sprint, a developer building the reminder-text story asks: *'The story says send a reminder 24 hours before the appointment \u2014 but what if the appointment was booked less than 24 hours in advance? There's no \"24 hours before\" to count down from.'*",
+      "decision": {
+        "prompt": "How do you handle this?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Clarify with the Scheduling Operations Manager what should happen in this case (e.g., send the reminder immediately upon booking instead), then update the acceptance criteria before the developer proceeds with that part of the logic.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 this is exactly the kind of edge case that needs business input, resolved quickly so development isn't blocked.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s22_uat_planning"
+          },
+          {
+            "id": "B",
+            "text": "Tell the developer to use their best judgment on this edge case, since it wasn't covered in the original story.",
+            "isCorrect": false,
+            "feedback": "This is a business rule decision, not a technical implementation detail \u2014 it shouldn't be left to a developer's guess.",
+            "stateChanges": {
+              "projectHealth": -3
+            },
+            "nextScene": "s22_uat_planning"
+          }
+        ]
+      },
+      "explanation": "**Edge cases discovered mid-sprint are a normal, expected part of development \u2014 and resolving them is squarely within the BA's ongoing dev-support responsibility, not a one-time, upfront-only task.** The 'less than 24 hours notice' scenario is a real business rule decision (what should actually happen?) that needs business stakeholder input, not a developer's best guess, since it affects the actual patient experience."
+    },
+    {
+      "id": "s22_uat_planning",
+      "domainId": "d6",
+      "narrative": "Development on the intake and scheduling features is complete. You're planning UAT. The development team suggests: *'Since we know the system best, let's just have us run through the UAT scripts to save time.'*",
+      "decision": {
+        "prompt": "How do you respond?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Explain that UAT specifically requires real end-users (Front Desk staff, Scheduling Coordinators, Nurses) to validate the system meets actual business needs from their perspective \u2014 a perspective developers don't fully represent, however skilled they are.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 this protects the integrity of UAT as a genuine business validation step, not just a second round of technical testing.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s23_defect_triage"
+          },
+          {
+            "id": "B",
+            "text": "Agree, since it would save time and the developers clearly understand the system.",
+            "isCorrect": false,
+            "feedback": "This undermines the entire purpose of UAT, which is to validate fitness for actual business use, not just confirm the system works as built.",
+            "stateChanges": {
+              "projectHealth": -5,
+              "scheduleRisk": 6
+            },
+            "setFlags": [
+              "bad_uat_setup"
+            ],
+            "nextScene": "s23b_uat_detour"
+          }
+        ]
+      },
+      "explanation": "**UAT exists to validate the solution from the perspective of the people who will actually use it daily \u2014 not to re-confirm that developers built what they intended to build.** Developers bring a builder's perspective and inherent familiarity with the intended design, which can mask usability issues or workflow mismatches that real frontline users would catch immediately."
+    },
+    {
+      "id": "s23b_uat_detour",
+      "domainId": "d6",
+      "isDetour": true,
+      "narrative": "Two weeks after 'developer-led UAT' passes cleanly, you do a walkthrough with actual Front Desk staff before go-live as a sanity check. Within ten minutes, a coordinator says: *'Wait \u2014 this insurance flag thing is great, but where do I actually click to mark it as resolved once I've called the patient? I don't see that anywhere.'* It's a real gap that the developer-run UAT never caught.",
+      "decision": {
+        "prompt": "What do you do now, this close to go-live?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Treat this as a genuine, late-discovered UAT gap \u2014 run a proper UAT session with real Front Desk staff now, even though it's late, and give the sponsor clear visibility into this risk before any go-live decision is made.",
+            "isCorrect": true,
+            "feedback": "Better late than never \u2014 and transparency with the sponsor here is critical given how close this is to launch.",
+            "stateChanges": {
+              "projectHealth": 2,
+              "scheduleRisk": -4
+            },
+            "nextScene": "s23_defect_triage"
+          },
+          {
+            "id": "B",
+            "text": "Quietly ask the developer to add the missing 'resolved' button without telling the sponsor, since it seems like a small fix.",
+            "isCorrect": false,
+            "feedback": "Making an undisclosed change this close to go-live, discovered through an informal walkthrough rather than real UAT, hides risk from the people who need visibility into it.",
+            "stateChanges": {
+              "stakeholderTrust": -4
+            },
+            "nextScene": "s23_defect_triage"
+          }
+        ]
+      },
+      "explanation": "**Discovering a real UAT gap late is bad, but hiding it is worse.** The correct response \u2014 even under time pressure \u2014 is to run an actual UAT validation with real end-users now, and give the sponsor full visibility into the risk so they can make an informed go-live decision. A quiet, undisclosed fix avoids short-term awkwardness but removes the sponsor's ability to weigh real risk before launch \u2014 exactly the kind of transparency failure that erodes trust if discovered later."
+    },
+    {
+      "id": "s23_defect_triage",
+      "domainId": "d6",
+      "narrative": "Real UAT with Front Desk staff, Scheduling Coordinators, and Nurses is underway. One coordinator reports: *'When I try to reschedule an appointment that's already flagged as a no-show, nothing happens when I click Save.'* You check: this exact scenario was never mentioned in the original requirements or any user story.",
+      "decision": {
+        "prompt": "How do you categorize and handle this?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Recognize this as a previously unidentified scenario (not a defect against an agreed spec, since it was never specified), document it, and route it through change control for prioritization rather than treating it as a blocking bug.",
+            "isCorrect": true,
+            "feedback": "Correct distinction \u2014 this wasn't built incorrectly against a spec; it's a gap in the spec itself, which needs business prioritization, not just a quick code fix.",
+            "stateChanges": {
+              "projectHealth": 2
+            },
+            "nextScene": "s24_golive_readiness"
+          },
+          {
+            "id": "B",
+            "text": "Log it as a critical defect that must be fixed immediately before go-live, since the system doesn't do what the coordinator expects.",
+            "isCorrect": false,
+            "feedback": "Without knowing how this scenario should actually behave, rushing a fix risks implementing the wrong behavior under time pressure.",
+            "stateChanges": {
+              "projectHealth": -3,
+              "scheduleRisk": 8
+            },
+            "nextScene": "s24_golive_readiness"
+          }
+        ]
+      },
+      "explanation": "**There's an important distinction between a defect (something built incorrectly against an agreed specification) and a new requirement (a scenario nobody specified in the first place).** Rescheduling a no-show appointment was never defined \u2014 should it be allowed at all? Does it require special handling? This needs a quick business decision before any fix is built, not an immediate code patch built on assumptions under deadline pressure."
+    },
+    {
+      "id": "s24_golive_readiness",
+      "domainId": "d6",
+      "narrative": "Go-live is in 5 days. UAT is now complete and signed off (including the late-discovered gaps, which were resolved). Training was delivered to all Front Desk and Scheduling staff. But you learn that only 58% of intended training attendees actually completed it \u2014 many missed sessions due to an unrelated, unplanned EHR vendor outage that consumed staff time that week.",
+      "decision": {
+        "prompt": "What do you do with 5 days to go?",
+        "options": [
+          {
+            "id": "A",
+            "text": "Surface this training gap clearly to the CIO as a distinct go-live readiness risk \u2014 separate from the now-resolved technical/UAT readiness \u2014 and present options (delay, proceed with targeted hypercare support for untrained staff, or a hybrid), letting the CIO make the final call with full visibility.",
+            "isCorrect": true,
+            "feedback": "Correct \u2014 this is a real, quantified adoption risk that deserves its own visibility, not folded into an overall 'we're ready' status.",
+            "stateChanges": {
+              "projectHealth": 3,
+              "stakeholderTrust": 2
+            },
+            "nextScene": "ENDING"
+          },
+          {
+            "id": "B",
+            "text": "Proceed with go-live as planned, since UAT, technical readiness, and most of training are all in good shape.",
+            "isCorrect": false,
+            "feedback": "A 42% untrained-user rate is a significant adoption risk on its own, regardless of how strong the other readiness factors are \u2014 it shouldn't be averaged away.",
+            "stateChanges": {
+              "projectHealth": -6,
+              "stakeholderTrust": -3
+            },
+            "nextScene": "ENDING"
+          }
+        ]
+      },
+      "explanation": "**Readiness factors aren't interchangeable or averageable** \u2014 strong UAT and technical readiness don't compensate for a serious training gap, because each addresses a different risk. A 42% untrained-user rate at go-live could mean high error rates, support burden, and poor first impressions of the new system, regardless of how well-tested the system itself is. The BA's job is to give this risk its own clear visibility to the decision-maker, rather than letting good news elsewhere dilute it."
+    }
+  ],
+  "endings": [
+    {
+      "id": "ending_distinction",
+      "condition": {
+        "projectHealthMin": 85
+      },
+      "narrative": "Meridian Health goes live on schedule. The CIO sends a note to the steering committee: 'This is the smoothest clinical system rollout we've had in years \u2014 the Business Analyst's discovery work and governance discipline made the difference.' Adoption climbs steadily over the following month, and the project becomes the internal reference case for how future rollouts should run.",
+      "scoreBand": "Pass with Distinction",
+      "recommendedReview": []
+    },
+    {
+      "id": "ending_pass",
+      "condition": {
+        "projectHealthMin": 60
+      },
+      "narrative": "Meridian Health goes live, a few days later than originally hoped but within an acceptable range. There were bumps along the way \u2014 a stakeholder conflict here, a scope question there \u2014 but each was caught and corrected before it became a serious problem. The CIO is satisfied with the outcome, if not entirely effusive about the journey.",
+      "scoreBand": "Pass",
+      "recommendedReview": []
+    },
+    {
+      "id": "ending_marginal",
+      "condition": {
+        "projectHealthMin": 35
+      },
+      "narrative": "Go-live happens, but it's rockier than it needed to be. Several decisions along the way eroded stakeholder trust or added avoidable schedule risk, and the project required real recovery effort at multiple points. The system works, but the CIO's closing comment is measured: 'We got there. Let's talk about what we'd do differently next time.'",
+      "scoreBand": "Marginal \u2014 Review Recommended",
+      "recommendedReview": [
+        "d1",
+        "d2",
+        "d4"
+      ]
+    },
+    {
+      "id": "ending_fail",
+      "condition": {
+        "projectHealthMin": -1000
+      },
+      "narrative": "The project limps to go-live well behind schedule and well over budget in goodwill spent. Multiple stakeholders have lost confidence in the process, scope was managed inconsistently throughout, and the CIO is now requesting a formal lessons-learned review before any future phase is greenlit. This project becomes a cautionary internal example rather than a reference case.",
+      "scoreBand": "Needs Improvement \u2014 Retake Recommended",
+      "recommendedReview": [
+        "d1",
+        "d2",
+        "d3",
+        "d4",
+        "d5",
+        "d6"
+      ]
+    }
+  ]
+}

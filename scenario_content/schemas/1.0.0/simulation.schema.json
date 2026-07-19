@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://certbound.com/schemas/scenario_content/1.0.0/simulation.schema.json",
+  "title": "CertBound Generic Scenario Simulation Schema",
+  "description": "Normalized (v1.0.0) schema for an interactive, branching, stateful exam simulation used across all CertBound certification tracks. One file = one full simulation, at one immutable content version. This is the adopted, generic contract derived from the originally-imported scenario_content/source/simulation.schema.json; it preserves that schema's content capabilities while separating internal CertBound certification identity from the external exam code, and adding a generic, machine-readable state-variable/clamp-bounds contract so the future engine never needs to hardcode any certification- or scenario-specific variable names.",
+  "type": "object",
+  "required": [
+    "simulationId",
+    "version",
+    "schemaVersion",
+    "certificationExamName",
+    "examCode",
+    "title",
+    "initialState",
+    "stateVariables",
+    "scenes",
+    "startScene",
+    "endings"
+  ],
+  "properties": {
+
+    "simulationId": {
+      "type": "string",
+      "description": "Stable scenario identity, unique within a certification, constant across all versions of this scenario. Serves as the scenario key (paired with certificationExamName) for catalog lookups and URLs. Must never change once a scenario has been published; a content edit that would change this instead creates a new scenario, not a new version of this one.",
+      "examples": ["ba201-sim-meridian-health-01"]
+    },
+    "version": {
+      "type": "string",
+      "description": "Immutable content version for this exact scenario. Any edit to scenes, endings, stateVariables, or state-affecting metadata after first publication must ship as a new version string (recommended: semantic versioning). An already-published version's content must never be mutated in place.",
+      "examples": ["1.0.0"]
+    },
+    "schemaVersion": {
+      "type": "string",
+      "description": "Version of this content contract (this schema file) that the content was authored and validated against -- e.g. \"1.0.0\" corresponds to scenario_content/schemas/1.0.0/simulation.schema.json. Lets the engine select the correct validation/interpretation rules for older content if the contract itself ever evolves.",
+      "examples": ["1.0.0"]
+    },
+    "certificationExamName": {
+      "type": "string",
+      "description": "The exact CertBound `certifications.exam_name` lookup identity -- the same string used as the real, authoritative validation/lookup key in the database's `certifications.exam_name` column, in `utils/certification_context.py`'s exam-name constants, and in `workers/certification_registry.py`'s `*_EXAM_NAME` constants (for example \"Salesforce Certified Business Analyst\"). Named `certificationExamName`, not a \"code\" name, because its value is an exam-name-shaped lookup string, not a short code -- the registry's own separate, display-only certification-code field must never be confused with this one. This is NOT the same value as `examCode` and must never be set to an external exam code (e.g. \"BA-201\") or to that registry's separate, display-only certification-code field. Future database ingestion resolves this value to the authoritative `certifications.id` foreign key at publish/import time; persisted scenario and attempt records must reference that resolved database ID going forward rather than permanently re-resolving this display-text lookup value on every read.",
+      "examples": ["Salesforce Certified Business Analyst"]
+    },
+    "examCode": {
+      "type": "string",
+      "description": "The external, candidate-facing exam identifier (an official or conventionally-used exam code), used for display and content-authoring cross-reference only -- never used by the engine for internal lookups or validation. May coincidentally match the registry's display-only `certification_code` field, but is a semantically distinct concept and must be declared separately.",
+      "examples": ["BA-201"]
+    },
+    "title": {
+      "type": "string",
+      "description": "Display title shown to the candidate."
+    },
+    "description": {
+      "type": "string",
+      "description": "One-paragraph candidate-facing summary shown on the simulation's landing/intro card."
+    },
+    "estimatedMinutes": {
+      "type": "integer",
+      "description": "Rough completion time shown to the candidate before starting."
+    },
+    "domains": {
+      "type": "array",
+      "description": "Ordered list of certification domains this simulation walks through. Used to render a progress rail in the UI. Purely descriptive/display metadata scoped to this scenario version -- not a foreign key into the certification's official domain catalog, though authors should keep labels consistent with it.",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "weight"],
+        "properties": {
+          "id": { "type": "string", "examples": ["d1"] },
+          "label": { "type": "string", "examples": ["Customer Discovery"] },
+          "weight": { "type": "string", "examples": ["17%"] }
+        }
+      }
+    },
+
+    "stateVariables": {
+      "type": "array",
+      "description": "Generic, machine-readable declaration of every numeric state variable used anywhere in this scenario version, and its clamp bounds. The engine must derive ALL clamping behavior from this array and must never hardcode a variable name (e.g. \"projectHealth\") anywhere in engine code. Every key present in `initialState`, and every numeric key present in any option's `stateChanges`, MUST have a corresponding entry here with the same `key` -- this cross-referential invariant cannot be expressed as a pure JSON Schema constraint and must be enforced by the content validator at publish time.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/stateVariable" }
+    },
+
+    "initialState": {
+      "type": "object",
+      "description": "Starting values for all numeric state variables tracked through the simulation. Every key here must also be declared in `stateVariables`.",
+      "additionalProperties": { "type": "number" },
+      "examples": [
+        {
+          "projectHealth": 100,
+          "stakeholderTrust": 100,
+          "scheduleRisk": 0
+        }
+      ]
+    },
+
+    "scenes": {
+      "type": "array",
+      "description": "All scenes in the simulation, spine and detours combined, as a flat array. Order in the array does NOT determine play order or scene count semantics -- `nextScene` pointers do. The engine starts at the scene whose id matches `startScene`. This schema deliberately places no minimum or maximum on the number of scenes: a scenario version may contain any number of scenes, and the engine must never assume a fixed or expected count. Adding, removing, or reorganizing scenes after this version has been published requires publishing a new `version`, never editing this array in place.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scene" }
+    },
+
+    "startScene": {
+      "type": "string",
+      "description": "Scene id where the simulation begins. Must resolve to the `id` of an entry in `scenes`.",
+      "examples": ["s01_kickoff"]
+    },
+
+    "endings": {
+      "type": "array",
+      "description": "Possible end states. Evaluated strictly in array order against final state once the terminal sentinel is reached; the FIRST entry whose condition is satisfied wins -- this is a correctness-critical ordering, not a stylistic default, and must never be reordered, sorted by specificity, or evaluated as a \"best match\" search. Content authors must order entries from strictest/most-favorable condition to most-permissive/catch-all condition.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/ending" }
+    }
+  },
+  "additionalProperties": false,
+
+  "$defs": {
+
+    "stateVariable": {
+      "type": "object",
+      "required": ["key"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "The state-variable name as it appears in `initialState` and in any option's `stateChanges`.",
+          "examples": ["projectHealth"]
+        },
+        "minimum": {
+          "type": "number",
+          "description": "Inclusive lower clamp bound, applied by the engine after every single state-changing update (not only at the end of the simulation). Omit if this variable is unbounded below."
+        },
+        "maximum": {
+          "type": "number",
+          "description": "Inclusive upper clamp bound, applied by the engine after every single state-changing update (not only at the end of the simulation). Omit if this variable is unbounded above."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional human-readable explanation of what this variable represents and why its bounds are set as they are."
+        }
+      }
+    },
+
+    "scene": {
+      "type": "object",
+      "required": ["id", "domainId", "narrative", "decision"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique scene identifier, referenced by nextScene pointers. Must be unique across the entire `scenes` array.",
+          "examples": ["s01_kickoff"]
+        },
+        "domainId": {
+          "type": "string",
+          "description": "Which domain (from top-level `domains` array) this scene belongs to. Drives the progress-rail UI.",
+          "examples": ["d1"]
+        },
+        "isDetour": {
+          "type": "boolean",
+          "description": "True if this scene is a branch/consequence scene rather than part of the main spine. Used for UI styling (e.g., a 'you took a wrong turn' visual treatment) and analytics. Note: a detour scene does not necessarily add an extra scene to the attempt's path length -- whether it does depends entirely on the authored transition graph around it, and must be measured (reachable/min-path/max-path analysis), never assumed from this flag alone.",
+          "default": false
+        },
+        "narrative": {
+          "type": "string",
+          "description": "Story/context text shown before the decision prompt. Supports basic markdown (bold, italics, line breaks) -- render with a markdown-safe component, not raw HTML."
+        },
+        "characterContext": {
+          "type": "object",
+          "description": "Optional structured metadata about who is speaking/present in this scene, for richer UI (avatar, name tag, etc.). Omit if not needed.",
+          "properties": {
+            "speakingAs": { "type": "string", "examples": ["Dr. Elena Castillo, CIO"] },
+            "role": { "type": "string", "examples": ["Executive Sponsor"] }
+          }
+        },
+        "decision": { "$ref": "#/$defs/decision" },
+        "explanation": {
+          "type": "string",
+          "description": "Full explanation shown AFTER the candidate picks an option and sees per-option feedback -- a synthesizing summary of the underlying principle being tested, written at the same depth as a standard MCQ explanation. Markdown supported."
+        }
+      }
+    },
+
+    "decision": {
+      "type": "object",
+      "required": ["prompt", "options"],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The question posed to the candidate for this scene."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["single_select", "multi_select"],
+          "default": "single_select"
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 6,
+          "description": "Choices for this scene. Every option's `id` must be unique within this scene (uniqueness is scoped per-scene, not global).",
+          "items": { "$ref": "#/$defs/option" }
+        }
+      }
+    },
+
+    "option": {
+      "type": "object",
+      "required": ["id", "text", "isCorrect", "feedback", "nextScene"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Letter or short code for this option. Must be unique within its own scene's options array (not required to be globally unique across scenes).",
+          "examples": ["A", "B", "C"]
+        },
+        "text": {
+          "type": "string",
+          "description": "The option text shown to the candidate."
+        },
+        "isCorrect": {
+          "type": "boolean",
+          "description": "Whether this is the best-practice answer. Used for scoring and for visual treatment (checkmark/x) after selection. When a scene has more than one option with isCorrect:false, the canonical \"all-incorrect\" calibration/regression path selects the FIRST such option in this options array, by authored order -- this must be treated as part of the content contract, not left ambiguous, since different incorrect options may carry different stateChanges."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Immediate, short reaction shown right after this option is picked, before the longer scene-level `explanation`. Markdown supported."
+        },
+        "stateChanges": {
+          "type": "object",
+          "description": "Deltas applied to the simulation's numeric state when this option is chosen, clamped per `stateVariables` bounds after every single update (not only at the end). Every key here must also be declared in `stateVariables`. Positive or negative integers.",
+          "additionalProperties": { "type": "number" },
+          "examples": [{ "projectHealth": -10, "scheduleRisk": 15 }]
+        },
+        "setFlags": {
+          "type": "array",
+          "description": "String flags added to a running flags[] array in state. Used later by scenes/endings for conditional narrative or branching.",
+          "items": { "type": "string" }
+        },
+        "nextScene": {
+          "type": "string",
+          "description": "Scene id to navigate to after this option is resolved, OR the exact literal sentinel \"EVALUATE_ENDING\" if this option ends the simulation immediately. \"EVALUATE_ENDING\" is the ONLY accepted terminal sentinel value in this schema version -- no other literal (e.g. a bare \"ENDING\") is recognized, and content validation must reject any nextScene value that is neither an existing scene id nor exactly \"EVALUATE_ENDING\". Multiple options may point to the same nextScene (convergence) or to different scenes (branching)."
+        }
+      }
+    },
+
+    "ending": {
+      "type": "object",
+      "required": ["id", "condition", "narrative", "scoreBand"],
+      "properties": {
+        "id": { "type": "string", "examples": ["ending_distinction"] },
+        "condition": {
+          "type": "object",
+          "description": "Evaluated against final state. All provided keys must be satisfied (AND logic). Supported comparator suffixes: Min (>=), Max (<=), Equals. Referenced base variable names (before the comparator suffix) must correspond to a key declared in `stateVariables`.",
+          "additionalProperties": { "type": "number" },
+          "examples": [{ "projectHealthMin": 85 }]
+        },
+        "narrative": {
+          "type": "string",
+          "description": "Closing story text shown to the candidate."
+        },
+        "scoreBand": {
+          "type": "string",
+          "description": "Human-readable result label.",
+          "examples": ["Pass with distinction", "Pass", "Marginal — review recommended", "Fail — retake recommended"]
+        },
+        "recommendedReview": {
+          "type": "array",
+          "description": "Domain ids the candidate should revisit, typically populated based on which domains had the most incorrect picks. Can be computed client-side from the per-scene/per-domain answer log rather than hardcoded.",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

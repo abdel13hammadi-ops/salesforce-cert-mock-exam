@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://certbound.com/schemas/simulation.schema.json",
+  "title": "CertBound Project Simulation Schema",
+  "description": "Schema for an interactive, branching, stateful exam simulation used across all CertBound certification tracks (BA-201, PMP, AWS, CompTIA, etc.). One file = one full simulation.",
+  "type": "object",
+  "required": ["simulationId", "title", "certification", "initialState", "scenes", "endings"],
+  "properties": {
+
+    "simulationId": {
+      "type": "string",
+      "description": "Unique slug for this simulation, used in URLs and DB keys.",
+      "examples": ["ba201-sim-meridian-health-01"]
+    },
+    "title": {
+      "type": "string",
+      "description": "Display title shown to the candidate."
+    },
+    "certification": {
+      "type": "string",
+      "description": "Certification code this simulation targets.",
+      "examples": ["BA-201", "PMP", "AWS-SAA"]
+    },
+    "version": {
+      "type": "string",
+      "description": "Semantic version of this simulation content, for tracking edits.",
+      "default": "1.0.0"
+    },
+    "description": {
+      "type": "string",
+      "description": "One-paragraph candidate-facing summary shown on the simulation's landing/intro card."
+    },
+    "estimatedMinutes": {
+      "type": "integer",
+      "description": "Rough completion time shown to the candidate before starting."
+    },
+    "domains": {
+      "type": "array",
+      "description": "Ordered list of certification domains this simulation walks through. Used to render a progress rail in the UI.",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "weight"],
+        "properties": {
+          "id": { "type": "string", "examples": ["d1"] },
+          "label": { "type": "string", "examples": ["Customer Discovery"] },
+          "weight": { "type": "string", "examples": ["17%"] }
+        }
+      }
+    },
+
+    "initialState": {
+      "type": "object",
+      "description": "Starting values for all numeric state variables tracked through the simulation. Add/remove keys as needed per simulation — the engine should treat this object as the source of truth for which state variables exist.",
+      "additionalProperties": { "type": "number" },
+      "examples": [
+        {
+          "projectHealth": 100,
+          "stakeholderTrust": 100,
+          "scheduleRisk": 0
+        }
+      ]
+    },
+
+    "scenes": {
+      "type": "array",
+      "description": "All scenes in the simulation, spine and detours combined, as a flat array. Order in the array does NOT determine play order — `nextScene` pointers do. The engine starts at the scene whose id matches `startScene`.",
+      "items": { "$ref": "#/$defs/scene" }
+    },
+
+    "startScene": {
+      "type": "string",
+      "description": "Scene id where the simulation begins.",
+      "examples": ["s01_kickoff"]
+    },
+
+    "endings": {
+      "type": "array",
+      "description": "Possible end states, evaluated in array order against final state when a scene has no nextScene (or an explicit isFinal scene is reached). First matching condition wins.",
+      "items": { "$ref": "#/$defs/ending" }
+    }
+  },
+
+  "$defs": {
+
+    "scene": {
+      "type": "object",
+      "required": ["id", "domainId", "narrative", "decision"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique scene identifier, referenced by nextScene pointers.",
+          "examples": ["s01_kickoff"]
+        },
+        "domainId": {
+          "type": "string",
+          "description": "Which domain (from top-level `domains` array) this scene belongs to. Drives the progress-rail UI.",
+          "examples": ["d1"]
+        },
+        "isDetour": {
+          "type": "boolean",
+          "description": "True if this scene is a branch/consequence scene rather than part of the main spine. Used for UI styling (e.g., a 'you took a wrong turn' visual treatment) and analytics.",
+          "default": false
+        },
+        "narrative": {
+          "type": "string",
+          "description": "Story/context text shown before the decision prompt. Supports basic markdown (bold, italics, line breaks) — render with a markdown-safe component, not raw HTML."
+        },
+        "characterContext": {
+          "type": "object",
+          "description": "Optional structured metadata about who is speaking/present in this scene, for richer UI (avatar, name tag, etc.). Omit if not needed.",
+          "properties": {
+            "speakingAs": { "type": "string", "examples": ["Dr. Elena Castillo, CIO"] },
+            "role": { "type": "string", "examples": ["Executive Sponsor"] }
+          }
+        },
+        "decision": { "$ref": "#/$defs/decision" },
+        "explanation": {
+          "type": "string",
+          "description": "Full BA-style explanation shown AFTER the candidate picks an option and sees per-option feedback — a synthesizing summary of the underlying principle being tested, written at the same depth as a standard MCQ explanation. Markdown supported."
+        }
+      }
+    },
+
+    "decision": {
+      "type": "object",
+      "required": ["prompt", "options"],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "The question posed to the candidate for this scene."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["single_select", "multi_select"],
+          "default": "single_select"
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/option" }
+        }
+      }
+    },
+
+    "option": {
+      "type": "object",
+      "required": ["id", "text", "isCorrect", "feedback", "nextScene"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Letter or short code for this option.",
+          "examples": ["A", "B", "C"]
+        },
+        "text": {
+          "type": "string",
+          "description": "The option text shown to the candidate."
+        },
+        "isCorrect": {
+          "type": "boolean",
+          "description": "Whether this is the best-practice answer. Used for scoring and for visual treatment (checkmark/x) after selection."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Immediate, short reaction shown right after this option is picked, before the longer scene-level `explanation`. Markdown supported."
+        },
+        "stateChanges": {
+          "type": "object",
+          "description": "Deltas applied to the simulation's numeric state when this option is chosen. Keys must match keys present in top-level `initialState`. Positive or negative integers.",
+          "additionalProperties": { "type": "number" },
+          "examples": [{ "projectHealth": -10, "scheduleRisk": 15 }]
+        },
+        "setFlags": {
+          "type": "array",
+          "description": "String flags added to a running flags[] array in state. Used later by scenes/endings for conditional narrative or branching (e.g., a scene can check 'if flags includes skipped_validation, show different opening line').",
+          "items": { "type": "string" }
+        },
+        "nextScene": {
+          "type": "string",
+          "description": "Scene id to navigate to after this option is resolved. Multiple options may point to the same nextScene (convergence) or to different scenes (branching). Use the special value 'EVALUATE_ENDING' if this option ends the simulation immediately regardless of normal flow."
+        }
+      }
+    },
+
+    "ending": {
+      "type": "object",
+      "required": ["id", "condition", "narrative", "scoreBand"],
+      "properties": {
+        "id": { "type": "string", "examples": ["ending_distinction"] },
+        "condition": {
+          "type": "object",
+          "description": "Evaluated against final state. All provided keys must be satisfied (AND logic). Supported comparator suffixes: Min (>=), Max (<=), Equals.",
+          "additionalProperties": { "type": "number" },
+          "examples": [{ "projectHealthMin": 85 }]
+        },
+        "narrative": {
+          "type": "string",
+          "description": "Closing story text shown to the candidate."
+        },
+        "scoreBand": {
+          "type": "string",
+          "description": "Human-readable result label.",
+          "examples": ["Pass with distinction", "Pass", "Marginal — review recommended", "Fail — retake recommended"]
+        },
+        "recommendedReview": {
+          "type": "array",
+          "description": "Domain ids the candidate should revisit, typically populated based on which domains had the most incorrect picks. Can be computed client-side from the per-scene/per-domain answer log rather than hardcoded.",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}
