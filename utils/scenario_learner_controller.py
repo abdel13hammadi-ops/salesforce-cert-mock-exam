@@ -82,29 +82,145 @@ decision required before a second scenario version ever ships. This module
 currently only resolves the CURRENT pointer for a fresh
 `start_or_resume_attempt(...)` call; it does not special-case an existing
 attempt pinned to a version that is no longer current.
+
+Decision submission (SIM-VSLICE-02 / SIM-VSLICE-02A / SIM-VSLICE-02B)
+------------------------------------------------------------------------
+Decision submission is split into two explicit stages so an uncertain
+persistence/backend result can be retried with the EXACT ORIGINAL V68
+request, even after the underlying attempt has already advanced or
+completed on a prior call whose response was lost:
+
+1. `prepare_ba201_decision(...)` -- does all of the "what is true right
+   now" work EXACTLY ONCE per intentional learner decision: verifies
+   identity, loads content, resolves the CURRENT scenario version, fetches
+   the authoritative persisted attempt (never trusting a caller-supplied
+   belief about its sequence/scene), replays it, and applies the selected
+   option through `utils.scenario_engine.apply_decision(...)` -- the ONLY
+   place scoring, option validity, and scene transition are computed. It
+   returns an immutable `PreparedScenarioDecision` and never calls
+   `utils.scenario_persistence.submit_decision(...)` itself.
+
+2. `submit_prepared_ba201_decision(...)` -- sends the EXACT fields captured
+   by stage 1 to `utils.scenario_persistence.submit_decision(...)`,
+   unchanged, on every call, and returns only a small, immutable
+   `ScenarioDecisionPersistenceOutcome` -- it deliberately does NOT load
+   scenario content, call `get_attempt(...)`, re-resolve the current
+   scenario-version pointer, or call
+   `utils.scenario_engine.apply_decision(...)` again (SIM-VSLICE-02B). A
+   retry of a `PreparedScenarioDecision` is resolution of an
+   ALREADY-DECIDED request, not a new decision, so nothing about "what
+   should happen" is recomputed, and nothing about "can this retry even
+   reach V68" depends on the local scenario-content file still being
+   loadable. This is what lets V68's own idempotent replay return the
+   ORIGINAL stable result even when the persisted attempt the caller would
+   otherwise have looked up is now already advanced past (or completed at)
+   the point this request was prepared against -- re-deriving
+   `expected_sequence_number`/`expected_scene_id`/`state_before` from a
+   freshly-fetched attempt on a retry would otherwise turn a genuine
+   lost-response retry into a spurious `sequence_mismatch:` /
+   `state_before_mismatch:` conflict, or (for a terminal decision) an
+   `attempt_not_in_progress:` rejection, instead of V68's own stable
+   `idempotent_replay=true` result; and a transient local content-load
+   failure would otherwise be able to block a retry from ever reaching V68
+   at all.
+
+   `submit_prepared_ba201_decision(...)` also validates the persisted
+   response's identity/lifecycle/state fields against the prepared request
+   itself (never against reloaded scenario content) -- a successful V68
+   call whose response does not actually match what was submitted is
+   classified as an UNCERTAIN integrity outcome (`ScenarioLearnerBackendError`),
+   never as an ordinary conclusive rejection, so the caller never discards
+   recovery state after a write that may have partially or ambiguously
+   succeeded.
+
+View reconstruction (rendering the resulting scene/completion state) is
+DELIBERATELY separated from persistence confirmation (SIM-VSLICE-02B): a
+caller that needs the learner-facing scene must call
+`start_or_resume_ba201_attempt(...)` again (which legitimately reloads
+content) once persistence is confirmed -- `submit_prepared_ba201_decision(...)`
+itself never does this, so a step that only ever needs to reach V68 can
+never be blocked by an unrelated content-loading problem.
+
+`submit_ba201_decision(...)` remains available as a `prepare` ->
+`submit prepared` -> `rebuild a ScenarioAttemptView` convenience wrapper for
+callers that do not need cross-call retry safety (e.g. tests, one-shot
+scripts). It rebuilds the returned view directly from the prepared
+request's own (already response-validated) `state_after` payload -- never
+via a second `get_attempt(...)` call -- so it still never needs to trust
+anything beyond what `submit_prepared_ba201_decision(...)` already
+confirmed. `pages/Scenario_Simulator.py` MUST use the explicit two-stage
+API directly (never this wrapper) so it can persist the returned
+`PreparedScenarioDecision` in `st.session_state` BEFORE persistence is
+attempted, and so it can defer view reconstruction to a fresh
+`start_or_resume_ba201_attempt(...)` call on the NEXT page pass -- see that
+module's own docstring.
+
+Idempotency-key lifecycle is entirely the CALLER's responsibility:
+`idempotency_key` is a required parameter to `prepare_ba201_decision(...)`,
+never generated internally, so a caller that needs to safely retry an
+uncertain submission passes the exact same key (bound inside the returned
+`PreparedScenarioDecision`) on every retry. Whether a given failure is safe
+to retry, or must be treated as conclusively rejected, is communicated
+entirely through which `ScenarioLearnerError` subclass is raised -- see each
+exception class's own docstring below.
+
+Deep immutability (SIM-VSLICE-02B)
+------------------------------------
+`PreparedScenarioDecision` binds every JSON request payload
+(`state_before`, `state_after`, `terminal_result_snapshot`) as an already-
+canonicalized JSON **string** (`state_before_json` / `state_after_json` /
+`terminal_result_snapshot_json`), never as a `dict`/`list`/`MappingProxyType`.
+A Python `str` is immutable at every character, so nothing nested inside a
+`PreparedScenarioDecision` -- not the top-level mapping, not a nested
+`flags` list, not a `decisionHistory` entry, not a nested `terminalResult`
+object -- can ever be mutated after preparation, by this module, by
+`pages/Scenario_Simulator.py`, or by anything else holding a reference to
+it. Every field of `PreparedScenarioDecision` is therefore also a plain
+`str`/`int`/`bool`/`Optional[str]` scalar, which makes the whole object
+trivially `pickle`-serializable and safe to place directly in Streamlit
+`st.session_state` (a `MappingProxyType`, used in the prior SIM-VSLICE-02A
+revision, is neither deeply immutable below its own top level nor
+`pickle`-serializable). The corresponding plain `dict`/`list` values are
+reconstructed via `json.loads(...)` fresh, on demand, only immediately
+before calling `utils.scenario_persistence.submit_decision(...)` -- two
+separate calls to reconstruct the same field always produce
+value-equivalent but independently-owned objects, never the same mutable
+instance.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from utils.scenario_catalog import resolve_default_scenario_version_path
 from utils.scenario_engine import (
     ENGINE_VERSION,
     ScenarioEngineError,
     ScenarioRunSnapshot,
+    ScenarioRunStateError,
+    apply_decision,
     get_current_scene,
     replay_serialized_run,
     serialize_run_snapshot,
+    serialize_terminal_result,
     start_scenario_run,
 )
 from utils.scenario_persistence import (
+    ScenarioAttemptNotFoundError,
+    ScenarioAttemptNotInProgressError,
+    ScenarioIdempotencyConflictError,
     ScenarioPersistenceError,
+    ScenarioSceneConflictError,
+    ScenarioSequenceConflictError,
+    ScenarioStateConflictError,
     ScenarioVersionMismatchError,
+    get_attempt,
     normalize_scenario_persistence_email,
     start_or_resume_attempt,
+    submit_decision,
 )
 from utils.scenario_schema import ScenarioContentError, load_scenario_content
 
@@ -156,7 +272,54 @@ class ScenarioLearnerStateError(ScenarioLearnerError):
 
 class ScenarioLearnerBackendError(ScenarioLearnerError):
     """Raised for any other V68 persistence-backend failure (malformed RPC
-    response, unexpected exception, etc.)."""
+    response, unexpected exception, etc.).
+
+    SIM-VSLICE-02: this is the ONE exception in this hierarchy that
+    represents an UNCERTAIN outcome -- the caller (a Streamlit page) must
+    NOT clear a pending idempotency key merely because this was raised; the
+    same key should be retried once the learner explicitly asks to retry.
+    Every other exception below represents a CONCLUSIVE rejection, safe to
+    clear pending submission state for."""
+
+
+class ScenarioLearnerAttemptNotFoundError(ScenarioLearnerError):
+    """SIM-VSLICE-02: raised when the attempt id supplied to
+    `submit_ba201_decision(...)` does not exist, or exists but is not owned
+    by the verified learner email -- deliberately never distinguishable to a
+    caller, matching `utils.scenario_persistence.get_attempt`'s /
+    `ScenarioAttemptNotFoundError`'s own documented behavior. A conclusive
+    rejection: never safe to retry with the same pending state."""
+
+
+class ScenarioLearnerAttemptNotActiveError(ScenarioLearnerError):
+    """SIM-VSLICE-02: raised when a decision is submitted against an attempt
+    that is already `completed` or `abandoned` (checked locally against the
+    freshly-fetched persisted attempt, and again defensively if the RPC
+    itself reports `attempt_not_in_progress:`). A conclusive rejection."""
+
+
+class ScenarioLearnerInvalidOptionError(ScenarioLearnerError):
+    """SIM-VSLICE-02: raised when the selected option is not one of the
+    options available on the attempt's actual persisted current scene --
+    either because `utils.scenario_engine.apply_decision(...)` rejects it
+    outright, or (defensively) because the persistence RPC itself reports a
+    scene/state conflict for the freshly-replayed state. A conclusive
+    rejection: the learner's selection no longer applies to the attempt's
+    actual current scene, so retrying the identical submission can never
+    succeed."""
+
+
+class ScenarioLearnerConflictError(ScenarioLearnerError):
+    """SIM-VSLICE-02: raised when the persistence RPC reports a genuine
+    conflict against a submission this module already built from
+    freshly-fetched persisted state -- a concurrent decision or retry raced
+    ahead of this exact call (`sequence_mismatch:` / `scene_mismatch:` /
+    `state_before_mismatch:`), or the supplied idempotency key was reused
+    for a request whose inputs actually differ
+    (`idempotency_key_conflict:`). A conclusive rejection for THIS specific
+    request: the caller must discard the pending idempotency key and obtain
+    fresh persisted state (e.g. by calling `start_or_resume_ba201_attempt`
+    again) rather than blindly resubmitting the same key/inputs."""
 
 
 # ---------------------------------------------------------------------------
@@ -202,14 +365,221 @@ class ScenarioAttemptView:
 
 
 # ---------------------------------------------------------------------------
+# Prepared decision request (SIM-VSLICE-02A)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PreparedScenarioDecision:
+    """An immutable, fully-formed V68 `submit_scenario_decision_v1` request,
+    captured once by `prepare_ba201_decision(...)`.
+
+    SIM-VSLICE-02B: every field is a plain `str` / `int` / `bool` /
+    `Optional[str]` scalar -- in particular, every JSON request payload
+    (`state_before_json`, `state_after_json`, `terminal_result_snapshot_json`)
+    is stored as an already-canonicalized JSON **string**, never as a
+    `dict`/`list`/`MappingProxyType`. A Python string is immutable at every
+    character, so nothing nested inside one of these payloads -- not the
+    top-level object, not a nested `flags` list, not a `decisionHistory`
+    entry, not a nested `terminalResult` object -- can ever be mutated
+    after preparation. This also makes the object trivially
+    `pickle`-serializable and safe to place directly in Streamlit
+    `st.session_state`, unlike the shallow `MappingProxyType` representation
+    used by the prior SIM-VSLICE-02A revision (which left nested dicts/lists
+    mutable and is not `pickle`-serializable). Use
+    `reconstruct_state_before(...)` / `reconstruct_state_after(...)` /
+    `reconstruct_terminal_result_snapshot(...)` below to obtain a fresh,
+    independently-owned `dict` immediately before calling
+    `utils.scenario_persistence.submit_decision(...)` -- two separate calls
+    always return value-equivalent but distinct objects.
+
+    Also binds `scenario_version`, `canonical_content_sha256`, and
+    `engine_version` -- the exact content identity that was true at
+    preparation time -- purely for provenance; `submit_prepared_ba201_decision(...)`
+    itself validates the persisted RESPONSE against this request's own
+    fields directly and deliberately never reloads scenario content to do
+    so (see module docstring).
+
+    `submit_prepared_ba201_decision(...)` sends every request field to
+    `utils.scenario_persistence.submit_decision(...)` UNCHANGED -- it never
+    re-derives any of them from a freshly-fetched attempt. This is what
+    allows a retry to reach V68's own stable idempotent-replay path even
+    after the underlying attempt has since advanced past (or completed at)
+    the state this request was originally prepared against.
+
+    Never rendered to the learner, and never inspected field-by-field by
+    `pages/Scenario_Simulator.py` -- a caller only ever stores this object
+    opaquely (e.g. in `st.session_state`) and passes it back into
+    `submit_prepared_ba201_decision(...)` unchanged.
+    """
+
+    normalized_email: str
+    certification_exam_name: str
+    simulation_id: str
+    scenario_version_id: str
+    scenario_version: str
+    canonical_content_sha256: str
+    engine_version: str
+    attempt_id: str
+    selected_option_id: str
+    idempotency_key: str
+    expected_sequence_number: int
+    expected_scene_id: str
+    state_before_json: str
+    state_after_json: str
+    resulting_scene_id: Optional[str]
+    is_terminal: bool
+    terminal_ending_id: Optional[str]
+    terminal_result_snapshot_json: Optional[str]
+
+    def reconstruct_state_before(self) -> Dict[str, Any]:
+        """A fresh `dict`, parsed from `state_before_json` -- independently
+        owned by the caller; mutating it never affects this
+        `PreparedScenarioDecision` or any other reconstruction."""
+        return _parse_canonical_json(self.state_before_json, field="state_before")
+
+    def reconstruct_state_after(self) -> Dict[str, Any]:
+        """A fresh `dict`, parsed from `state_after_json` -- see
+        `reconstruct_state_before(...)`."""
+        return _parse_canonical_json(self.state_after_json, field="state_after")
+
+    def reconstruct_terminal_result_snapshot(self) -> Optional[Dict[str, Any]]:
+        """A fresh `dict`, parsed from `terminal_result_snapshot_json`, or
+        `None` for a nonterminal decision -- see
+        `reconstruct_state_before(...)`."""
+        if self.terminal_result_snapshot_json is None:
+            return None
+        return _parse_canonical_json(self.terminal_result_snapshot_json, field="terminal_result_snapshot")
+
+
+@dataclass(frozen=True)
+class ScenarioAttemptCompletionMarker:
+    """SIM-VSLICE-02B: a minimal, immutable, EMAIL-BOUND record that one
+    BA-201 attempt reached a confirmed terminal outcome this Streamlit
+    session -- deliberately NOT a `ScenarioAttemptView` (rendering a full
+    scene/title would require reloading scenario content, which persistence
+    confirmation deliberately never does; see
+    `submit_prepared_ba201_decision(...)`'s own docstring). Every field is a
+    plain `str`, so this is trivially `pickle`-serializable for
+    `st.session_state`.
+
+    Defined HERE (in this always-normally-imported module) rather than
+    inside `pages/Scenario_Simulator.py` itself so its class identity stays
+    stable across every Streamlit rerun of that page -- a type defined
+    directly inside a Streamlit PAGE module can, depending on how that page
+    module happens to be loaded/re-executed, end up with a different class
+    object on each execution, which would silently break an `isinstance(...)`
+    check against a value stored in `st.session_state` on a PRIOR execution.
+
+    `normalized_email` binds this marker to the exact learner identity that
+    earned it (`PreparedScenarioDecision.normalized_email`) -- the page
+    discards a marker that does not match the CURRENT verified learner
+    email before ever showing it.
+    """
+
+    normalized_email: str
+    attempt_id: str
+    status: str
+
+
+@dataclass(frozen=True)
+class ScenarioDecisionPersistenceOutcome:
+    """SIM-VSLICE-02B: a small, immutable, learner-safe summary of exactly
+    what `utils.scenario_persistence.submit_decision(...)` persisted --
+    returned by `submit_prepared_ba201_decision(...)` INSTEAD OF a full
+    `ScenarioAttemptView`, since building that view requires reloading
+    scenario content, which the persistence-confirmation step deliberately
+    never does (see module docstring).
+
+    Never rendered to the learner directly -- a caller uses `is_complete`
+    only to decide whether to render a completion marker or to rerun into
+    `start_or_resume_ba201_attempt(...)` for the advanced in-progress
+    attempt.
+    """
+
+    attempt_id: str
+    attempt_status: str
+    is_complete: bool
+    current_scene_id: Optional[str]
+    idempotent_replay: bool
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 
+def _canonical_json(value: Mapping[str, Any]) -> str:
+    """The one canonicalization this module ever uses for a JSON request
+    payload -- `sort_keys=True` makes nested key order irrelevant, so this
+    is deterministic across process restarts and across a Streamlit
+    session-state pickle round-trip; the exact same input dict always
+    produces the exact same string. Matches the style (though not
+    necessarily byte-for-byte, since that is never required here)
+    `utils.scenario_persistence.compute_request_fingerprint(...)` itself
+    documents using for its own canonical encoding."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _parse_canonical_json(text: str, *, field: str) -> Dict[str, Any]:
+    """The inverse of `_canonical_json(...)`. Only ever called on a string
+    this module itself produced via `_canonical_json(...)` -- a failure
+    here indicates local corruption (e.g. a hand-crafted/corrupted
+    `PreparedScenarioDecision`), never a normal, expected outcome, so it is
+    mapped to `ScenarioLearnerStateError` exactly like any other
+    "persisted/prepared state could not be restored" failure."""
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError) as exc:
+        raise ScenarioLearnerStateError(
+            f"The prepared {field} payload could not be restored."
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ScenarioLearnerStateError(
+            f"The prepared {field} payload could not be restored."
+        )
+    return parsed
+
+
 def _default_client() -> Any:
+    """Obtain the default Supabase admin client, or raise
+    `ScenarioLearnerBackendError` -- NEVER a raw exception -- if
+    construction itself fails (e.g. missing/invalid service-role
+    configuration).
+
+    SIM-VSLICE-02C: this is the ONE place all three public entry points
+    (`start_or_resume_ba201_attempt`, `prepare_ba201_decision`,
+    `submit_prepared_ba201_decision`) obtain a default client, so wrapping
+    it here consistently maps a client-initialization failure for all three
+    without broadening any OTHER exception boundary. Each caller already
+    gives `ScenarioLearnerBackendError` the correct retry semantics for its
+    own stage:
+
+    - `start_or_resume_ba201_attempt`: a plain read/write failure -- the
+      page shows its existing safe "unavailable" state. This call happens
+      BEFORE `_resolve_current_scenario_version_id(...)`, so a client
+      failure here can never be mistaken for, or obscure, a later
+      `ScenarioLearnerVersionUnavailableError`.
+    - `prepare_ba201_decision`: a preparation/READ failure -- no V68 write
+      was ever attempted, so a caller must never retain a pending prepared
+      request for this (see that function's own docstring).
+    - `submit_prepared_ba201_decision`: an UNCERTAIN submit/replay outcome
+      -- the caller (`pages/Scenario_Simulator.py`) preserves the exact
+      pending `PreparedScenarioDecision` for retry, exactly as it already
+      does for any other `ScenarioLearnerBackendError` raised there. This
+      call happens AFTER the prepared JSON payloads are reconstructed
+      locally (no catalog/content/attempt/pointer work of any kind), so a
+      client failure here still never performs any of that extra work.
+    """
     from utils.access_control import get_supabase_admin_client  # noqa: PLC0415
 
-    return get_supabase_admin_client()
+    try:
+        return get_supabase_admin_client()
+    except Exception as exc:  # noqa: BLE001 - client construction/config failure, never surfaced raw
+        logger.exception("BA-201 controller could not obtain the default Supabase admin client")
+        raise ScenarioLearnerBackendError(
+            "The scenario service is temporarily unavailable."
+        ) from exc
 
 
 def _resolve_current_scenario_version_id(client: Any, *, simulation_id: str, version: str) -> str:
@@ -348,8 +718,43 @@ def _build_scene_view(run: ScenarioRunSnapshot) -> ScenarioSceneView:
     )
 
 
+def _build_attempt_view(
+    *,
+    run: ScenarioRunSnapshot,
+    attempt_id: str,
+    is_new_attempt: bool,
+    lifecycle_status: str,
+) -> ScenarioAttemptView:
+    """Build the one shared learner-safe view model from a just-replayed
+    `ScenarioRunSnapshot`, used identically by
+    `start_or_resume_ba201_attempt(...)` and `submit_ba201_decision(...)` so
+    "is this attempt complete" / "what does the current scene look like" is
+    decided in exactly one place regardless of which of those two functions
+    produced the run.
+
+    `lifecycle_status` is the persisted attempt's own `status` /
+    `attempt_status` field (`"in_progress"` / `"completed"` /
+    `"abandoned"`) -- a run can be `is_complete=False` while the persisted
+    attempt is `"abandoned"` (an abandoned attempt is never replayed as
+    complete by the engine itself), so both signals are combined here,
+    exactly as the pre-existing start/resume logic already did.
+    """
+    is_complete = bool(run.is_complete) or lifecycle_status != "in_progress"
+    current_scene_view = None if is_complete else _build_scene_view(run)
+    progress_label = "Scenario complete" if is_complete else f"Decision {len(run.decisions) + 1}"
+    return ScenarioAttemptView(
+        attempt_id=attempt_id,
+        is_new_attempt=is_new_attempt,
+        is_complete=is_complete,
+        scenario_title=run.content.title,
+        certification_exam_name=run.content.certification_exam_name,
+        progress_label=progress_label,
+        current_scene=current_scene_view,
+    )
+
+
 # ---------------------------------------------------------------------------
-# Public controller entry point
+# Public controller entry points
 # ---------------------------------------------------------------------------
 
 
@@ -433,16 +838,440 @@ def start_or_resume_ba201_attempt(
             "The saved progress for this scenario could not be restored."
         ) from exc
 
-    is_complete = bool(run.is_complete) or result.status != "in_progress"
-    current_scene_view = None if is_complete else _build_scene_view(run)
-    progress_label = "Scenario complete" if is_complete else f"Decision {len(run.decisions) + 1}"
-
-    return ScenarioAttemptView(
+    return _build_attempt_view(
+        run=run,
         attempt_id=result.attempt_id,
         is_new_attempt=result.created,
-        is_complete=is_complete,
-        scenario_title=content.title,
-        certification_exam_name=content.certification_exam_name,
-        progress_label=progress_label,
-        current_scene=current_scene_view,
+        lifecycle_status=result.status,
+    )
+
+
+def prepare_ba201_decision(
+    user_email: Optional[str],
+    *,
+    attempt_id: str,
+    selected_option_id: str,
+    idempotency_key: str,
+    client: Any = None,
+    certification_exam_name: str = BA201_CERTIFICATION_EXAM_NAME,
+    simulation_id: str = BA201_SIMULATION_ID,
+) -> PreparedScenarioDecision:
+    """Stage A (SIM-VSLICE-02A): resolve "what is true right now" for a
+    NEW, intentional learner decision, and return an immutable
+    `PreparedScenarioDecision` -- WITHOUT calling
+    `utils.scenario_persistence.submit_decision(...)`.
+
+    `user_email` must already be the verified learner email (see
+    `start_or_resume_ba201_attempt`'s own docstring; the same rule applies
+    here unchanged). `attempt_id` must be an attempt already owned by that
+    email (checked via `utils.scenario_persistence.get_attempt`, never by
+    trusting a caller's own belief). `idempotency_key` must already be a
+    UUIDv4 string the caller generated once for this specific intentional
+    submission -- it is bound into the returned object unchanged, never
+    regenerated, so every retry of the resulting `PreparedScenarioDecision`
+    (via `submit_prepared_ba201_decision(...)`) uses the identical key.
+
+    Sequencing, in order:
+
+    1. Verify `user_email` (`ScenarioLearnerAccessError`).
+    2. Load and validate the canonical BA-201 content
+       (`ScenarioLearnerContentError`).
+    3. Resolve the scenario's CURRENT published version id, exactly like
+       `start_or_resume_ba201_attempt` (`ScenarioLearnerVersionUnavailableError`)
+       -- current-version enforcement belongs HERE, to preparing a NEW
+       decision, never to replaying an already-prepared one.
+    4. Fetch the attempt's actual persisted state via
+       `utils.scenario_persistence.get_attempt(...)`
+       (`ScenarioLearnerAttemptNotFoundError` /
+       `ScenarioLearnerBackendError`) -- this is the ONLY source of the
+       `expected_sequence_number` / `expected_scene_id` bound into the
+       returned request; a caller-supplied belief is never used.
+    5. Reject an attempt that is not `in_progress`
+       (`ScenarioLearnerAttemptNotActiveError`).
+    6. Reject an attempt pinned to a `scenario_version_id` other than the
+       version resolved in step 3 (`ScenarioLearnerVersionUnavailableError`)
+       -- the deferred cross-version resume policy (see module docstring)
+       means this attempt can no longer safely accept a new decision
+       through this controller.
+    7. Replay the attempt's persisted engine state
+       (`ScenarioLearnerStateError` on a corrupt/foreign snapshot).
+    8. Apply `selected_option_id` through
+       `utils.scenario_engine.apply_decision(...)` -- the ONLY place
+       scoring, option validity, and scene transition are computed
+       (`ScenarioLearnerInvalidOptionError` if the option does not exist on
+       the attempt's actual current scene).
+    9. Serialize the resulting state/terminal fields, canonicalize each
+       JSON payload into an immutable string (`_canonical_json(...)`), and
+       bind every field, unchanged, into the returned
+       `PreparedScenarioDecision` (SIM-VSLICE-02B: never as a mutable
+       `dict`/`list`/`MappingProxyType`).
+
+    None of these failures ever attempt a V68 write -- a caller (see
+    `pages/Scenario_Simulator.py`) must never retain a pending
+    idempotency-key/request record for a `prepare_ba201_decision(...)`
+    failure, since no write was ever attempted.
+    """
+    if not user_email or "@" not in str(user_email):
+        raise ScenarioLearnerAccessError(
+            "A verified learner email is required to submit a scenario decision."
+        )
+    normalized_email = normalize_scenario_persistence_email(user_email)
+
+    content = _load_default_scenario_content(
+        certification_exam_name=certification_exam_name,
+        simulation_id=simulation_id,
+    )
+
+    resolved_client = client if client is not None else _default_client()
+
+    version_id = _resolve_current_scenario_version_id(
+        resolved_client,
+        simulation_id=content.simulation_id,
+        version=content.version,
+    )
+
+    try:
+        attempt = get_attempt(
+            resolved_client,
+            user_email=normalized_email,
+            attempt_id=attempt_id,
+        )
+    except ScenarioAttemptNotFoundError as exc:
+        raise ScenarioLearnerAttemptNotFoundError(
+            "This scenario attempt could not be found."
+        ) from exc
+    except ScenarioPersistenceError as exc:
+        logger.exception("BA-201 decision-preparation attempt lookup failed")
+        raise ScenarioLearnerBackendError(
+            "This scenario attempt could not be loaded right now."
+        ) from exc
+
+    if attempt.status != "in_progress":
+        raise ScenarioLearnerAttemptNotActiveError(
+            "This scenario attempt has already ended and cannot accept another decision."
+        )
+
+    if attempt.scenario_version_id != version_id:
+        raise ScenarioLearnerVersionUnavailableError(
+            "This scenario attempt is pinned to a version that is no longer current."
+        )
+
+    try:
+        run = replay_serialized_run(content, attempt.serialized_engine_state)
+    except ScenarioEngineError as exc:
+        logger.exception("BA-201 persisted engine state failed replay validation before a decision")
+        raise ScenarioLearnerStateError(
+            "The saved progress for this scenario could not be restored."
+        ) from exc
+
+    try:
+        next_run = apply_decision(run, selected_option_id)
+    except ScenarioRunStateError as exc:
+        raise ScenarioLearnerInvalidOptionError(
+            "That option is no longer available for the current scene."
+        ) from exc
+
+    state_before_json = _canonical_json(dict(attempt.serialized_engine_state))
+    state_after_json = _canonical_json(serialize_run_snapshot(next_run))
+
+    if next_run.is_complete:
+        terminal_result = next_run.terminal_result
+        assert terminal_result is not None  # guaranteed by apply_decision when is_complete is True
+        resulting_scene_id: Optional[str] = None
+        is_terminal = True
+        terminal_ending_id: Optional[str] = terminal_result.ending_id
+        terminal_result_snapshot_json: Optional[str] = _canonical_json(
+            serialize_terminal_result(terminal_result)
+        )
+    else:
+        resulting_scene_id = next_run.current_scene_id
+        is_terminal = False
+        terminal_ending_id = None
+        terminal_result_snapshot_json = None
+
+    return PreparedScenarioDecision(
+        normalized_email=normalized_email,
+        certification_exam_name=certification_exam_name,
+        simulation_id=simulation_id,
+        scenario_version_id=version_id,
+        scenario_version=content.version,
+        canonical_content_sha256=content.canonical_content_sha256,
+        engine_version=ENGINE_VERSION,
+        attempt_id=attempt.attempt_id,
+        selected_option_id=selected_option_id,
+        idempotency_key=idempotency_key,
+        expected_sequence_number=attempt.next_sequence_number,
+        expected_scene_id=attempt.current_scene_id,
+        state_before_json=state_before_json,
+        state_after_json=state_after_json,
+        resulting_scene_id=resulting_scene_id,
+        is_terminal=is_terminal,
+        terminal_ending_id=terminal_ending_id,
+        terminal_result_snapshot_json=terminal_result_snapshot_json,
+    )
+
+
+def _persisted_response_matches_prepared(
+    prepared: PreparedScenarioDecision,
+    submission: Any,
+    *,
+    state_after: Mapping[str, Any],
+    terminal_result_snapshot: Optional[Mapping[str, Any]],
+) -> bool:
+    """Pure equality/shape check -- never a recomputation of scoring,
+    transitions, or endings -- proving the persisted RESPONSE actually
+    reflects the EXACT request `prepared` describes, using ONLY the
+    request's own already-known fields (never scenario content, which
+    `submit_prepared_ba201_decision(...)` deliberately never reloads).
+
+    SIM-VSLICE-02C: requires an EXACT lifecycle-status match rather than
+    merely `!= "in_progress"` -- a nonterminal `prepared` request requires
+    the response to be exactly `"in_progress"`, and a terminal one requires
+    exactly `"completed"`. This means `"abandoned"` (a third, legitimate
+    lifecycle status this module itself never causes, but which V68 could
+    in principle return for some other reason) is NEVER treated as a valid
+    match for either case -- it always falls through to `return False`
+    below, exactly like any other mismatch, preserving pending state rather
+    than being silently accepted as a completion. `terminal_result_snapshot`
+    is compared value-for-value against the exact reconstructed prepared
+    snapshot, never merely checked for `None`-ness.
+    """
+    if submission.attempt_id != prepared.attempt_id:
+        return False
+
+    # Only checked when the result type actually exposes both fields --
+    # some test doubles/response contracts may not.
+    if hasattr(submission, "sequence_number") and hasattr(submission, "next_sequence_number"):
+        if submission.sequence_number != prepared.expected_sequence_number:
+            return False
+        if submission.next_sequence_number != prepared.expected_sequence_number + 1:
+            return False
+
+    if prepared.is_terminal:
+        if submission.attempt_status != "completed":
+            return False
+        if submission.current_scene_id is not None:
+            return False
+        if submission.terminal_ending_id != prepared.terminal_ending_id:
+            return False
+        if dict(submission.terminal_result_snapshot or {}) != dict(terminal_result_snapshot or {}):
+            return False
+    else:
+        if submission.attempt_status != "in_progress":
+            return False
+        if submission.current_scene_id != prepared.resulting_scene_id:
+            return False
+        if submission.terminal_ending_id is not None:
+            return False
+        if submission.terminal_result_snapshot is not None:
+            return False
+
+    if submission.serialized_engine_state != dict(state_after):
+        return False
+    return True
+
+
+def submit_prepared_ba201_decision(
+    user_email: Optional[str],
+    prepared: PreparedScenarioDecision,
+    *,
+    client: Any = None,
+) -> ScenarioDecisionPersistenceOutcome:
+    """Stage B (SIM-VSLICE-02B): submit (or safely replay) an ALREADY
+    `prepare_ba201_decision(...)`-prepared request, unchanged, and return
+    only a small, immutable `ScenarioDecisionPersistenceOutcome` --
+    deliberately NOT a full `ScenarioAttemptView`.
+
+    This is the ONLY function that calls
+    `utils.scenario_persistence.submit_decision(...)`. Every field of
+    `prepared` is sent exactly as reconstructed from its immutable JSON
+    string payloads -- this function never loads scenario content, never
+    calls `utils.scenario_persistence.get_attempt(...)`, never re-resolves
+    the current scenario-version pointer, and never calls
+    `utils.scenario_engine.apply_decision(...)` again (SIM-VSLICE-02B: NONE
+    of those can transiently fail and block a retry from reaching V68 at
+    all). A retry of the exact same `prepared` object (same
+    `idempotency_key`, same everything else) is therefore resolution of an
+    ALREADY-DECIDED request, not a new decision -- so V68's own
+    idempotent-replay path can return the original stable result even if
+    the persisted attempt has, in the meantime, already advanced past (a
+    committed but unacknowledged nonterminal decision) or completed at (a
+    committed but unacknowledged terminal decision) the exact state this
+    request was prepared against.
+
+    `user_email` must be the CURRENT verified learner email, and must
+    match `prepared.normalized_email` -- a prepared request can never be
+    submitted under a different learner's session
+    (`ScenarioLearnerAccessError`).
+
+    After a successful V68 call, the persisted response is validated
+    against `prepared`'s own fields (`_persisted_response_matches_prepared`)
+    -- NOT against reloaded scenario content. A mismatch is treated as an
+    UNCERTAIN integrity outcome (`ScenarioLearnerBackendError`), never as an
+    ordinary conclusive rejection: a write that appears to have succeeded
+    but whose response cannot be confirmed to be exactly what was requested
+    must never cause a caller to discard its recovery state.
+
+    Every OTHER raised exception has the exact same meaning (and the exact
+    same safe-to-retry-with-the-same-pending-state semantics) as the
+    corresponding one raised by the pre-SIM-VSLICE-02A single-call
+    `submit_ba201_decision(...)`.
+    """
+    if not user_email or "@" not in str(user_email):
+        raise ScenarioLearnerAccessError(
+            "A verified learner email is required to submit a scenario decision."
+        )
+    normalized_email = normalize_scenario_persistence_email(user_email)
+    if normalized_email != prepared.normalized_email:
+        raise ScenarioLearnerAccessError(
+            "This scenario decision was prepared for a different learner session."
+        )
+
+    # SIM-VSLICE-02B: reconstructed fresh from the immutable canonical JSON
+    # strings -- no scenario content, no catalog access, no additional RPC
+    # of any kind happens before the one submit_decision(...) call below.
+    state_before = prepared.reconstruct_state_before()
+    state_after = prepared.reconstruct_state_after()
+    terminal_result_snapshot = prepared.reconstruct_terminal_result_snapshot()
+
+    resolved_client = client if client is not None else _default_client()
+
+    submit_kwargs: dict[str, Any] = {
+        "resulting_scene_id": prepared.resulting_scene_id,
+        "is_terminal": prepared.is_terminal,
+        "terminal_ending_id": prepared.terminal_ending_id,
+        "terminal_result_snapshot": terminal_result_snapshot,
+    }
+
+    try:
+        submission = submit_decision(
+            resolved_client,
+            user_email=prepared.normalized_email,
+            attempt_id=prepared.attempt_id,
+            expected_sequence_number=prepared.expected_sequence_number,
+            expected_scene_id=prepared.expected_scene_id,
+            selected_option_id=prepared.selected_option_id,
+            state_before=state_before,
+            state_after=state_after,
+            idempotency_key=prepared.idempotency_key,
+            **submit_kwargs,
+        )
+    except ScenarioAttemptNotFoundError as exc:
+        raise ScenarioLearnerAttemptNotFoundError(
+            "This scenario attempt could not be found."
+        ) from exc
+    except ScenarioAttemptNotInProgressError as exc:
+        raise ScenarioLearnerAttemptNotActiveError(
+            "This scenario attempt has already ended and cannot accept another decision."
+        ) from exc
+    except ScenarioVersionMismatchError as exc:
+        raise ScenarioLearnerVersionUnavailableError(
+            "This scenario version is not currently available."
+        ) from exc
+    except (
+        ScenarioSequenceConflictError,
+        ScenarioSceneConflictError,
+        ScenarioStateConflictError,
+        ScenarioIdempotencyConflictError,
+    ) as exc:
+        logger.warning("BA-201 decision submission hit a safe conflict: %s", exc)
+        raise ScenarioLearnerConflictError(
+            "This scenario has moved on since it was last loaded. Please try again."
+        ) from exc
+    except ScenarioPersistenceError as exc:
+        logger.exception("BA-201 decision-submission persistence call failed")
+        raise ScenarioLearnerBackendError(
+            "This decision could not be submitted right now."
+        ) from exc
+
+    # SIM-VSLICE-02B: a successful RPC call whose response does not
+    # actually match this exact request is an UNCERTAIN integrity outcome,
+    # never an ordinary conclusive rejection -- see this function's own
+    # docstring and the module docstring's "Decision submission" section.
+    if not _persisted_response_matches_prepared(
+        prepared,
+        submission,
+        state_after=state_after,
+        terminal_result_snapshot=terminal_result_snapshot,
+    ):
+        logger.error(
+            "BA-201 decision submission returned a response that does not match the prepared "
+            "request for attempt_id=%r idempotency_key=%r",
+            prepared.attempt_id,
+            prepared.idempotency_key,
+        )
+        raise ScenarioLearnerBackendError(
+            "This decision's confirmation could not be verified. Please try again."
+        )
+
+    return ScenarioDecisionPersistenceOutcome(
+        attempt_id=submission.attempt_id,
+        attempt_status=submission.attempt_status,
+        is_complete=submission.attempt_status != "in_progress",
+        current_scene_id=submission.current_scene_id,
+        idempotent_replay=submission.idempotent_replay,
+    )
+
+
+def submit_ba201_decision(
+    user_email: Optional[str],
+    *,
+    attempt_id: str,
+    selected_option_id: str,
+    idempotency_key: str,
+    client: Any = None,
+    certification_exam_name: str = BA201_CERTIFICATION_EXAM_NAME,
+    simulation_id: str = BA201_SIMULATION_ID,
+) -> ScenarioAttemptView:
+    """Convenience wrapper: `prepare_ba201_decision(...)` ->
+    `submit_prepared_ba201_decision(...)` -> rebuild a `ScenarioAttemptView`,
+    in one call.
+
+    SIM-VSLICE-02A/02B: a caller that needs to safely retry an uncertain
+    result across multiple separate calls (i.e.
+    `pages/Scenario_Simulator.py`) must NOT use this wrapper -- it must call
+    `prepare_ba201_decision(...)` once, persist the returned
+    `PreparedScenarioDecision` BEFORE persistence is attempted, and call
+    `submit_prepared_ba201_decision(...)` with that exact stored object on
+    every retry, deferring view reconstruction to a fresh
+    `start_or_resume_ba201_attempt(...)` call on the NEXT page pass. This
+    wrapper exists only for callers (e.g. tests, one-shot scripts) that do
+    not need cross-call retry safety and want one call that still returns a
+    renderable view.
+
+    The rebuilt view is replayed from `prepared`'s OWN `state_after`
+    payload -- never via a second `get_attempt(...)` call -- because
+    `submit_prepared_ba201_decision(...)` has already confirmed the
+    persisted response's `serialized_engine_state` is value-equal to it
+    (see `_persisted_response_matches_prepared(...)`); a second RPC round
+    trip would add nothing but latency and an extra failure point.
+    """
+    prepared = prepare_ba201_decision(
+        user_email,
+        attempt_id=attempt_id,
+        selected_option_id=selected_option_id,
+        idempotency_key=idempotency_key,
+        client=client,
+        certification_exam_name=certification_exam_name,
+        simulation_id=simulation_id,
+    )
+    outcome = submit_prepared_ba201_decision(user_email, prepared, client=client)
+
+    content = _load_default_scenario_content(
+        certification_exam_name=prepared.certification_exam_name,
+        simulation_id=prepared.simulation_id,
+    )
+    try:
+        persisted_run = replay_serialized_run(content, prepared.reconstruct_state_after())
+    except ScenarioEngineError as exc:
+        logger.exception("BA-201 persisted post-decision engine state failed replay validation")
+        raise ScenarioLearnerStateError(
+            "The saved progress for this scenario could not be restored."
+        ) from exc
+
+    return _build_attempt_view(
+        run=persisted_run,
+        attempt_id=outcome.attempt_id,
+        is_new_attempt=False,
+        lifecycle_status=outcome.attempt_status,
     )

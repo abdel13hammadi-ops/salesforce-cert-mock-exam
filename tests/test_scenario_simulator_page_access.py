@@ -61,15 +61,34 @@ _LEARNER_EMAIL = "learner@example.com"
 _FEATURE_NAME = "Scenario Simulator"
 
 
+class _FakeFormContext:
+    """Minimal stand-in for the `with st.form(...):` context manager --
+    SIM-VSLICE-02's decision form is now reached on the successful
+    entitlement path, so this fake streamlit must support it even though
+    these tests never exercise actual decision submission."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
 def _make_fake_streamlit():
     return types.SimpleNamespace(
         set_page_config=lambda *args, **kwargs: None,
         info=lambda *args, **kwargs: None,
         warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
         markdown=lambda *args, **kwargs: None,
         caption=lambda *args, **kwargs: None,
         write=lambda *args, **kwargs: None,
         button=lambda *args, **kwargs: False,
+        form=lambda *args, **kwargs: _FakeFormContext(),
+        radio=lambda _label, options, **kwargs: (list(options)[0] if options else None),
+        form_submit_button=lambda *args, **kwargs: False,
+        rerun=lambda: (_ for _ in ()).throw(SystemExit()),
+        session_state={},
         stop=lambda: (_ for _ in ()).throw(SystemExit()),
     )
 
