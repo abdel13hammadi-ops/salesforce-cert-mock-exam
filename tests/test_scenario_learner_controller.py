@@ -37,18 +37,23 @@ from utils.scenario_learner_controller import (
     BA201_SIMULATION_ID,
     PreparedScenarioDecision,
     ScenarioAttemptView,
+    ScenarioCompletionResultView,
     ScenarioDecisionPersistenceOutcome,
+    ScenarioDomainResultView,
     ScenarioLearnerAccessError,
     ScenarioLearnerAttemptNotActiveError,
+    ScenarioLearnerAttemptNotCompletedError,
     ScenarioLearnerAttemptNotFoundError,
     ScenarioLearnerBackendError,
     ScenarioLearnerConflictError,
     ScenarioLearnerContentError,
+    ScenarioLearnerError,
     ScenarioLearnerInvalidOptionError,
     ScenarioLearnerStateError,
     ScenarioLearnerVersionUnavailableError,
     ScenarioOptionView,
     ScenarioSceneView,
+    load_ba201_completion_result,
     prepare_ba201_decision,
     start_or_resume_ba201_attempt,
     submit_ba201_decision,
@@ -2056,6 +2061,760 @@ class PreparedDecisionControllerTests(unittest.TestCase):
         self.assertEqual(len(submit_calls), 1)
         self.assertEqual(submit_calls[0][1]["p_selected_option_id"], "B")
         self.assertEqual(submit_calls[0][1]["p_idempotency_key"], _IDEMPOTENCY_KEY)
+
+
+class CompletionResultControllerTests(unittest.TestCase):
+    """SIM-VSLICE-03: focused tests for `load_ba201_completion_result(...)`.
+
+    All fixtures replay the REAL BA-201 content/engine (never a synthetic
+    stand-in) so these tests also prove the actual pinned-version-resolution
+    and replay-cross-validation chain against real scenario data, not just
+    mocked call sequences.
+    """
+
+    def _completed_run_via_distinction(self):
+        """A genuinely-completed run reaching `ending_distinction` (24
+        decisions, empty `recommendedReview`) -- always taking each scene's
+        FIRST declared option, exactly like the existing terminal fixtures
+        elsewhere in this file."""
+        run = _advance_to_scene("s24_golive_readiness")
+        run_after = apply_decision(run, "A")
+        self.assertTrue(run_after.is_complete)
+        self.assertEqual(run_after.terminal_result.ending_id, "ending_distinction")
+        return run_after
+
+    def _completed_run_via_fail(self):
+        """A genuinely-completed run reaching `ending_fail` (non-empty
+        `recommendedReview`, covering every domain) -- always taking each
+        scene's INCORRECT option when one exists."""
+        run = start_scenario_run(_CONTENT)
+        steps = 0
+        while not run.is_complete:
+            scene = get_current_scene(run)
+            incorrect = [option for option in scene.decision.options if not option.is_correct]
+            option = incorrect[0] if incorrect else scene.decision.options[-1]
+            run = apply_decision(run, option.id)
+            steps += 1
+            self.assertLess(steps, 60, "runaway fixture loop")
+        self.assertEqual(run.terminal_result.ending_id, "ending_fail")
+        return run
+
+    def _make_completed_client(
+        self,
+        *,
+        run_after,
+        attempt_id=None,
+        version_id=None,
+        scenario_id=None,
+        status: str = "completed",
+        is_active: bool = True,
+        current_published_version_id=None,
+        version_scenario_id=None,
+        version_engine_version=None,
+        version_canonical_content_sha256=None,
+        **row_overrides,
+    ):
+        """SIM-VSLICE-03A: `version_scenario_id`/`version_engine_version`/
+        `version_canonical_content_sha256` independently control the
+        `scenario_versions` row's OWN identity fields -- distinct from the
+        completed ATTEMPT's own `scenario_id`/`engine_version`/
+        `scenario_content_sha256` (set via ordinary `row_overrides`, exactly
+        as before). By default the `scenario_versions` row's identity
+        fields exactly match both the attempt and the real local BA-201
+        content, so every existing/positive fixture keeps passing
+        unchanged; individual identity-chain tests override one field at a
+        time to prove each independent check in
+        `_resolve_pinned_scenario_version(...)`.
+        """
+        attempt_id = attempt_id or str(uuid.uuid4())
+        version_id = version_id or str(uuid.uuid4())
+        scenario_id = scenario_id or str(uuid.uuid4())
+
+        client = FakeSupabase()
+        client.set_table_rows(
+            "scenarios",
+            [
+                {
+                    "id": scenario_id,
+                    "simulation_id": _CONTENT.simulation_id,
+                    "is_active": is_active,
+                    "current_published_version_id": current_published_version_id,
+                }
+            ],
+        )
+        client.set_table_rows(
+            "scenario_versions",
+            [
+                {
+                    "id": version_id,
+                    "scenario_id": (version_scenario_id if version_scenario_id is not None else scenario_id),
+                    "version": _CONTENT.version,
+                    "engine_version": (
+                        version_engine_version if version_engine_version is not None else ENGINE_VERSION
+                    ),
+                    "canonical_content_sha256": (
+                        version_canonical_content_sha256
+                        if version_canonical_content_sha256 is not None
+                        else _CONTENT.canonical_content_sha256
+                    ),
+                }
+            ],
+        )
+        defaults = {
+            "scenario_id": scenario_id,
+            "terminal_ending_id": (run_after.terminal_result.ending_id if run_after.is_complete else None),
+            "terminal_result_snapshot": (
+                serialize_terminal_result(run_after.terminal_result) if run_after.is_complete else None
+            ),
+        }
+        defaults.update(row_overrides)
+        row = _attempt_row(
+            attempt_id=attempt_id,
+            version_id=version_id,
+            run=run_after,
+            status=status,
+            **defaults,
+        )
+        client.set_rpc_response("get_scenario_attempt_v1", [row])
+        return client, attempt_id, version_id, scenario_id
+
+    # -- 1/2: exact attempt lookup + a completed attempt is accepted --------
+
+    def test_loads_exact_attempt_by_email_and_attempt_id(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(run_after=run_after)
+
+        load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        attempt_calls = [call for call in client.rpc_calls if call[0] == "get_scenario_attempt_v1"]
+        self.assertEqual(len(attempt_calls), 1)
+        self.assertEqual(attempt_calls[0][1]["p_user_email"], _LEARNER_EMAIL_NORMALIZED)
+        self.assertEqual(attempt_calls[0][1]["p_attempt_id"], attempt_id)
+
+    def test_completed_attempt_is_accepted_and_fields_match_engine_output(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(run_after=run_after)
+
+        view = load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        terminal = run_after.terminal_result
+        self.assertEqual(view.scenario_title, _CONTENT.title)
+        self.assertEqual(view.certification_exam_name, _CONTENT.certification_exam_name)
+        self.assertEqual(view.completion_heading, "Scenario complete")
+        self.assertEqual(view.ending_title, terminal.score_band)
+        self.assertEqual(view.ending_narrative, terminal.narrative)
+        self.assertEqual(view.recommended_review_domains, ())
+
+        expected_total = sum(snap.total_count for snap in terminal.domain_performance)
+        expected_correct = sum(snap.correct_count for snap in terminal.domain_performance)
+        self.assertEqual(view.decisions_total, expected_total)
+        self.assertEqual(view.decisions_correct, expected_correct)
+        self.assertAlmostEqual(view.accuracy_percentage, round(expected_correct / expected_total * 100.0, 1))
+
+        domain_labels = {domain.id: domain.label for domain in _CONTENT.domains}
+        self.assertEqual(len(view.domain_breakdown), len(terminal.domain_performance))
+        for entry, snapshot in zip(view.domain_breakdown, terminal.domain_performance):
+            self.assertEqual(entry.domain_label, domain_labels[snapshot.domain_id])
+            self.assertEqual(entry.correct_count, snapshot.correct_count)
+            self.assertEqual(entry.total_count, snapshot.total_count)
+            self.assertAlmostEqual(
+                entry.accuracy_percentage, round(snapshot.accuracy * 100.0, 1)
+            )
+
+    # -- 3/4: in-progress / abandoned attempts are rejected ------------------
+
+    def test_in_progress_attempt_is_rejected(self):
+        run = start_scenario_run(_CONTENT)
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run, status="in_progress"
+        )
+        with self.assertRaises(ScenarioLearnerAttemptNotCompletedError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    def test_abandoned_attempt_is_rejected(self):
+        run = start_scenario_run(_CONTENT)
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run, status="abandoned"
+        )
+        with self.assertRaises(ScenarioLearnerAttemptNotCompletedError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- 5: foreign-owner / missing attempt is rejected -----------------------
+
+    def test_foreign_or_missing_attempt_is_rejected(self):
+        client = FakeSupabase()
+        attempt_id = str(uuid.uuid4())
+        client.set_rpc_raise(
+            "get_scenario_attempt_v1",
+            f"attempt_not_found: scenario_attempts {attempt_id} not found or not owned",
+        )
+        with self.assertRaises(ScenarioLearnerAttemptNotFoundError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- 6/7: missing terminal ending id / snapshot are rejected --------------
+
+    def test_missing_terminal_ending_id_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after, terminal_ending_id=None
+        )
+        with self.assertRaises(ScenarioLearnerStateError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    def test_missing_terminal_result_snapshot_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after, terminal_result_snapshot=None
+        )
+        with self.assertRaises(ScenarioLearnerStateError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    def test_nonnull_current_scene_id_on_completed_attempt_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after, current_scene_id="s01_kickoff"
+        )
+        with self.assertRaises(ScenarioLearnerStateError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- 8: malformed terminal persisted state is rejected --------------------
+
+    def test_tampered_terminal_result_snapshot_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        tampered_snapshot = dict(serialize_terminal_result(run_after.terminal_result))
+        tampered_snapshot["scoreBand"] = "Pass with Distinction (tampered)"
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after, terminal_result_snapshot=tampered_snapshot
+        )
+        with self.assertRaises(ScenarioLearnerStateError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    def test_tampered_serialized_engine_state_decision_history_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        tampered_state = dict(serialize_run_snapshot(run_after))
+        # Append a bogus extra decision after the run already reached
+        # EVALUATE_ENDING -- replay must reject this, never silently ignore it.
+        tampered_state["decisionHistory"] = list(tampered_state["decisionHistory"]) + [
+            {"sequenceNumber": 999, "sceneId": "s01_kickoff", "optionId": "A"}
+        ]
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after, serialized_engine_state=tampered_state
+        )
+        with self.assertRaises(ScenarioLearnerStateError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- 9/10: pinned scenario_version_id, not the current pointer -----------
+
+    def test_pinned_version_selects_content_ignoring_current_pointer(self):
+        run_after = self._completed_run_via_distinction()
+        other_version_id = str(uuid.uuid4())
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            # A DIFFERENT id is "current" -- load_ba201_completion_result
+            # must never consult this pointer at all.
+            current_published_version_id=other_version_id,
+        )
+        view = load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+        self.assertEqual(view.scenario_title, _CONTENT.title)
+
+    def test_historical_completed_version_remains_viewable_when_scenario_inactive(self):
+        """A learner must remain able to view a historical completed result
+        even after the scenario itself becomes inactive or its current
+        published pointer moves on -- neither `is_active` nor
+        `current_published_version_id` is ever consulted by this function."""
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            is_active=False,
+            current_published_version_id=None,
+        )
+        view = load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+        self.assertEqual(view.ending_title, run_after.terminal_result.score_band)
+
+    # -- 11: pinned version belonging to another scenario is rejected --------
+
+    def test_pinned_version_belonging_to_another_scenario_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        version_id = str(uuid.uuid4())
+        real_scenario_id = str(uuid.uuid4())
+        other_scenario_id = str(uuid.uuid4())
+
+        client = FakeSupabase()
+        # The scenario_versions row exists, but its owning `scenarios` row
+        # belongs to a DIFFERENT simulation_id entirely.
+        client.set_table_rows(
+            "scenarios",
+            [
+                {
+                    "id": other_scenario_id,
+                    "simulation_id": "some-other-simulation-id",
+                    "is_active": True,
+                    "current_published_version_id": version_id,
+                }
+            ],
+        )
+        client.set_table_rows(
+            "scenario_versions",
+            [{"id": version_id, "scenario_id": other_scenario_id, "version": _CONTENT.version}],
+        )
+        attempt_id = str(uuid.uuid4())
+        row = _attempt_row(
+            attempt_id=attempt_id,
+            version_id=version_id,
+            run=run_after,
+            status="completed",
+            scenario_id=real_scenario_id,
+            terminal_ending_id=run_after.terminal_result.ending_id,
+            terminal_result_snapshot=serialize_terminal_result(run_after.terminal_result),
+        )
+        client.set_rpc_response("get_scenario_attempt_v1", [row])
+
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- 12: DB version string not found in the repository catalog -----------
+
+    def test_pinned_version_not_in_local_catalog_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, version_id, scenario_id = self._make_completed_client(run_after=run_after)
+        # Overwrite the scenario_versions row's version string so it no
+        # longer matches anything in the local repository catalog -- every
+        # OTHER identity field still matches, so the resolver itself
+        # succeeds and the failure is isolated to the subsequent local
+        # catalog load.
+        client.set_table_rows(
+            "scenario_versions",
+            [
+                {
+                    "id": version_id,
+                    "scenario_id": scenario_id,
+                    "version": "9.9.9-not-a-real-version",
+                    "engine_version": ENGINE_VERSION,
+                    "canonical_content_sha256": _CONTENT.canonical_content_sha256,
+                }
+            ],
+        )
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    def test_pinned_version_content_hash_mismatch_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            scenario_content_sha256="0" * 64,
+        )
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    def test_pinned_scenario_versions_row_missing_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(run_after=run_after)
+        client.set_table_rows("scenario_versions", [])
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- 13: ending id must exist in the pinned content -----------------------
+
+    def test_ending_id_not_found_in_pinned_content_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            terminal_ending_id="ending_does_not_exist",
+        )
+        with self.assertRaises(ScenarioLearnerStateError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- 14: no backend identifiers or raw snapshots are exposed -------------
+
+    def test_view_exposes_no_backend_identifiers_or_raw_snapshot(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, version_id, scenario_id = self._make_completed_client(run_after=run_after)
+
+        view = load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        forbidden_field_names = {
+            "attempt_id",
+            "scenario_version_id",
+            "idempotency_key",
+            "sequence_number",
+            "next_sequence_number",
+            "raw_snapshot",
+            "terminal_result_snapshot",
+            "canonical_content_sha256",
+            "engine_version",
+            "state",
+            "flags",
+        }
+        view_field_names = {field.name for field in dataclasses.fields(view)}
+        self.assertEqual(view_field_names & forbidden_field_names, set())
+
+        domain_field_names = {field.name for field in dataclasses.fields(ScenarioDomainResultView)}
+        self.assertEqual(domain_field_names & forbidden_field_names, set())
+
+        # None of the actual backend identifier VALUES leak into any
+        # rendered string field either.
+        rendered_text = " ".join(
+            [
+                view.scenario_title,
+                view.certification_exam_name,
+                view.completion_heading,
+                view.ending_title,
+                view.ending_narrative,
+                *view.recommended_review_domains,
+                *(entry.domain_label for entry in view.domain_breakdown),
+            ]
+        )
+        self.assertNotIn(attempt_id, rendered_text)
+        self.assertNotIn(version_id, rendered_text)
+        self.assertNotIn(scenario_id, rendered_text)
+
+    # -- 15: score/percentage math is exactly the engine's own math ----------
+
+    def test_accuracy_percentage_is_exactly_correct_over_total(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(run_after=run_after)
+
+        view = load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        self.assertIsNotNone(view.decisions_total)
+        self.assertIsNotNone(view.decisions_correct)
+        self.assertIsNotNone(view.accuracy_percentage)
+        expected = round(view.decisions_correct / view.decisions_total * 100.0, 1)
+        self.assertEqual(view.accuracy_percentage, expected)
+
+    # -- 16: missing/empty remediation is omitted, never invented ------------
+
+    def test_empty_recommended_review_is_empty_tuple_not_invented(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(run_after=run_after)
+        view = load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+        self.assertEqual(view.recommended_review_domains, ())
+
+    def test_nonempty_recommended_review_resolves_to_real_domain_labels(self):
+        run_after = self._completed_run_via_fail()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(run_after=run_after)
+        view = load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        domain_labels = {domain.id: domain.label for domain in _CONTENT.domains}
+        expected_labels = tuple(
+            domain_labels[domain_id] for domain_id in run_after.terminal_result.recommended_review
+        )
+        self.assertEqual(view.recommended_review_domains, expected_labels)
+        self.assertGreater(len(view.recommended_review_domains), 0)
+
+    # -- ownership: get_attempt is called with the exact learner email -------
+
+    def test_missing_email_rejected_before_persistence_access(self):
+        client = FakeSupabase()
+        with self.assertRaises(ScenarioLearnerAccessError):
+            load_ba201_completion_result(None, attempt_id=str(uuid.uuid4()), client=client)
+        self.assertEqual(client.rpc_calls, [])
+        self.assertEqual(client.table_calls, [])
+
+    # -- backend/client failures are mapped to ScenarioLearnerBackendError ---
+
+    def test_attempt_lookup_backend_failure_is_mapped(self):
+        client = FakeSupabase()
+        client.set_rpc_raise("get_scenario_attempt_v1", "some_unmapped_failure: boom")
+        with self.assertRaises(ScenarioLearnerBackendError):
+            load_ba201_completion_result(
+                _LEARNER_EMAIL_RAW, attempt_id=str(uuid.uuid4()), client=client
+            )
+
+    def test_pinned_version_lookup_backend_failure_is_mapped(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(run_after=run_after)
+        client.set_table_raise("scenario_versions", RuntimeError("connection reset"))
+        with self.assertRaises(ScenarioLearnerBackendError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    def test_client_initialization_failure_is_mapped(self):
+        with patch(
+            "utils.scenario_learner_controller._default_client",
+            side_effect=ScenarioLearnerBackendError("client init failed"),
+        ):
+            with self.assertRaises(ScenarioLearnerBackendError):
+                load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=str(uuid.uuid4()))
+
+    # -- every raised exception is a ScenarioLearnerError subclass -----------
+
+    def test_all_mapped_exceptions_are_scenario_learner_errors(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after, terminal_ending_id=None
+        )
+        with self.assertRaises(ScenarioLearnerError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # =========================================================================
+    # SIM-VSLICE-03A: pinned attempt/version identity chain hardening.
+    #
+    # `_resolve_pinned_scenario_version(...)`'s expected
+    # scenario_id/engine_version/canonical_content_sha256 now come from the
+    # COMPLETED ATTEMPT ITSELF, not merely from a pinned `scenario_versions.id`
+    # plus its owning scenario's `simulation_id`.
+    # =========================================================================
+
+    # -- Requirement 1: matching identity succeeds ---------------------------
+
+    def test_matching_attempt_scenario_id_and_version_id_succeeds(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(run_after=run_after)
+
+        view = load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        self.assertEqual(view.scenario_title, _CONTENT.title)
+        self.assertEqual(view.ending_title, run_after.terminal_result.score_band)
+
+    # -- Requirement 2: version row scenario_id mismatch ----------------------
+
+    def test_version_row_scenario_id_mismatch_is_rejected_before_content_loading(self):
+        """The scenario_versions row's `id` matches the attempt's pinned
+        `scenario_version_id`, but its OWN `scenario_id` does not match
+        `attempt.scenario_id` -- rejected before any local content is
+        loaded from the catalog."""
+        run_after = self._completed_run_via_distinction()
+        other_scenario_id = str(uuid.uuid4())
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            version_scenario_id=other_scenario_id,
+        )
+
+        with patch(
+            "utils.scenario_learner_controller.load_resolved_scenario_content"
+        ) as load_content_spy:
+            with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+                load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+        load_content_spy.assert_not_called()
+
+    # -- Requirement 3: a different scenario row with the right ---------------
+    # -- simulation_id cannot satisfy the attempt's own relationship ----------
+
+    def test_different_scenario_row_with_expected_simulation_id_cannot_satisfy_relationship(self):
+        """Even though a DIFFERENT scenario row exists carrying BA-201's own
+        `simulation_id`, and the pinned scenario_versions row belongs to
+        THAT decoy scenario, the version must still be rejected -- it must
+        belong to `attempt.scenario_id` itself, never merely to "some
+        scenario row that happens to carry the right simulation_id"."""
+        run_after = self._completed_run_via_distinction()
+        real_scenario_id = str(uuid.uuid4())
+        decoy_scenario_id = str(uuid.uuid4())
+        version_id = str(uuid.uuid4())
+        attempt_id = str(uuid.uuid4())
+
+        client = FakeSupabase()
+        client.set_table_rows(
+            "scenarios",
+            [
+                {
+                    "id": real_scenario_id,
+                    "simulation_id": _CONTENT.simulation_id,
+                    "is_active": True,
+                    "current_published_version_id": None,
+                },
+                {
+                    "id": decoy_scenario_id,
+                    "simulation_id": _CONTENT.simulation_id,
+                    "is_active": True,
+                    "current_published_version_id": version_id,
+                },
+            ],
+        )
+        # The pinned version row belongs to the DECOY scenario, not the
+        # attempt's own real scenario_id.
+        client.set_table_rows(
+            "scenario_versions",
+            [
+                {
+                    "id": version_id,
+                    "scenario_id": decoy_scenario_id,
+                    "version": _CONTENT.version,
+                    "engine_version": ENGINE_VERSION,
+                    "canonical_content_sha256": _CONTENT.canonical_content_sha256,
+                }
+            ],
+        )
+        row = _attempt_row(
+            attempt_id=attempt_id,
+            version_id=version_id,
+            run=run_after,
+            status="completed",
+            scenario_id=real_scenario_id,
+            terminal_ending_id=run_after.terminal_result.ending_id,
+            terminal_result_snapshot=serialize_terminal_result(run_after.terminal_result),
+        )
+        client.set_rpc_response("get_scenario_attempt_v1", [row])
+
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+        # No fallback to the decoy scenario's row occurred: the
+        # scenario_versions identity filter (id + attempt.scenario_id)
+        # never matched it in the first place.
+        self.assertNotIn("scenarios", client.table_calls)
+
+    # -- Requirement 4: missing owner scenarios row ---------------------------
+
+    def test_missing_attempt_scenario_owner_row_is_rejected(self):
+        """The scenario_versions row correctly matches both `id` and
+        `scenario_id`, but no owning `scenarios` row exists for
+        `attempt.scenario_id` at all."""
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(run_after=run_after)
+        client.set_table_rows("scenarios", [])
+
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- Requirement 5: scenario simulation_id mismatch -----------------------
+
+    def test_scenario_simulation_id_mismatch_is_rejected(self):
+        """The owning `scenarios` row exists for `attempt.scenario_id`, but
+        its own `simulation_id` is not BA-201's."""
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, scenario_id = self._make_completed_client(run_after=run_after)
+        client.set_table_rows(
+            "scenarios",
+            [
+                {
+                    "id": scenario_id,
+                    "simulation_id": "some-other-simulation-id",
+                    "is_active": True,
+                    "current_published_version_id": None,
+                }
+            ],
+        )
+
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- Requirement 6: version row engine_version mismatch -------------------
+
+    def test_version_row_engine_version_mismatch_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            version_engine_version="scenario-engine-v0-legacy",
+        )
+
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- Requirement 7: version row canonical_content_sha256 mismatch --------
+
+    def test_version_row_canonical_content_sha256_mismatch_is_rejected(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            version_canonical_content_sha256="1" * 64,
+        )
+
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- Requirement 8/9: exact match still loads historical results ---------
+    # -- independent of active/current-pointer state -------------------------
+
+    def test_exact_matching_identity_loads_result_when_scenario_inactive_and_pointer_elsewhere(self):
+        run_after = self._completed_run_via_distinction()
+        other_version_id = str(uuid.uuid4())
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            is_active=False,
+            current_published_version_id=other_version_id,
+        )
+
+        view = load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        self.assertEqual(view.ending_title, run_after.terminal_result.score_band)
+
+    def test_exact_matching_identity_loads_result_when_current_pointer_is_null(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            is_active=True,
+            current_published_version_id=None,
+        )
+
+        view = load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        self.assertEqual(view.scenario_title, _CONTENT.title)
+
+    # -- Requirement 11: backend failure on the SECOND identity lookup -------
+
+    def test_scenario_ownership_lookup_backend_failure_is_mapped(self):
+        """A backend failure on the SECOND identity query (`scenarios`)
+        must also map to `ScenarioLearnerBackendError`, exactly like a
+        failure on the first (`scenario_versions`) already does."""
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(run_after=run_after)
+        client.set_table_raise("scenarios", RuntimeError("connection reset"))
+
+        with self.assertRaises(ScenarioLearnerBackendError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+    # -- Requirement 12: no fallback version lookup after any mismatch -------
+
+    def test_no_fallback_version_lookup_after_scenario_id_mismatch(self):
+        run_after = self._completed_run_via_distinction()
+        other_scenario_id = str(uuid.uuid4())
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            version_scenario_id=other_scenario_id,
+        )
+
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        self.assertEqual(client.table_calls.count("scenario_versions"), 1)
+        self.assertNotIn("scenarios", client.table_calls)
+
+    def test_no_fallback_version_lookup_after_engine_version_mismatch(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            version_engine_version="scenario-engine-v0-legacy",
+        )
+
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        self.assertEqual(client.table_calls.count("scenario_versions"), 1)
+        self.assertEqual(client.table_calls.count("scenarios"), 1)
+
+    def test_no_fallback_version_lookup_after_content_hash_mismatch(self):
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            version_canonical_content_sha256="2" * 64,
+        )
+
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        self.assertEqual(client.table_calls.count("scenario_versions"), 1)
+        self.assertEqual(client.table_calls.count("scenarios"), 1)
+
+    # -- SIM-VSLICE-03A: attempt-level engine_version fail-closed check ------
+
+    def test_attempt_engine_version_mismatch_with_current_engine_is_rejected_before_any_lookup(self):
+        """A completed attempt whose own pinned `engine_version` is not the
+        CURRENT engine's own `ENGINE_VERSION` constant is rejected
+        immediately -- before any pinned-version-resolution I/O even
+        begins. `ENGINE_VERSION` is the one authoritative value
+        `utils.scenario_engine` exposes for this comparison; this is a
+        strict equality check against it, not an invented compatibility
+        policy."""
+        run_after = self._completed_run_via_distinction()
+        client, attempt_id, _version_id, _scenario_id = self._make_completed_client(
+            run_after=run_after,
+            engine_version="scenario-engine-v0-legacy",
+        )
+
+        with self.assertRaises(ScenarioLearnerVersionUnavailableError):
+            load_ba201_completion_result(_LEARNER_EMAIL_RAW, attempt_id=attempt_id, client=client)
+
+        self.assertNotIn("scenario_versions", client.table_calls)
+        self.assertNotIn("scenarios", client.table_calls)
 
 
 if __name__ == "__main__":

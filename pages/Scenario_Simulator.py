@@ -94,15 +94,47 @@ directly from that outcome:
 - A CONFIRMED TERMINAL outcome clears the pending request, stores a small,
   immutable, EMAIL-BOUND completion marker
   (`st.session_state[_COMPLETED_ATTEMPT_STATE_KEY]`), and reruns; the NEXT
-  script pass renders the minimal "Scenario complete" state directly from
-  that marker and deliberately never calls
-  `start_or_resume_ba201_attempt(...)` again (that RPC never resumes a
-  completed attempt, so calling it here would silently create a brand-new
-  replacement BA-201 attempt instead of leaving the learner's completed
-  attempt as this session's terminal state). The marker is checked against
-  the CURRENT verified learner email on every read
-  (`_get_completed_marker(...)`); a marker left over for a different
+  script pass loads and renders the full persisted results experience (see
+  "Completion results" below) directly from that marker's `attempt_id`, and
+  deliberately never calls `start_or_resume_ba201_attempt(...)` again (that
+  RPC never resumes a completed attempt, so calling it here would silently
+  create a brand-new replacement BA-201 attempt instead of leaving the
+  learner's completed attempt as this session's terminal state). The
+  marker is checked against the CURRENT verified learner email on every
+  read (`_get_completed_marker(...)`); a marker left over for a different
   learner is discarded rather than shown.
+
+Completion results (SIM-VSLICE-03)
+-----------------------------------
+The completion marker is transient navigation/session coordination ONLY --
+it identifies WHICH `attempt_id` to load a result for, it is never itself
+the result authority, and none of its fields are ever rendered directly.
+Every script pass that finds a marker calls
+`utils.scenario_learner_controller.load_ba201_completion_result(...)`
+fresh, which re-fetches and independently re-validates the persisted
+attempt from V68 (see that function's own docstring for the full
+validation chain, including resolving content via the attempt's PINNED
+`scenario_version_id`, never whichever version happens to be current) and
+returns a small, immutable `ScenarioCompletionResultView` -- this page
+renders ONLY that view's fields, never a raw snapshot, backend identifier,
+or session-state value.
+
+Marker-clearing vs. marker-preserving on a completion-result failure:
+
+- `ScenarioLearnerAttemptNotFoundError` / `ScenarioLearnerAttemptNotCompletedError`
+  mean the marker's claim is simply WRONG (a missing/foreign attempt, or
+  one that is actually still in-progress/abandoned) -- the marker is
+  cleared immediately and this same script pass falls through to the
+  normal pending-decision / `start_or_resume_ba201_attempt(...)` flow
+  below, exactly as if no marker had ever been stored.
+- Every other `ScenarioLearnerError` (a pinned version temporarily
+  unavailable, a malformed persisted terminal state, or an uncertain
+  backend/network failure) is treated as a TEMPORARY rendering problem,
+  not proof the marker is wrong -- the marker is deliberately left in
+  place and a safe "temporarily unavailable" state is shown instead,
+  never falling through to `start_or_resume_ba201_attempt(...)` (which
+  would otherwise silently create a brand-new replacement attempt for an
+  attempt that may well still be completed).
 
 All persistence, catalog resolution, runtime restoration, decision
 validation, scoring, and scene transition are delegated entirely to
@@ -131,9 +163,11 @@ from utils.navigation import CERTBOUND_ENABLE_SCENARIO_SIMULATOR, is_feature_fla
 from utils.scenario_learner_controller import (
     PreparedScenarioDecision,
     ScenarioAttemptCompletionMarker,
+    ScenarioCompletionResultView,
     ScenarioDecisionPersistenceOutcome,
     ScenarioLearnerAccessError,
     ScenarioLearnerAttemptNotActiveError,
+    ScenarioLearnerAttemptNotCompletedError,
     ScenarioLearnerAttemptNotFoundError,
     ScenarioLearnerBackendError,
     ScenarioLearnerConflictError,
@@ -142,6 +176,7 @@ from utils.scenario_learner_controller import (
     ScenarioLearnerInvalidOptionError,
     ScenarioLearnerStateError,
     ScenarioLearnerVersionUnavailableError,
+    load_ba201_completion_result,
     prepare_ba201_decision,
     start_or_resume_ba201_attempt,
     submit_prepared_ba201_decision,
@@ -180,6 +215,52 @@ def _render_unavailable(message: str) -> None:
         action_label="Return to Practice",
         action_href="pages/Practice.py",
     )
+
+
+def _render_completion_result(view: ScenarioCompletionResultView) -> None:
+    """SIM-VSLICE-03: render the persisted, validated results of the
+    learner's completed BA-201 attempt.
+
+    Every value rendered here comes directly from `view` -- never from
+    `st.session_state`, never recomputed on this page, and never a raw
+    backend identifier, snapshot, or hash (see
+    `ScenarioCompletionResultView`'s own docstring for the full field
+    list/rationale). A score/percentage/domain row is rendered only when
+    the corresponding `view` field is not `None` -- nothing here invents a
+    number the controller did not already supply. The only navigation
+    control offered is a single, safe "Return to Practice" link; no
+    restart/new-attempt control is offered (a restart workflow is
+    explicitly out of scope for this task).
+    """
+    st.markdown(f"### {view.completion_heading}")
+    st.caption(f"{view.scenario_title} · {view.certification_exam_name}")
+
+    st.markdown(f"**{view.ending_title}**")
+    st.write(view.ending_narrative)
+
+    if view.decisions_correct is not None and view.decisions_total is not None:
+        summary = f"{view.decisions_correct} of {view.decisions_total} decisions scored as correct"
+        if view.accuracy_percentage is not None:
+            summary += f" ({view.accuracy_percentage:.0f}%)"
+        st.write(summary)
+
+    if view.domain_breakdown:
+        st.markdown("**Domain performance**")
+        for domain in view.domain_breakdown:
+            if domain.accuracy_percentage is not None:
+                st.write(
+                    f"- {domain.domain_label}: {domain.correct_count} of "
+                    f"{domain.total_count} correct ({domain.accuracy_percentage:.0f}%)"
+                )
+            else:
+                st.write(f"- {domain.domain_label}: no decisions recorded")
+
+    if view.recommended_review_domains:
+        st.markdown("**Recommended review areas**")
+        for domain_label in view.recommended_review_domains:
+            st.write(f"- {domain_label}")
+
+    st.page_link("pages/Practice.py", label="Return to Practice", icon="📚")
 
 
 def _require_premium_learner_email() -> str:
@@ -471,13 +552,52 @@ render_page_header(
 )
 
 _completed_marker = _get_completed_marker(user_email)
+_completion_result: Optional[ScenarioCompletionResultView] = None
 if _completed_marker is not None:
-    render_empty_state(
-        "Scenario complete",
-        "You've reached the end of this scenario. Detailed results are not part of this preview yet.",
-        action_label="Return to Practice",
-        action_href="pages/Practice.py",
-    )
+    try:
+        _completion_result = load_ba201_completion_result(
+            user_email, attempt_id=_completed_marker.attempt_id
+        )
+    except (ScenarioLearnerAttemptNotFoundError, ScenarioLearnerAttemptNotCompletedError) as exc:
+        # SIM-VSLICE-03: the marker's claim is simply WRONG -- a
+        # missing/foreign attempt, or one that is actually still
+        # in-progress/abandoned. Clear it and fall through to the normal
+        # pending-decision / start-or-resume flow below, exactly as if no
+        # marker had ever been stored (see module docstring).
+        log_and_get_user_message(
+            "Scenario Simulator: completion marker referenced an invalid or non-completed attempt",
+            "",
+            exc=exc,
+        )
+        _clear_completed_marker()
+    except ScenarioLearnerAccessError as exc:
+        message = log_and_get_user_message(
+            "Scenario Simulator: missing/invalid learner email while loading completion result",
+            "Please log in again to continue.",
+            exc=exc,
+        )
+        st.warning(message)
+        st.stop()
+    except ScenarioLearnerError as exc:
+        # SIM-VSLICE-03: a pinned version temporarily unavailable, a
+        # malformed persisted terminal state, or an uncertain
+        # backend/network failure -- all treated as a TEMPORARY rendering
+        # problem, never as proof the marker itself is wrong. The marker
+        # is deliberately preserved so the learner can retry (e.g. by
+        # refreshing) once the underlying problem clears, and this page
+        # never falls through to start_or_resume_ba201_attempt(...) here
+        # (which would otherwise silently create a brand-new replacement
+        # attempt for what may still be a genuinely completed one).
+        message = log_and_get_user_message(
+            "Scenario Simulator: completion result could not be loaded",
+            SAFE_UNAVAILABLE_MESSAGE,
+            exc=exc,
+        )
+        _render_unavailable(message)
+        st.stop()
+
+if _completion_result is not None:
+    _render_completion_result(_completion_result)
 else:
     _pending_decision = _get_pending_prepared_decision(user_email)
     if _pending_decision is not None:

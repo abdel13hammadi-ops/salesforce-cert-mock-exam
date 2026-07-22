@@ -53,6 +53,7 @@ from utils.scenario_learner_controller import (
     ENGINE_VERSION,
     PreparedScenarioDecision,
     ScenarioAttemptView,
+    ScenarioCompletionResultView,
     ScenarioDecisionPersistenceOutcome,
     ScenarioLearnerBackendError,
     ScenarioLearnerConflictError,
@@ -133,6 +134,29 @@ def _make_prepared(
     )
 
 
+def _make_completion_result(
+    *,
+    scenario_title: str = "The Meridian Health Salesforce Rollout",
+    certification_exam_name: str = "Salesforce Certified Business Analyst",
+) -> ScenarioCompletionResultView:
+    """A minimal, valid `ScenarioCompletionResultView` -- this file is
+    scoped to decision-submission/idempotency/marker-lifecycle behavior,
+    never to `load_ba201_completion_result(...)`'s own field-mapping rules
+    (see `tests/test_scenario_learner_controller.py` for those)."""
+    return ScenarioCompletionResultView(
+        scenario_title=scenario_title,
+        certification_exam_name=certification_exam_name,
+        completion_heading="Scenario complete",
+        ending_title="Pass",
+        ending_narrative="The project goes live on schedule.",
+        decisions_correct=3,
+        decisions_total=4,
+        accuracy_percentage=75.0,
+        domain_breakdown=(),
+        recommended_review_domains=(),
+    )
+
+
 def _make_outcome(
     *,
     attempt_id: str = _ATTEMPT_ID,
@@ -178,6 +202,7 @@ def _make_fake_streamlit(
         markdown=MagicMock(),
         caption=MagicMock(),
         write=MagicMock(),
+        page_link=MagicMock(),
         button=MagicMock(return_value=retry_clicked),
         form=MagicMock(return_value=_FakeFormContext()),
         radio=MagicMock(side_effect=_radio),
@@ -201,6 +226,8 @@ def _exec_page_decision(
     prepare_return: Optional[PreparedScenarioDecision] = None,
     submit_side_effect=None,
     submit_return: Optional[ScenarioDecisionPersistenceOutcome] = None,
+    completion_result_side_effect=None,
+    completion_result_return: Optional[ScenarioCompletionResultView] = None,
 ):
     fake_st = _make_fake_streamlit(
         session_state=session_state,
@@ -223,6 +250,18 @@ def _exec_page_decision(
             return_value=submit_return if submit_return is not None else _make_outcome(attempt_id=attempt_view.attempt_id)
         )
 
+    # SIM-VSLICE-03: this file remains scoped to decision-submission /
+    # idempotency / marker-lifecycle behavior -- `load_ba201_completion_result(...)`'s
+    # own field-mapping/validation rules are covered exclusively by
+    # `tests/test_scenario_learner_controller.py`. This mock's ONLY job here
+    # is to let a completion-marker-bearing rerun render successfully (or
+    # exercise a specific marker-preserving/clearing error path) without
+    # ever reaching a real Supabase client.
+    if completion_result_side_effect is not None:
+        completion_result_mock = MagicMock(side_effect=completion_result_side_effect)
+    else:
+        completion_result_mock = MagicMock(return_value=completion_result_return or _make_completion_result())
+
     with patch.dict(sys.modules, {"streamlit": fake_st}):
         with patch("utils.access_control.require_paid_access", return_value=True), \
              patch("utils.access_control.get_current_user_email", return_value=learner_email), \
@@ -232,7 +271,8 @@ def _exec_page_decision(
              patch("utils.navigation.is_feature_flag_enabled", return_value=True), \
              patch("utils.scenario_learner_controller.start_or_resume_ba201_attempt", start_resume_mock), \
              patch("utils.scenario_learner_controller.prepare_ba201_decision", prepare_mock), \
-             patch("utils.scenario_learner_controller.submit_prepared_ba201_decision", submit_mock):
+             patch("utils.scenario_learner_controller.submit_prepared_ba201_decision", submit_mock), \
+             patch("utils.scenario_learner_controller.load_ba201_completion_result", completion_result_mock):
             spec = importlib.util.spec_from_file_location("scenario_simulator_decision_page_under_test", PAGE_PATH)
             module = importlib.util.module_from_spec(spec)
             exec_exc = None
@@ -240,13 +280,13 @@ def _exec_page_decision(
                 spec.loader.exec_module(module)
             except SystemExit as exc:
                 exec_exc = exc
-            return exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock
+            return exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock, completion_result_mock
 
 
 class DecisionSubmissionIdempotencyTests(unittest.TestCase):
     def test_no_pending_no_completed_renders_form_not_retry_control(self):
         session_state: dict = {}
-        _exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock = _exec_page_decision(
+        _exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock, _completion_mock = _exec_page_decision(
             session_state=session_state, attempt_view=_make_attempt_view(), submitted=False
         )
         start_resume_mock.assert_called_once()
@@ -271,7 +311,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
             stored_before_submit["is_same_object"] = prepared_arg is session_state.get(_PENDING_STATE_KEY)
             return _make_outcome(attempt_id=attempt_view.attempt_id)
 
-        exec_exc, _fake_st, _start_mock, prepare_mock, submit_mock = _exec_page_decision(
+        exec_exc, _fake_st, _start_mock, prepare_mock, submit_mock, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=True,
@@ -299,7 +339,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         prepared = _make_prepared()
 
         # Pass 1: learner intentionally submits; backend result is uncertain.
-        exec_exc_1, _fake_st_1, start_mock_1, _prepare_mock_1, submit_mock_1 = _exec_page_decision(
+        exec_exc_1, _fake_st_1, start_mock_1, _prepare_mock_1, submit_mock_1, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=True,
@@ -314,7 +354,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         # Pass 2: a plain Streamlit rerun -- no learner action at all. Must
         # show the retry control (never the form/start_or_resume), and must
         # NOT mint a new prepared request.
-        exec_exc_2, fake_st_2, start_mock_2, prepare_mock_2, submit_mock_2 = _exec_page_decision(
+        exec_exc_2, fake_st_2, start_mock_2, prepare_mock_2, submit_mock_2, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=False,
@@ -329,7 +369,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
 
         # Pass 3: the learner explicitly retries -- the EXACT SAME prepared
         # object must be resubmitted, and this time it succeeds.
-        exec_exc_3, _fake_st_3, start_mock_3, prepare_mock_3, submit_mock_3 = _exec_page_decision(
+        exec_exc_3, _fake_st_3, start_mock_3, prepare_mock_3, submit_mock_3, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=False,
@@ -350,7 +390,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         called."""
         prepared = _make_prepared()
         session_state = {_PENDING_STATE_KEY: prepared}
-        _exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock = _exec_page_decision(
+        _exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=_make_attempt_view(),
             submitted=False,
@@ -374,7 +414,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         attempt_view = _make_attempt_view()
         prepared = _make_prepared()
 
-        exec_exc, _fake_st, _start_mock, _prepare_mock, submit_mock = _exec_page_decision(
+        exec_exc, _fake_st, _start_mock, _prepare_mock, submit_mock, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=True,
@@ -399,7 +439,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         session_state = {_PENDING_STATE_KEY: other_learners_prepared}
         attempt_view = _make_attempt_view()
 
-        exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock = _exec_page_decision(
+        exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=False,
@@ -422,7 +462,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         session_state = {_PENDING_STATE_KEY: matching_prepared}
         attempt_view = _make_attempt_view()
 
-        exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock = _exec_page_decision(
+        exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=False,
@@ -447,7 +487,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         session_state = {_PENDING_STATE_KEY: prepared}
         different_attempt_view = _make_attempt_view(attempt_id="99999999-9999-4999-8999-999999999999")
 
-        _exec_exc, _fake_st, start_resume_mock, _prepare_mock, _submit_mock = _exec_page_decision(
+        _exec_exc, _fake_st, start_resume_mock, _prepare_mock, _submit_mock, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=different_attempt_view,
             start_resume_return=different_attempt_view,
@@ -473,7 +513,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         ):
             with self.subTest(corrupt_value=corrupt_value):
                 session_state = {_PENDING_STATE_KEY: corrupt_value}
-                exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock = _exec_page_decision(
+                exec_exc, fake_st, start_resume_mock, prepare_mock, submit_mock, _completion_mock = _exec_page_decision(
                     session_state=session_state,
                     attempt_view=_make_attempt_view(),
                     submitted=False,
@@ -490,7 +530,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         for corrupt_value in ({"is_complete": True}, "garbage", 0):
             with self.subTest(corrupt_value=corrupt_value):
                 session_state = {_COMPLETED_STATE_KEY: corrupt_value}
-                exec_exc, fake_st, start_resume_mock, _prepare_mock, _submit_mock = _exec_page_decision(
+                exec_exc, fake_st, start_resume_mock, _prepare_mock, _submit_mock, _completion_mock = _exec_page_decision(
                     session_state=session_state,
                     attempt_view=_make_attempt_view(),
                     submitted=False,
@@ -506,7 +546,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         never succeed."""
         session_state: dict = {}
         attempt_view = _make_attempt_view()
-        _exec_exc, _fake_st, _start_mock, prepare_mock, submit_mock = _exec_page_decision(
+        _exec_exc, _fake_st, _start_mock, prepare_mock, submit_mock, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=True,
@@ -523,7 +563,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         `submit_prepared_ba201_decision(...)` must never even be called."""
         session_state: dict = {}
         attempt_view = _make_attempt_view()
-        _exec_exc, _fake_st, _start_mock, prepare_mock, submit_mock = _exec_page_decision(
+        _exec_exc, _fake_st, _start_mock, prepare_mock, submit_mock, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=True,
@@ -546,7 +586,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         attempt_view = _make_attempt_view()
         completed_outcome = _make_outcome(attempt_id=attempt_view.attempt_id, is_complete=True)
 
-        exec_exc_1, _fake_st_1, start_mock_1, _prepare_mock_1, submit_mock_1 = _exec_page_decision(
+        exec_exc_1, _fake_st_1, start_mock_1, _prepare_mock_1, submit_mock_1, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=True,
@@ -559,7 +599,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
 
         # Next rerun of the same session: must render completion directly
         # and must NEVER call start_or_resume_ba201_attempt(...) again.
-        exec_exc_2, fake_st_2, start_mock_2, prepare_mock_2, submit_mock_2 = _exec_page_decision(
+        exec_exc_2, fake_st_2, start_mock_2, prepare_mock_2, submit_mock_2, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=False,
@@ -594,7 +634,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         # A DIFFERENT learner's session reaches this page next (same
         # session_state dict only for test convenience -- in production
         # each learner has their own Streamlit session).
-        exec_exc_2, fake_st_2, start_mock_2, _prepare_mock_2, _submit_mock_2 = _exec_page_decision(
+        exec_exc_2, fake_st_2, start_mock_2, _prepare_mock_2, _submit_mock_2, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=False,
@@ -617,7 +657,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         advanced_view = _make_attempt_view(progress_label="Decision 2")
         advanced_outcome = _make_outcome(attempt_id=attempt_view.attempt_id, current_scene_id="s02a_cio_response")
 
-        exec_exc_1, _fake_st_1, start_mock_1, _prepare_mock_1, submit_mock_1 = _exec_page_decision(
+        exec_exc_1, _fake_st_1, start_mock_1, _prepare_mock_1, submit_mock_1, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=True,
@@ -628,7 +668,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         self.assertNotIn(_PENDING_STATE_KEY, session_state)
         self.assertNotIn(_COMPLETED_STATE_KEY, session_state)
 
-        exec_exc_2, fake_st_2, start_mock_2, _prepare_mock_2, _submit_mock_2 = _exec_page_decision(
+        exec_exc_2, fake_st_2, start_mock_2, _prepare_mock_2, _submit_mock_2, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=advanced_view,
             submitted=False,
@@ -642,7 +682,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         first_view = _make_attempt_view()
         first_prepared = _make_prepared(idempotency_key="55555555-5555-4555-8555-555555555555")
 
-        exec_exc_1, _fake_st_1, _start_mock_1, prepare_mock_1, _submit_mock_1 = _exec_page_decision(
+        exec_exc_1, _fake_st_1, _start_mock_1, prepare_mock_1, _submit_mock_1, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=first_view,
             submitted=True,
@@ -656,7 +696,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
 
         second_view = _make_attempt_view()
         second_prepared = _make_prepared(idempotency_key="66666666-6666-4666-8666-666666666666")
-        exec_exc_2, _fake_st_2, _start_mock_2, prepare_mock_2, _submit_mock_2 = _exec_page_decision(
+        exec_exc_2, _fake_st_2, _start_mock_2, prepare_mock_2, _submit_mock_2, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=second_view,
             submitted=True,
@@ -676,7 +716,7 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         session_state: dict = {}
         attempt_view = _make_attempt_view(option_a_label="Continue", option_b_label="Continue")
 
-        _exec_exc, fake_st, _start_mock, prepare_mock, _submit_mock = _exec_page_decision(
+        _exec_exc, fake_st, _start_mock, prepare_mock, _submit_mock, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=True,

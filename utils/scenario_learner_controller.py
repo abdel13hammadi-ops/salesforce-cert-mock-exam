@@ -195,7 +195,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-from utils.scenario_catalog import resolve_default_scenario_version_path
+from utils.scenario_catalog import load_resolved_scenario_content, resolve_default_scenario_version_path
 from utils.scenario_engine import (
     ENGINE_VERSION,
     ScenarioEngineError,
@@ -296,6 +296,19 @@ class ScenarioLearnerAttemptNotActiveError(ScenarioLearnerError):
     that is already `completed` or `abandoned` (checked locally against the
     freshly-fetched persisted attempt, and again defensively if the RPC
     itself reports `attempt_not_in_progress:`). A conclusive rejection."""
+
+
+class ScenarioLearnerAttemptNotCompletedError(ScenarioLearnerError):
+    """SIM-VSLICE-03: raised by `load_ba201_completion_result(...)` when the
+    requested attempt's persisted status is `in_progress` or `abandoned` --
+    i.e. NOT `completed`. Deliberately the mirror image of
+    `ScenarioLearnerAttemptNotActiveError` above (which rejects a NEW
+    decision against an attempt that has already ENDED): this rejects a
+    RESULTS lookup against an attempt that has NOT yet ended. A conclusive
+    outcome from `pages/Scenario_Simulator.py`'s perspective -- a stored
+    completion marker that turns out to reference an in-progress or
+    abandoned attempt is simply wrong, and is cleared rather than retried
+    (see that page's own docstring)."""
 
 
 class ScenarioLearnerInvalidOptionError(ScenarioLearnerError):
@@ -475,6 +488,18 @@ class ScenarioAttemptCompletionMarker:
     earned it (`PreparedScenarioDecision.normalized_email`) -- the page
     discards a marker that does not match the CURRENT verified learner
     email before ever showing it.
+
+    SIM-VSLICE-03: this marker remains transient navigation/session
+    coordination ONLY -- it identifies WHICH `attempt_id` to load a full
+    result for, it is never itself the result authority, and it is never
+    read for any display field (title, narrative, score, etc.). The page
+    passes `attempt_id` (plus the current verified learner email) to
+    `load_ba201_completion_result(...)`, which re-fetches and re-validates
+    the persisted attempt from V68 independently of anything this marker
+    claims. A marker whose `attempt_id` turns out not to be a completed
+    attempt owned by the current learner is simply wrong and is cleared;
+    see `pages/Scenario_Simulator.py`'s own docstring for the full
+    marker-clearing-vs-preserving decision table.
     """
 
     normalized_email: str
@@ -502,6 +527,87 @@ class ScenarioDecisionPersistenceOutcome:
     is_complete: bool
     current_scene_id: Optional[str]
     idempotent_replay: bool
+
+
+# ---------------------------------------------------------------------------
+# Completion results (SIM-VSLICE-03)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ScenarioDomainResultView:
+    """SIM-VSLICE-03: one domain's persisted performance.
+
+    Every field comes directly from one entry of the persisted
+    `terminal_result_snapshot.domainPerformance` array -- cross-validated
+    against a fresh, independent engine replay before this view is ever
+    built (see `load_ba201_completion_result(...)`'s own docstring) -- never
+    recomputed, estimated, or classified ("strength"/"weakness") beyond
+    what the engine itself already defines via
+    `utils.scenario_engine.DomainPerformanceSnapshot`.
+
+    `accuracy_percentage` is `None` only when `total_count` is `0` (this
+    domain was never actually visited during the attempt) -- a percentage
+    is mathematically undefined there, and is never displayed as `0%`.
+    """
+
+    domain_label: str
+    correct_count: int
+    total_count: int
+    accuracy_percentage: Optional[float]
+
+
+@dataclass(frozen=True)
+class ScenarioCompletionResultView:
+    """SIM-VSLICE-03: a learner-safe, presentation-ready view of one
+    COMPLETED BA-201 attempt's persisted terminal result, built by
+    `load_ba201_completion_result(...)`.
+
+    Every field here is sourced from exactly one of:
+
+    - the validated scenario content for the attempt's own PINNED
+      `scenario_version_id` (`scenario_title`, `certification_exam_name`);
+    - the persisted `terminal_result_snapshot`, cross-validated against an
+      independent fresh engine replay of the same persisted decision
+      history (`ending_title`, `ending_narrative`, `decisions_correct`,
+      `decisions_total`, `accuracy_percentage`, `domain_breakdown`,
+      `recommended_review_domains`);
+    - a fixed, content-independent presentation constant
+      (`completion_heading`).
+
+    Deliberately excludes (see `load_ba201_completion_result(...)`'s own
+    docstring for the full rationale): attempt/scenario-version UUIDs,
+    idempotency keys, sequence numbers, raw engine `state`/`flags`, the raw
+    `terminal_result_snapshot` payload itself, canonical content hashes,
+    and any other backend/database field. Nothing here is ever recomputed
+    from browser/session assumptions -- the persisted attempt is the sole
+    authority, and this view is only ever a safe projection of it.
+
+    `ending_title` is exactly `ScenarioEnding.score_band` -- the BA-201
+    content schema (`utils.scenario_schema.ScenarioEnding`) has no separate,
+    structured "title" field distinct from its authored `scoreBand` string
+    (e.g. `"Pass with Distinction"`); this is the one authored string that
+    plays that role for this content. A `"strengths"` field is deliberately
+    NOT part of this view: nothing in the persisted result or the BA-201
+    content contract labels any domain a "strength" -- inventing such a
+    label from raw domain-accuracy numbers would be exactly the kind of
+    unsupported classification this task forbids. `recommended_review_domains`
+    is the one remediation-shaped field the content DOES author explicitly
+    (`ScenarioEnding.recommended_review`, a list of domain ids) -- it is
+    always present (never `None`), but is often an empty tuple for a strong
+    ending; the page renders that section only when it is non-empty.
+    """
+
+    scenario_title: str
+    certification_exam_name: str
+    completion_heading: str
+    ending_title: str
+    ending_narrative: str
+    decisions_correct: Optional[int]
+    decisions_total: Optional[int]
+    accuracy_percentage: Optional[float]
+    domain_breakdown: Tuple[ScenarioDomainResultView, ...]
+    recommended_review_domains: Tuple[str, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -1274,4 +1380,404 @@ def submit_ba201_decision(
         attempt_id=outcome.attempt_id,
         is_new_attempt=False,
         lifecycle_status=outcome.attempt_status,
+    )
+
+
+def _resolve_pinned_scenario_version(
+    client: Any,
+    *,
+    scenario_version_id: str,
+    expected_scenario_id: str,
+    expected_simulation_id: str,
+    expected_engine_version: str,
+    expected_content_sha256: str,
+) -> str:
+    """SIM-VSLICE-03A: resolve the exact `version` STRING for one already-
+    pinned `scenario_versions.id`, with the expected identity coming from
+    the COMPLETED ATTEMPT ITSELF -- deliberately the mirror image of
+    `_resolve_current_scenario_version_id(...)` above.
+
+    Completion results belong to the attempt's OWN pinned
+    `scenario_version_id`, never to whichever version happens to be
+    `scenarios.current_published_version_id` at VIEW time -- a learner must
+    remain able to view a historical completed result after a future
+    version becomes current, the scenario is deactivated, or the current
+    pointer moves on. This function therefore never touches
+    `current_published_version_id`, `is_active`, or `lifecycle_status` at
+    all.
+
+    V68's own composite foreign key
+    (`scenario_attempts (scenario_id, scenario_version_id) REFERENCES
+    scenario_versions (scenario_id, id)`) and immutability triggers already
+    guarantee, at the database level, that a real `scenario_attempts` row's
+    `scenario_id`/`scenario_version_id`/`engine_version`/
+    `scenario_content_sha256` are mutually consistent with the
+    `scenario_versions` row they were pinned to at creation time, and that
+    a published `scenario_versions` row's own `engine_version`/
+    `canonical_content_sha256` can never change afterward (see
+    `supabase/migrations/20260718170000_v66_scenario_definition_
+    persistence_foundation.sql` and `supabase/migrations/20260719130000_
+    v68_scenario_attempt_persistence_foundation.sql`). This function
+    independently RE-VERIFIES that same identity chain against whatever
+    the backend actually returns right now -- a completion-results
+    codepath must fail closed on an inconsistent response rather than rely
+    solely on database constraints it cannot see or introspect at this
+    layer.
+
+    Query 1 -- `scenario_versions` filtered by BOTH `id = scenario_version_id`
+    AND `scenario_id = expected_scenario_id` together (never `id` alone):
+    a row belonging to a DIFFERENT scenario than the attempt's own
+    `scenario_id` must never be treated as a match, even if its `id`
+    happens to equal `scenario_version_id` (which, given V68's composite FK,
+    should never actually diverge for a genuine attempt -- but this
+    function never assumes that invariant holds in the response it was
+    given).
+
+    Query 2 -- `scenarios` filtered by `id = expected_scenario_id`, then
+    its `simulation_id` is compared against `expected_simulation_id`.
+
+    Requires ALL of:
+    1. the `scenario_versions` row (matching both filters) exists;
+    2. its `id` equals `scenario_version_id` and its `scenario_id` equals
+       `expected_scenario_id` (defense in depth on top of the query
+       filters themselves);
+    3. the owning `scenarios` row (`id = expected_scenario_id`) exists;
+    4. that scenario's `simulation_id` equals `expected_simulation_id`;
+    5. the version row's `engine_version` exactly equals
+       `expected_engine_version`;
+    6. the version row's `canonical_content_sha256` exactly equals
+       `expected_content_sha256`;
+    7. the version row's `version` string is non-empty.
+
+    Any violation raises `ScenarioLearnerVersionUnavailableError`. Never
+    falls back to a different scenario/version row on any mismatch --
+    the function returns exactly once, on the single fully-verified row,
+    or not at all.
+
+    Raises `ScenarioLearnerBackendError` for any unexpected client/network
+    failure.
+    """
+    try:
+        version_rows = (
+            client.table("scenario_versions")
+            .select("id,scenario_id,version,engine_version,canonical_content_sha256")
+            .eq("id", scenario_version_id)
+            .eq("scenario_id", expected_scenario_id)
+            .limit(1)
+            .execute()
+        ).data or []
+    except Exception as exc:  # noqa: BLE001 - backend/network failure, not a validation failure
+        raise ScenarioLearnerBackendError(
+            f"Unable to resolve pinned scenario_versions row {scenario_version_id!r}"
+        ) from exc
+
+    if not version_rows or not version_rows[0].get("id"):
+        # Covers both "no such row" and "a row with this id exists but
+        # belongs to a different scenario_id" -- the query's own combined
+        # filter makes the two indistinguishable, exactly like
+        # `get_attempt(...)`'s own "never distinguish not-found from
+        # not-owned" contract.
+        raise ScenarioLearnerVersionUnavailableError(
+            f"The pinned scenario version {scenario_version_id!r} could not be resolved for scenario "
+            f"{expected_scenario_id!r}"
+        )
+    version_row = version_rows[0]
+
+    # Defense in depth on top of the query filters themselves -- never
+    # trust a response merely because the request that produced it looked
+    # right.
+    if version_row.get("id") != scenario_version_id or version_row.get("scenario_id") != expected_scenario_id:
+        raise ScenarioLearnerVersionUnavailableError(
+            f"The pinned scenario version {scenario_version_id!r} did not resolve to itself for scenario "
+            f"{expected_scenario_id!r}"
+        )
+
+    version_string = str(version_row.get("version") or "").strip()
+    if not version_string:
+        raise ScenarioLearnerVersionUnavailableError(
+            f"The pinned scenario version {scenario_version_id!r} is missing required fields"
+        )
+
+    try:
+        scenario_rows = (
+            client.table("scenarios")
+            .select("id,simulation_id")
+            .eq("id", expected_scenario_id)
+            .limit(1)
+            .execute()
+        ).data or []
+    except Exception as exc:  # noqa: BLE001
+        raise ScenarioLearnerBackendError(
+            f"Unable to resolve owning scenarios row for pinned version {scenario_version_id!r}"
+        ) from exc
+
+    if not scenario_rows or not scenario_rows[0].get("id"):
+        raise ScenarioLearnerVersionUnavailableError(
+            f"The pinned scenario version {scenario_version_id!r} has no owning scenario row"
+        )
+    if scenario_rows[0].get("simulation_id") != expected_simulation_id:
+        # The pinned version row exists and belongs to the expected
+        # scenario_id, but that scenario's OWN simulation_id does not match
+        # the one this controller only ever serves results for -- never
+        # trusted, and never satisfied merely because SOME other scenario
+        # row happens to carry the expected simulation_id.
+        raise ScenarioLearnerVersionUnavailableError(
+            f"The pinned scenario version {scenario_version_id!r} does not belong to simulation_id "
+            f"{expected_simulation_id!r}"
+        )
+
+    if version_row.get("engine_version") != expected_engine_version:
+        raise ScenarioLearnerVersionUnavailableError(
+            f"The pinned scenario version {scenario_version_id!r} engine_version does not match "
+            "the completed attempt's own engine_version"
+        )
+    if version_row.get("canonical_content_sha256") != expected_content_sha256:
+        raise ScenarioLearnerVersionUnavailableError(
+            f"The pinned scenario version {scenario_version_id!r} canonical_content_sha256 does not match "
+            "the completed attempt's own scenario_content_sha256"
+        )
+
+    return version_string
+
+
+def load_ba201_completion_result(
+    user_email: Optional[str],
+    *,
+    attempt_id: str,
+    client: Any = None,
+    certification_exam_name: str = BA201_CERTIFICATION_EXAM_NAME,
+    simulation_id: str = BA201_SIMULATION_ID,
+) -> ScenarioCompletionResultView:
+    """SIM-VSLICE-03: load the persisted result of exactly one COMPLETED
+    BA-201 attempt, and return a small, immutable, learner-safe
+    `ScenarioCompletionResultView` -- never recomputing or overwriting the
+    persisted result, only VALIDATING it.
+
+    The completed attempt persisted by V68 (`utils.scenario_persistence`)
+    is the sole authority. This function never calculates a second result
+    from browser/session assumptions, and never falls back to whichever
+    scenario version happens to be current -- it resolves content ONLY via
+    the attempt's own pinned `scenario_version_id`
+    (`_resolve_pinned_scenario_version(...)`), so a historical completed
+    result remains viewable even after a future scenario version becomes
+    the current published one.
+
+    Sequencing, in order:
+
+    1. Verify `user_email` (`ScenarioLearnerAccessError`).
+    2. Fetch the attempt via `utils.scenario_persistence.get_attempt(...)`
+       -- this is ALSO the ownership check: an attempt that does not exist,
+       or exists but is owned by a different learner, both raise
+       `ScenarioLearnerAttemptNotFoundError` (matching `get_attempt`'s own
+       "never distinguish the two" contract).
+    3. Require `attempt.status == "completed"` exactly -- an `in_progress`
+       or `abandoned` attempt raises `ScenarioLearnerAttemptNotCompletedError`.
+    4. Require `attempt.current_scene_id is None`, `attempt.terminal_ending_id`
+       to be a non-empty string, and `attempt.terminal_result_snapshot` to
+       be present -- any violation raises `ScenarioLearnerStateError`
+       (the persisted attempt claims to be completed but is not internally
+       self-consistent).
+    5. Resolve the attempt's PINNED scenario version string
+       (`_resolve_pinned_scenario_version(...)`), then load and validate
+       the EXACT matching scenario content version -- including a
+       cross-check against the attempt's own persisted
+       `scenario_content_sha256` -- via the existing
+       `utils.scenario_catalog.load_resolved_scenario_content(...)`.
+       Any resolution/load/validation failure raises
+       `ScenarioLearnerVersionUnavailableError` (the pinned database
+       version is not available/trustworthy locally right now) -- this is
+       deliberately a DIFFERENT mapping than `_load_default_scenario_content(...)`'s
+       `ScenarioLearnerContentError`, because a missing/mismatched EXACT
+       historical version is a version-availability problem, not a
+       "current scenario is broken" problem.
+    6. Confirm `attempt.terminal_ending_id` actually exists in the loaded
+       content's `endings` (`ScenarioLearnerStateError` if not).
+    7. Replay the persisted engine state via
+       `utils.scenario_engine.replay_serialized_run(...)` -- this
+       INDEPENDENTLY recomputes the run (and, since it reaches
+       `EVALUATE_ENDING`, an independent terminal result) purely from the
+       persisted `decisionHistory` and the freshly-loaded content, never
+       trusting any other field of the serialized payload (see that
+       function's own docstring). Replay-identity mismatches and any other
+       engine failure raise `ScenarioLearnerStateError`.
+    8. Cross-validate the REPLAYED terminal result against the PERSISTED
+       one: `run.is_complete`, `run.current_scene_id is None`,
+       `run.terminal_result.ending_id == attempt.terminal_ending_id`, and
+       `utils.scenario_engine.serialize_terminal_result(run.terminal_result)
+       == dict(attempt.terminal_result_snapshot)` (byte-for-byte value
+       equality). ANY mismatch raises `ScenarioLearnerStateError` -- this
+       function NEVER silently substitutes the replayed result for the
+       persisted one, and never displays a persisted result it could not
+       independently reproduce from the exact same decision history.
+    9. Build and return `ScenarioCompletionResultView` from the
+       (now-validated) `run.terminal_result` and the loaded content's
+       `domains` (for label resolution only) -- the persisted values
+       themselves, never a second, independently-recomputed set of
+       display numbers.
+
+    Never exposes: the attempt id, scenario-version id, idempotency keys,
+    sequence numbers, raw engine `state`/`flags`, the raw
+    `terminal_result_snapshot` payload, canonical content hashes, or any
+    other backend/database field -- see `ScenarioCompletionResultView`'s
+    own docstring for the complete, deliberately small field list.
+    """
+    if not user_email or "@" not in str(user_email):
+        raise ScenarioLearnerAccessError(
+            "A verified learner email is required to view a scenario result."
+        )
+    normalized_email = normalize_scenario_persistence_email(user_email)
+
+    resolved_client = client if client is not None else _default_client()
+
+    try:
+        attempt = get_attempt(
+            resolved_client,
+            user_email=normalized_email,
+            attempt_id=attempt_id,
+        )
+    except ScenarioAttemptNotFoundError as exc:
+        raise ScenarioLearnerAttemptNotFoundError(
+            "This scenario attempt could not be found."
+        ) from exc
+    except ScenarioPersistenceError as exc:
+        logger.exception("BA-201 completion-result attempt lookup failed")
+        raise ScenarioLearnerBackendError(
+            "This scenario result could not be loaded right now."
+        ) from exc
+
+    if attempt.status != "completed":
+        raise ScenarioLearnerAttemptNotCompletedError(
+            "This scenario attempt has not been completed yet."
+        )
+    if attempt.current_scene_id is not None:
+        raise ScenarioLearnerStateError(
+            "This scenario attempt's persisted result could not be verified."
+        )
+    if not attempt.terminal_ending_id or not str(attempt.terminal_ending_id).strip():
+        raise ScenarioLearnerStateError(
+            "This scenario attempt's persisted result is missing its outcome."
+        )
+    if attempt.terminal_result_snapshot is None:
+        raise ScenarioLearnerStateError(
+            "This scenario attempt's persisted result is missing its outcome."
+        )
+
+    # SIM-VSLICE-03A: fail closed, before any I/O, if the attempt's own
+    # pinned `engine_version` is not the one engine version this codebase
+    # actually knows how to replay. `ENGINE_VERSION` is the one
+    # authoritative value `utils.scenario_engine` exposes for this
+    # comparison -- `replay_serialized_run(...)` below would already reject
+    # a serialized payload whose OWN embedded `engineVersion` field
+    # mismatches `ENGINE_VERSION`, but checking the attempt's top-level
+    # `engine_version` column here as well closes the gap for a response
+    # where that column and the embedded payload have somehow diverged, and
+    # produces the correct version-unavailable mapping (rather than an
+    # engine/state error) either way. This is a strict equality check
+    # against the current engine's own version constant -- it does not
+    # invent any cross-version compatibility policy.
+    if attempt.engine_version != ENGINE_VERSION:
+        raise ScenarioLearnerVersionUnavailableError(
+            "This scenario result was recorded under an engine version that is no longer available for replay."
+        )
+
+    version_string = _resolve_pinned_scenario_version(
+        resolved_client,
+        scenario_version_id=attempt.scenario_version_id,
+        expected_scenario_id=attempt.scenario_id,
+        expected_simulation_id=simulation_id,
+        expected_engine_version=attempt.engine_version,
+        expected_content_sha256=attempt.scenario_content_sha256,
+    )
+
+    try:
+        content = load_resolved_scenario_content(
+            certification_exam_name=certification_exam_name,
+            simulation_id=simulation_id,
+            version=version_string,
+            expected_canonical_content_sha256=attempt.scenario_content_sha256,
+        )
+    except ScenarioContentError as exc:
+        logger.exception(
+            "BA-201 completion result could not load pinned scenario version %r", version_string
+        )
+        raise ScenarioLearnerVersionUnavailableError(
+            "This scenario result's version is not available right now."
+        ) from exc
+
+    endings_by_id = {ending.id: ending for ending in content.endings}
+    if attempt.terminal_ending_id not in endings_by_id:
+        raise ScenarioLearnerStateError(
+            "This scenario attempt's persisted outcome could not be verified."
+        )
+
+    try:
+        run = replay_serialized_run(content, attempt.serialized_engine_state)
+    except ScenarioEngineError as exc:
+        logger.exception("BA-201 completion result failed engine replay validation")
+        raise ScenarioLearnerStateError(
+            "This scenario attempt's persisted result could not be restored."
+        ) from exc
+
+    if not run.is_complete or run.terminal_result is None or run.current_scene_id is not None:
+        raise ScenarioLearnerStateError(
+            "This scenario attempt's persisted result could not be verified."
+        )
+    if run.terminal_result.ending_id != attempt.terminal_ending_id:
+        raise ScenarioLearnerStateError(
+            "This scenario attempt's persisted outcome could not be verified."
+        )
+    if serialize_terminal_result(run.terminal_result) != dict(attempt.terminal_result_snapshot):
+        # SIM-VSLICE-03: a genuine mismatch between the persisted result and
+        # what this exact decision history independently replays to --
+        # never silently trusted, and never silently substituted.
+        logger.error(
+            "BA-201 completion result mismatch between persisted terminal_result_snapshot and "
+            "independently-replayed terminal result for attempt_id=%r",
+            attempt.attempt_id,
+        )
+        raise ScenarioLearnerStateError(
+            "This scenario attempt's persisted result could not be verified."
+        )
+
+    terminal_result = run.terminal_result
+    domain_labels = {domain.id: domain.label for domain in content.domains}
+
+    domain_breakdown = tuple(
+        ScenarioDomainResultView(
+            domain_label=domain_labels.get(snapshot.domain_id, snapshot.domain_id),
+            correct_count=snapshot.correct_count,
+            total_count=snapshot.total_count,
+            accuracy_percentage=(
+                round(snapshot.accuracy * 100.0, 1) if snapshot.total_count > 0 else None
+            ),
+        )
+        for snapshot in terminal_result.domain_performance
+    )
+
+    if domain_breakdown:
+        decisions_total = sum(entry.total_count for entry in domain_breakdown)
+        decisions_correct = sum(entry.correct_count for entry in domain_breakdown)
+        accuracy_percentage = (
+            round(decisions_correct / decisions_total * 100.0, 1) if decisions_total > 0 else None
+        )
+    else:
+        decisions_total = None
+        decisions_correct = None
+        accuracy_percentage = None
+
+    recommended_review_domains = tuple(
+        domain_labels.get(domain_id, domain_id) for domain_id in terminal_result.recommended_review
+    )
+
+    return ScenarioCompletionResultView(
+        scenario_title=content.title,
+        certification_exam_name=content.certification_exam_name,
+        completion_heading="Scenario complete",
+        ending_title=terminal_result.score_band,
+        ending_narrative=terminal_result.narrative,
+        decisions_correct=decisions_correct,
+        decisions_total=decisions_total,
+        accuracy_percentage=accuracy_percentage,
+        domain_breakdown=domain_breakdown,
+        recommended_review_domains=recommended_review_domains,
     )
