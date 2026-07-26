@@ -192,6 +192,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -231,6 +234,136 @@ logger = logging.getLogger(__name__)
 # present in scenario_content/business_analyst/catalog.json.
 BA201_CERTIFICATION_EXAM_NAME = "Salesforce Certified Business Analyst"
 BA201_SIMULATION_ID = "ba201-sim-meridian-health-01"
+
+
+# ---------------------------------------------------------------------------
+# SIM-RUNTIME-03A: opt-in, environment-gated decision-submission diagnostics
+# ---------------------------------------------------------------------------
+#
+# These markers exist ONLY to let a disposable smoke-test run distinguish
+# which stage of the two-stage prepare/submit decision pipeline a live
+# failure actually happened in, without ever being able to leak a learner
+# email, selected option, scenario text, session token, Supabase URL/key,
+# idempotency key, attempt/version UUID, serialized engine state, raw RPC
+# request/response, or exception message. Every event name and every field
+# name/value is checked against the fixed allowlist below before anything is
+# written -- there is no code path that accepts an arbitrary caller-supplied
+# value. Completely disabled unless CERTBOUND_SCENARIO_SMOKE_DIAGNOSTICS=1.
+# Mirrors the identical design already established for auth bootstrap
+# diagnostics in `utils.access_control._auth_smoke_trace(...)` (SIM-SMOKE-02H
+# / SIM-SMOKE-02I) -- kept as an independent implementation here rather than
+# a cross-module import so this module's diagnostics never depend on
+# `utils.access_control`'s own allowlist changing shape.
+_SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR = "CERTBOUND_SCENARIO_SMOKE_DIAGNOSTICS"
+
+_SAFE_CLASS_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+
+# Fixed enum of WHICH field category `_persisted_response_matches_prepared(...)`
+# rejected -- never the actual (potentially free-form) value on either side.
+# `_classify_scenario_response_mismatch(...)` below is the only producer of
+# this enum; it never affects the real (unchanged) matching result.
+_SCENARIO_MISMATCH_FIELD_VALUES = (
+    "attempt_id",
+    "sequence_number",
+    "scene_id",
+    "lifecycle_status",
+    "terminal_status",
+    "current_scene",
+    "engine_state",
+    "malformed_response",
+    "unknown",
+)
+
+# Maps each allowed event name to its allowed fields. Each field spec is one
+# of: the literal type `bool` (True/False only), the literal string
+# `"SMALL_INT"` (a non-bool int in the closed range [0, 9999] -- ample
+# headroom for any real BA-201 sequence number, while still refusing to
+# print an arbitrarily large/crafted integer), the literal string
+# `"SAFE_CLASS_NAME"` (a bare exception class name -- e.g.
+# `type(exc).__name__` -- matching `_SAFE_CLASS_NAME_PATTERN`; this can
+# never carry an exception *message*, only its class name), or a tuple of
+# the exact fixed enum strings accepted.
+_SCENARIO_SMOKE_EVENT_FIELDS: Dict[str, Dict[str, Any]] = {
+    "scenario_decision_prepare_started": {},
+    "scenario_decision_submit_started": {
+        "expected_sequence_number": "SMALL_INT",
+        "expected_terminal": bool,
+    },
+    # Covers every backend-raised failure for the one submit_decision(...)
+    # call, including a malformed/no-row RPC response -- `scenario_
+    # persistence.py`'s `_require_row(...)`/`_require_field(...)` family
+    # raises the same `ScenarioPersistenceBackendError` class for both "RPC
+    # returned no row" and "returned row failed validation", so the two are
+    # necessarily reported as the one exception_class value here rather than
+    # as separate event names; every OTHER backend rejection (sequence/
+    # scene/state conflict, idempotency conflict, attempt not found/not in
+    # progress, version mismatch) has its own distinct exception_class.
+    "scenario_decision_submit_rpc_exception": {"exception_class": "SAFE_CLASS_NAME"},
+    "scenario_decision_submit_response_mismatch": {"mismatch_field": _SCENARIO_MISMATCH_FIELD_VALUES},
+    "scenario_decision_submit_confirmed_nonterminal": {
+        "expected_sequence_number": "SMALL_INT",
+        "returned_sequence_number": "SMALL_INT",
+    },
+    "scenario_decision_submit_confirmed_terminal": {
+        "expected_sequence_number": "SMALL_INT",
+        "returned_sequence_number": "SMALL_INT",
+    },
+    "scenario_decision_submit_idempotent_replay": {"returned_terminal": bool},
+    "scenario_decision_submit_pending_retry_retained": {"expected_terminal": bool},
+}
+
+
+def _scenario_smoke_diagnostics_enabled() -> bool:
+    return os.environ.get(_SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR) == "1"
+
+
+def _scenario_smoke_value_allowed(spec: Any, value: Any) -> bool:
+    if spec is bool:
+        return isinstance(value, bool)
+    if spec == "SMALL_INT":
+        # bool is a subclass of int in Python (True == 1) -- an accidental
+        # bool must never be accepted by an int field spec.
+        return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 9999
+    if spec == "SAFE_CLASS_NAME":
+        return isinstance(value, str) and bool(_SAFE_CLASS_NAME_PATTERN.fullmatch(value))
+    if isinstance(spec, tuple):
+        if isinstance(value, bool):
+            return False
+        return value in spec
+    return False
+
+
+def _scenario_smoke_trace(event: str, **safe_fields: Any) -> None:
+    """Emit one fixed, allowlisted BA-201 decision-submission diagnostic
+    marker to stderr.
+
+    A no-op unless `CERTBOUND_SCENARIO_SMOKE_DIAGNOSTICS=1`. `event` must be
+    a key of `_SCENARIO_SMOKE_EVENT_FIELDS`; any field name not declared for
+    that event, or any value that does not exactly match that field's fixed
+    spec, is silently dropped rather than printed -- there is no fallback
+    path that stringifies or logs an unrecognized value. Never accepts (and
+    therefore can never leak) a learner email, selected option, scenario
+    text, session token, Supabase URL/key, idempotency key, attempt/version
+    UUID, serialized engine state, raw RPC request/response, or exception
+    message. Never raises."""
+    if not _scenario_smoke_diagnostics_enabled():
+        return
+    try:
+        allowed_fields = _SCENARIO_SMOKE_EVENT_FIELDS.get(event)
+        if allowed_fields is None:
+            return
+        parts = [f"event={event}"]
+        for name in sorted(allowed_fields):
+            if name not in safe_fields:
+                continue
+            value = safe_fields[name]
+            if not _scenario_smoke_value_allowed(allowed_fields[name], value):
+                continue
+            parts.append(f"{name}={value}")
+        sys.stderr.write("[certbound_scenario_smoke] " + " ".join(parts) + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1017,6 +1150,7 @@ def prepare_ba201_decision(
     idempotency-key/request record for a `prepare_ba201_decision(...)`
     failure, since no write was ever attempted.
     """
+    _scenario_smoke_trace("scenario_decision_prepare_started")
     if not user_email or "@" not in str(user_email):
         raise ScenarioLearnerAccessError(
             "A verified learner email is required to submit a scenario decision."
@@ -1177,6 +1311,68 @@ def _persisted_response_matches_prepared(
     return True
 
 
+def _classify_scenario_response_mismatch(
+    prepared: PreparedScenarioDecision,
+    submission: Any,
+    *,
+    state_after: Mapping[str, Any],
+    terminal_result_snapshot: Optional[Mapping[str, Any]],
+) -> str:
+    """SIM-RUNTIME-03A diagnostics-only helper: reclassify WHY
+    `_persisted_response_matches_prepared(...)` already returned `False` as
+    exactly one of `_SCENARIO_MISMATCH_FIELD_VALUES`, for
+    `_scenario_smoke_trace(...)` to report -- NEVER the actual field values
+    on either side, and NEVER used to decide the real (unchanged) matching
+    result. Mirrors `_persisted_response_matches_prepared(...)`'s own checks,
+    in the same order, purely as a read-only re-walk; it is intentionally a
+    separate function so `_persisted_response_matches_prepared(...)` itself
+    is never touched by this diagnostics feature. Never raises: an
+    unexpected shape on `submission` is reported as `"malformed_response"`,
+    and any other unexpected failure during classification is reported as
+    `"unknown"` rather than propagating."""
+    try:
+        if submission.attempt_id != prepared.attempt_id:
+            return "attempt_id"
+
+        if hasattr(submission, "sequence_number") and hasattr(submission, "next_sequence_number"):
+            if submission.sequence_number != prepared.expected_sequence_number:
+                return "sequence_number"
+            if submission.next_sequence_number != prepared.expected_sequence_number + 1:
+                return "sequence_number"
+
+        if prepared.is_terminal:
+            if submission.attempt_status != "completed":
+                return "lifecycle_status"
+            if submission.current_scene_id is not None:
+                return "current_scene"
+            if submission.terminal_ending_id != prepared.terminal_ending_id:
+                return "terminal_status"
+            if dict(submission.terminal_result_snapshot or {}) != dict(terminal_result_snapshot or {}):
+                return "terminal_status"
+        else:
+            if submission.attempt_status != "in_progress":
+                return "lifecycle_status"
+            if submission.current_scene_id != prepared.resulting_scene_id:
+                return "current_scene"
+            if submission.terminal_ending_id is not None:
+                return "terminal_status"
+            if submission.terminal_result_snapshot is not None:
+                return "terminal_status"
+
+        if submission.serialized_engine_state != dict(state_after):
+            return "engine_state"
+
+        # Every known check above passed, yet the caller observed
+        # `_persisted_response_matches_prepared(...)` return False -- this
+        # should be unreachable in practice, but is reported honestly as
+        # "unknown" rather than silently defaulting to any specific field.
+        return "unknown"
+    except AttributeError:
+        return "malformed_response"
+    except Exception:
+        return "unknown"
+
+
 def submit_prepared_ba201_decision(
     user_email: Optional[str],
     prepared: PreparedScenarioDecision,
@@ -1249,6 +1445,11 @@ def submit_prepared_ba201_decision(
         "terminal_result_snapshot": terminal_result_snapshot,
     }
 
+    _scenario_smoke_trace(
+        "scenario_decision_submit_started",
+        expected_sequence_number=prepared.expected_sequence_number,
+        expected_terminal=prepared.is_terminal,
+    )
     try:
         submission = submit_decision(
             resolved_client,
@@ -1263,14 +1464,17 @@ def submit_prepared_ba201_decision(
             **submit_kwargs,
         )
     except ScenarioAttemptNotFoundError as exc:
+        _scenario_smoke_trace("scenario_decision_submit_rpc_exception", exception_class=type(exc).__name__)
         raise ScenarioLearnerAttemptNotFoundError(
             "This scenario attempt could not be found."
         ) from exc
     except ScenarioAttemptNotInProgressError as exc:
+        _scenario_smoke_trace("scenario_decision_submit_rpc_exception", exception_class=type(exc).__name__)
         raise ScenarioLearnerAttemptNotActiveError(
             "This scenario attempt has already ended and cannot accept another decision."
         ) from exc
     except ScenarioVersionMismatchError as exc:
+        _scenario_smoke_trace("scenario_decision_submit_rpc_exception", exception_class=type(exc).__name__)
         raise ScenarioLearnerVersionUnavailableError(
             "This scenario version is not currently available."
         ) from exc
@@ -1280,11 +1484,13 @@ def submit_prepared_ba201_decision(
         ScenarioStateConflictError,
         ScenarioIdempotencyConflictError,
     ) as exc:
+        _scenario_smoke_trace("scenario_decision_submit_rpc_exception", exception_class=type(exc).__name__)
         logger.warning("BA-201 decision submission hit a safe conflict: %s", exc)
         raise ScenarioLearnerConflictError(
             "This scenario has moved on since it was last loaded. Please try again."
         ) from exc
     except ScenarioPersistenceError as exc:
+        _scenario_smoke_trace("scenario_decision_submit_rpc_exception", exception_class=type(exc).__name__)
         logger.exception("BA-201 decision-submission persistence call failed")
         raise ScenarioLearnerBackendError(
             "This decision could not be submitted right now."
@@ -1306,8 +1512,32 @@ def submit_prepared_ba201_decision(
             prepared.attempt_id,
             prepared.idempotency_key,
         )
+        _scenario_smoke_trace(
+            "scenario_decision_submit_response_mismatch",
+            mismatch_field=_classify_scenario_response_mismatch(
+                prepared, submission, state_after=state_after, terminal_result_snapshot=terminal_result_snapshot
+            ),
+        )
         raise ScenarioLearnerBackendError(
             "This decision's confirmation could not be verified. Please try again."
+        )
+
+    if submission.idempotent_replay:
+        _scenario_smoke_trace(
+            "scenario_decision_submit_idempotent_replay",
+            returned_terminal=submission.attempt_status == "completed",
+        )
+    elif prepared.is_terminal:
+        _scenario_smoke_trace(
+            "scenario_decision_submit_confirmed_terminal",
+            expected_sequence_number=prepared.expected_sequence_number,
+            returned_sequence_number=getattr(submission, "sequence_number", prepared.expected_sequence_number),
+        )
+    else:
+        _scenario_smoke_trace(
+            "scenario_decision_submit_confirmed_nonterminal",
+            expected_sequence_number=prepared.expected_sequence_number,
+            returned_sequence_number=getattr(submission, "sequence_number", prepared.expected_sequence_number),
         )
 
     return ScenarioDecisionPersistenceOutcome(

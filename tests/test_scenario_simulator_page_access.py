@@ -40,12 +40,13 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import utils.access_control  # noqa: F401 -- ensure patch targets below are resolvable
+import utils.dashboard_components as dashboard_components
 import utils.navigation  # noqa: F401
 import utils.session_timeout  # noqa: F401
 from utils.scenario_learner_controller import (
@@ -59,6 +60,24 @@ PAGE_PATH = REPO_ROOT / "pages" / "Scenario_Simulator.py"
 
 _LEARNER_EMAIL = "learner@example.com"
 _FEATURE_NAME = "Scenario Simulator"
+
+
+class _FakeQueryParams(dict):
+    def get(self, key, default=""):  # noqa: ANN001
+        if key not in self:
+            return default
+        value = super().get(key, default)
+        if isinstance(value, list):
+            return str(value[-1] if value else default)
+        return str(value or default)
+
+    def get_all(self, key):  # noqa: ANN001
+        if key not in self:
+            return []
+        value = super().get(key)
+        if isinstance(value, list):
+            return [str(v) for v in value]
+        return [str(value)]
 
 
 class _FakeFormContext:
@@ -80,15 +99,17 @@ def _make_fake_streamlit():
         info=lambda *args, **kwargs: None,
         warning=lambda *args, **kwargs: None,
         error=lambda *args, **kwargs: None,
-        markdown=lambda *args, **kwargs: None,
+        markdown=MagicMock(),
         caption=lambda *args, **kwargs: None,
         write=lambda *args, **kwargs: None,
         button=lambda *args, **kwargs: False,
+        switch_page=lambda *args, **kwargs: None,
         form=lambda *args, **kwargs: _FakeFormContext(),
         radio=lambda _label, options, **kwargs: (list(options)[0] if options else None),
         form_submit_button=lambda *args, **kwargs: False,
         rerun=lambda: (_ for _ in ()).throw(SystemExit()),
         session_state={},
+        query_params=_FakeQueryParams(),
         stop=lambda: (_ for _ in ()).throw(SystemExit()),
     )
 
@@ -115,6 +136,7 @@ def _exec_page(
     events: List[Tuple[str, object]],
     paid_access_stops: bool,
     authenticated_email: str,
+    fake_st_capture: Optional[list] = None,
 ):
     """Load and execute the real page file under a fully faked
     streamlit/access-control/navigation/controller boundary, recording each
@@ -131,6 +153,8 @@ def _exec_page(
     succeeded.
     """
     fake_st = _make_fake_streamlit()
+    if fake_st_capture is not None:
+        fake_st_capture.append(fake_st)
 
     def _require_paid_access_side_effect(feature_name):
         events.append(("paid_access", feature_name))
@@ -150,7 +174,19 @@ def _exec_page(
     get_current_user_email_mock = MagicMock(side_effect=_get_current_user_email_side_effect)
     controller_mock = MagicMock(side_effect=_controller_side_effect)
 
-    with patch.dict(sys.modules, {"streamlit": fake_st}):
+    # SIM-SMOKE-02E: `utils.dashboard_components` (imported at module load
+    # time above, while the real `streamlit` is still active) has its own
+    # `import streamlit as st` binding that is completely unaffected by the
+    # `patch.dict(sys.modules, {"streamlit": fake_st})` below -- that patch
+    # only changes how *new* imports of `streamlit` resolve, not an
+    # already-cached module's existing attribute. `pages/Scenario_Simulator.py`
+    # calls `inject_certbound_theme()`/`render_page_header()`/
+    # `render_empty_state()` from that same cached module, so without this
+    # additional patch those calls would silently reach the REAL Streamlit
+    # module (which then breaks internally, because `sys.modules["streamlit"]`
+    # itself has been swapped to `fake_st`) instead of this test's own fake.
+    with patch.dict(sys.modules, {"streamlit": fake_st}), \
+         patch.object(dashboard_components, "st", fake_st):
         with patch("utils.access_control.require_paid_access", require_paid_access_mock), \
              patch("utils.access_control.get_current_user_email", get_current_user_email_mock), \
              patch("utils.access_control.render_app_chrome"), \
@@ -247,6 +283,108 @@ class ScenarioSimulatorEntitlementGateTests(unittest.TestCase):
         self.assertEqual(events[0], ("paid_access", _FEATURE_NAME))
         self.assertEqual(events[1], ("email", _LEARNER_EMAIL))
         self.assertEqual(events[2], ("controller", _LEARNER_EMAIL))
+
+
+class DashboardComponentsModuleCacheIsolationTests(unittest.TestCase):
+    """SIM-SMOKE-02E: proves `_exec_page` correctly routes calls made through
+    the already-imported, module-cached `utils.dashboard_components` (e.g.
+    `inject_certbound_theme()` / `render_page_header()`, both called
+    unconditionally by the real page) to each test's own `fake_st`, instead
+    of leaking through to the real, installed Streamlit module."""
+
+    def test_pre_imported_dashboard_components_module_is_the_real_one_before_exec(self):
+        """Requirement 1 setup check: this test file's module-level
+        `import utils.dashboard_components as dashboard_components` (run
+        while the real `streamlit` was active, long before any
+        `patch.dict(sys.modules, ...)` in this file ever executes) is
+        exactly the same cached module object every other test in this file
+        already relies on -- i.e. the exact scenario the task describes as
+        "pre-imported and cached"."""
+        self.assertIn("utils.dashboard_components", sys.modules)
+        self.assertIs(sys.modules["utils.dashboard_components"], dashboard_components)
+
+    def test_dashboard_rendering_uses_the_exact_same_fake_st_as_the_page(self):
+        """Requirements 1 & 2: with a pre-imported, cached
+        `utils.dashboard_components` module already bound to the real
+        `streamlit`, running the page must still route
+        `inject_certbound_theme()` (called unconditionally at module import
+        time by `pages/Scenario_Simulator.py`) through this test's own
+        `fake_st.markdown`, never through the real Streamlit API."""
+        real_streamlit_markdown = dashboard_components.st.markdown
+        captured: list = []
+        events: List[Tuple[str, object]] = []
+        exec_exc, *_rest = _exec_page(
+            events=events,
+            paid_access_stops=True,
+            authenticated_email=_LEARNER_EMAIL,
+            fake_st_capture=captured,
+        )
+        self.assertIsInstance(exec_exc, SystemExit)
+        self.assertEqual(len(captured), 1)
+        fake_st = captured[0]
+        fake_st.markdown.assert_called()
+        self.assertIsNot(fake_st.markdown, real_streamlit_markdown)
+
+    def test_dashboard_components_st_restored_to_exact_prior_object_after_exec(self):
+        """Requirement 3: `utils.dashboard_components.st` must be restored to
+        the exact object it pointed to before `_exec_page` ran, once
+        `_exec_page` returns."""
+        prior_dashboard_st = dashboard_components.st
+        events: List[Tuple[str, object]] = []
+        _exec_page(events=events, paid_access_stops=False, authenticated_email=_LEARNER_EMAIL)
+        self.assertIs(dashboard_components.st, prior_dashboard_st)
+
+    def test_dashboard_components_st_restored_even_when_page_raises_systemexit(self):
+        """Requirement 4: the denied/gated path is the common case where the
+        page itself raises `SystemExit` (via `st.stop()`) -- restoration of
+        `utils.dashboard_components.st` must not depend on the page
+        returning normally."""
+        prior_dashboard_st = dashboard_components.st
+        events: List[Tuple[str, object]] = []
+        exec_exc, *_rest = _exec_page(
+            events=events, paid_access_stops=True, authenticated_email=_LEARNER_EMAIL
+        )
+        self.assertIsInstance(exec_exc, SystemExit)
+        self.assertIs(dashboard_components.st, prior_dashboard_st)
+
+    def test_entitlement_test_never_invokes_real_streamlit(self):
+        """Requirement 6: the entitlement-gate path never reaches the real,
+        installed Streamlit module -- every call the page makes (directly,
+        or indirectly through `utils.dashboard_components`) is captured by
+        this test's own fake."""
+        real_streamlit = sys.modules.get("streamlit")
+        real_markdown = getattr(real_streamlit, "markdown", None)
+        events: List[Tuple[str, object]] = []
+        captured: list = []
+        exec_exc, *_rest = _exec_page(
+            events=events,
+            paid_access_stops=True,
+            authenticated_email=_LEARNER_EMAIL,
+            fake_st_capture=captured,
+        )
+        self.assertIsInstance(exec_exc, SystemExit)
+        self.assertIs(sys.modules.get("streamlit"), real_streamlit)
+        self.assertIs(getattr(real_streamlit, "markdown", None), real_markdown)
+        self.assertNotIsInstance(real_markdown, MagicMock)
+
+    def test_result_independent_of_prior_dashboard_components_import_state(self):
+        """Requirement 7: running this test class's checks twice in a row
+        (simulating two different file-execution orders both observing an
+        already-imported `utils.dashboard_components`) must behave
+        identically both times -- no leftover state from the first run
+        affects the second."""
+        for _ in range(2):
+            events: List[Tuple[str, object]] = []
+            captured: list = []
+            exec_exc, _paid_access_mock, _email_mock, controller_mock = _exec_page(
+                events=events,
+                paid_access_stops=False,
+                authenticated_email=_LEARNER_EMAIL,
+                fake_st_capture=captured,
+            )
+            self.assertIsNone(exec_exc)
+            controller_mock.assert_called_once_with(_LEARNER_EMAIL)
+            captured[0].markdown.assert_called()
 
 
 if __name__ == "__main__":

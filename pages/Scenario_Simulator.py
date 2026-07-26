@@ -176,6 +176,7 @@ from utils.scenario_learner_controller import (
     ScenarioLearnerInvalidOptionError,
     ScenarioLearnerStateError,
     ScenarioLearnerVersionUnavailableError,
+    _scenario_smoke_trace,
     load_ba201_completion_result,
     prepare_ba201_decision,
     start_or_resume_ba201_attempt,
@@ -200,12 +201,99 @@ show_session_expired_notice()
 inject_certbound_theme()
 
 SAFE_UNAVAILABLE_MESSAGE = "The Scenario Simulator is temporarily unavailable. Please try again shortly."
+_INVALID_COMPLETION_REFERENCE_MESSAGE = (
+    "We couldn't load that scenario result. Return to the Scenario Simulator to continue."
+)
 
 # SIM-VSLICE-02A/02B: transient UI coordination only, never an authoritative
 # source of attempt state -- see module docstring's "Decision submission and
 # idempotency" / "Persistence confirmation vs. view reconstruction" sections.
 _PENDING_DECISION_STATE_KEY = "ba201_pending_decision"
 _COMPLETED_ATTEMPT_STATE_KEY = "ba201_completed_attempt"
+# SIM-UI-04: stable navigation reference for a completed attempt across hard
+# refresh. This is NOT authorization -- ownership remains enforced by the
+# authenticated learner email plus `load_ba201_completion_result(...)`.
+_COMPLETED_ATTEMPT_QUERY_PARAM = "completed_attempt"
+
+
+def _set_query_param(name: str, value: str) -> None:
+    try:
+        st.query_params[name] = value
+    except Exception:
+        pass
+
+
+def _clear_query_param(name: str) -> None:
+    try:
+        if name in st.query_params:
+            del st.query_params[name]
+    except Exception:
+        pass
+
+
+def _parse_canonical_uuid(value: str) -> Optional[str]:
+    try:
+        return str(uuid.UUID(str(value or "").strip()))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _parse_completed_attempt_query_reference() -> tuple[Optional[str], bool]:
+    """Return `(canonical_attempt_id, query_param_present)`.
+
+    When `query_param_present` is true but the first value is `None`, the
+    reference is present but invalid, ambiguous, empty, or unreadable.
+    """
+    try:
+        key_present = _COMPLETED_ATTEMPT_QUERY_PARAM in st.query_params
+    except Exception:
+        return None, True
+
+    if not key_present:
+        return None, False
+
+    try:
+        raw_values = st.query_params.get_all(_COMPLETED_ATTEMPT_QUERY_PARAM)
+    except Exception:
+        return None, True
+
+    if len(raw_values) != 1:
+        return None, True
+
+    value = str(raw_values[0] or "").strip()
+    if not value:
+        return None, True
+
+    canonical = _parse_canonical_uuid(value)
+    if canonical is None:
+        return None, True
+
+    return canonical, True
+
+
+def _set_completed_attempt_query_reference(attempt_id: str) -> None:
+    canonical = _parse_canonical_uuid(attempt_id)
+    if canonical:
+        _set_query_param(_COMPLETED_ATTEMPT_QUERY_PARAM, canonical)
+
+
+def _clear_completed_attempt_query_reference() -> None:
+    _clear_query_param(_COMPLETED_ATTEMPT_QUERY_PARAM)
+
+
+def _clear_completion_navigation_references() -> None:
+    _clear_completed_attempt_query_reference()
+    _clear_completed_marker()
+
+
+def _render_invalid_completion_reference_recovery() -> None:
+    render_empty_state(
+        "Scenario result unavailable",
+        _INVALID_COMPLETION_REFERENCE_MESSAGE,
+    )
+    if st.button("Return to Scenario Simulator", key="scenario_clear_completed_attempt_reference"):
+        _clear_completion_navigation_references()
+        st.rerun()
 
 
 def _render_unavailable(message: str) -> None:
@@ -260,7 +348,9 @@ def _render_completion_result(view: ScenarioCompletionResultView) -> None:
         for domain_label in view.recommended_review_domains:
             st.write(f"- {domain_label}")
 
-    st.page_link("pages/Practice.py", label="Return to Practice", icon="📚")
+    if st.button("Return to Practice", key="scenario_completion_return_to_practice"):
+        _clear_completion_navigation_references()
+        st.switch_page("pages/Practice.py")
 
 
 def _require_premium_learner_email() -> str:
@@ -391,6 +481,15 @@ def _submit_prepared_decision(user_email: str, prepared: PreparedScenarioDecisio
     try:
         outcome: ScenarioDecisionPersistenceOutcome = submit_prepared_ba201_decision(user_email, prepared)
     except ScenarioLearnerBackendError as exc:
+        # SIM-RUNTIME-03A: this is the ONE place "pending request retained
+        # for retry" actually happens -- `prepared` is deliberately left
+        # untouched in st.session_state (see this function's own docstring)
+        # rather than cleared, so the diagnostic marker belongs here, not in
+        # the controller.
+        _scenario_smoke_trace(
+            "scenario_decision_submit_pending_retry_retained",
+            expected_terminal=prepared.is_terminal,
+        )
         message = log_and_get_user_message(
             "Scenario Simulator: decision submission backend/integrity failure (uncertain outcome)",
             "We couldn't confirm your last submission. Please select Retry submission to try again.",
@@ -468,6 +567,7 @@ def _submit_prepared_decision(user_email: str, prepared: PreparedScenarioDecisio
                 attempt_id=outcome.attempt_id,
                 status=outcome.attempt_status,
             )
+            _set_completed_attempt_query_reference(outcome.attempt_id)
         st.rerun()
 
 
@@ -551,9 +651,39 @@ render_page_header(
     certification_name="Salesforce Certified Business Analyst",
 )
 
-_completed_marker = _get_completed_marker(user_email)
+_query_attempt_id, _query_reference_present = _parse_completed_attempt_query_reference()
 _completion_result: Optional[ScenarioCompletionResultView] = None
-if _completed_marker is not None:
+if _query_reference_present:
+    if _query_attempt_id is None:
+        _render_invalid_completion_reference_recovery()
+        st.stop()
+    try:
+        _completion_result = load_ba201_completion_result(
+            user_email, attempt_id=_query_attempt_id
+        )
+    except (
+        ScenarioLearnerAttemptNotFoundError,
+        ScenarioLearnerAttemptNotCompletedError,
+        ScenarioLearnerAccessError,
+    ) as exc:
+        log_and_get_user_message(
+            "Scenario Simulator: completed-attempt query reference rejected",
+            "",
+            exc=exc,
+        )
+        _render_invalid_completion_reference_recovery()
+        st.stop()
+    except ScenarioLearnerError as exc:
+        message = log_and_get_user_message(
+            "Scenario Simulator: completion result could not be loaded from query reference",
+            SAFE_UNAVAILABLE_MESSAGE,
+            exc=exc,
+        )
+        _render_unavailable(message)
+        st.stop()
+
+_completed_marker = _get_completed_marker(user_email)
+if _completion_result is None and _completed_marker is not None:
     try:
         _completion_result = load_ba201_completion_result(
             user_email, attempt_id=_completed_marker.attempt_id
@@ -663,6 +793,7 @@ else:
                 attempt_id=attempt_view.attempt_id,
                 status="completed",
             )
+            _set_completed_attempt_query_reference(attempt_view.attempt_id)
             render_empty_state(
                 "Scenario complete",
                 "You've reached the end of this scenario. Detailed results are not part of this preview yet.",

@@ -46,6 +46,20 @@ def _record_stamp(now: float) -> None:
     st.session_state["_last_activity_stamp_at"] = now
 
 
+def _classify_activity_state(last_activity_at, timeout_seconds: int, now: float) -> str:
+    """Pure classification helper used only to feed the SIM-SMOKE-02H
+    auth-smoke diagnostics marker below -- never changes control flow.
+    Returns one of the fixed enum values `_auth_smoke_trace` accepts for the
+    `timeout_activity_check` event."""
+    if last_activity_at is None:
+        return "no_timestamp"
+    try:
+        idle_seconds = now - float(last_activity_at)
+    except (TypeError, ValueError):
+        return "invalid"
+    return "stale" if idle_seconds > timeout_seconds else "fresh"
+
+
 def enforce_session_timeout(
     *,
     timeout_seconds: int = DEFAULT_IDLE_TIMEOUT_SECONDS,
@@ -64,7 +78,7 @@ def enforce_session_timeout(
     exam countdown timer remains the authority for the session lifecycle.
     """
     # Avoid circular import at module load time.
-    from utils.access_control import clear_login_state, stamp_activity_to_token
+    from utils.access_control import _auth_smoke_trace, clear_login_state, stamp_activity_to_token
 
     now = time.time()
 
@@ -91,6 +105,10 @@ def enforce_session_timeout(
     # restore_login_from_signed_url() (called inside render_app_chrome()) so it
     # survives full browser navigation even when session_state is wiped.
     last_activity_at = st.session_state.get("last_activity_at")
+    _auth_smoke_trace(
+        "timeout_activity_check",
+        state=_classify_activity_state(last_activity_at, timeout_seconds, now),
+    )
 
     if last_activity_at is not None:
         idle_seconds = now - float(last_activity_at)
@@ -99,6 +117,7 @@ def enforce_session_timeout(
             # clear_browser_session_storage flag so _render_browser_session_bridge()
             # clears localStorage on the next render (the st.rerun() below).
             clear_login_state()
+            _auth_smoke_trace("timeout_cleanup", ran=True)
 
             # Mark expiry so restore_login_from_signed_url() cannot re-authenticate
             # during the same Streamlit session.
@@ -116,6 +135,7 @@ def enforce_session_timeout(
 
     # Not expired — update the timestamp in session_state and re-sign the URL
     # token with the fresh time so the next navigation carries it forward.
+    _auth_smoke_trace("timeout_cleanup", ran=False)
     st.session_state["last_activity_at"] = now
     if _should_stamp(now, effective_throttle):
         stamp_activity_to_token()

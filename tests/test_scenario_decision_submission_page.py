@@ -45,6 +45,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import utils.access_control  # noqa: F401 -- ensure patch targets below are resolvable
+import utils.dashboard_components as dashboard_components
 import utils.navigation  # noqa: F401
 import utils.session_timeout  # noqa: F401
 from utils.scenario_learner_controller import (
@@ -71,6 +72,25 @@ _ATTEMPT_ID = "11111111-1111-4111-8111-111111111111"
 _VERSION_ID = "22222222-2222-4222-8222-222222222222"
 _PENDING_STATE_KEY = "ba201_pending_decision"
 _COMPLETED_STATE_KEY = "ba201_completed_attempt"
+_COMPLETED_QUERY_PARAM = "completed_attempt"
+
+
+class _FakeQueryParams(dict):
+    def get(self, key, default=""):  # noqa: ANN001
+        if key not in self:
+            return default
+        value = super().get(key, default)
+        if isinstance(value, list):
+            return str(value[-1] if value else default)
+        return str(value or default)
+
+    def get_all(self, key):  # noqa: ANN001
+        if key not in self:
+            return []
+        value = super().get(key)
+        if isinstance(value, list):
+            return [str(v) for v in value]
+        return [str(value)]
 
 
 def _make_attempt_view(
@@ -80,12 +100,13 @@ def _make_attempt_view(
     option_a_label: str = "Option A",
     option_b_label: str = "Option B",
     progress_label: str = "Decision 1",
+    domain_label: str = "Customer Discovery",
 ) -> ScenarioAttemptView:
     if is_complete:
         current_scene = None
     else:
         current_scene = ScenarioSceneView(
-            domain_label="Customer Discovery",
+            domain_label=domain_label,
             narrative="Week 1 narrative.",
             decision_prompt="What do you do?",
             options=(
@@ -186,13 +207,24 @@ class _FakeFormContext:
 
 
 def _make_fake_streamlit(
-    *, session_state: dict, submitted: bool, retry_clicked: bool, selected_option_id: Optional[str]
+    *,
+    session_state: dict,
+    query_params: Optional[dict] = None,
+    submitted: bool,
+    retry_clicked: bool,
+    selected_option_id: Optional[str],
 ):
     def _radio(_label, options, **_kwargs):
         options = list(options)
         if selected_option_id is not None and selected_option_id in options:
             return selected_option_id
         return options[0] if options else None
+
+    def _button(_label, *args, **kwargs):
+        key = kwargs.get("key", "")
+        if key.startswith("scenario_retry_"):
+            return retry_clicked
+        return False
 
     return types.SimpleNamespace(
         set_page_config=MagicMock(),
@@ -203,12 +235,14 @@ def _make_fake_streamlit(
         caption=MagicMock(),
         write=MagicMock(),
         page_link=MagicMock(),
-        button=MagicMock(return_value=retry_clicked),
+        button=MagicMock(side_effect=_button),
+        switch_page=MagicMock(),
         form=MagicMock(return_value=_FakeFormContext()),
         radio=MagicMock(side_effect=_radio),
         form_submit_button=MagicMock(return_value=submitted),
         rerun=MagicMock(side_effect=lambda: (_ for _ in ()).throw(SystemExit())),
         session_state=session_state,
+        query_params=_FakeQueryParams(query_params or {}),
         stop=MagicMock(side_effect=lambda: (_ for _ in ()).throw(SystemExit())),
     )
 
@@ -217,6 +251,7 @@ def _exec_page_decision(
     *,
     session_state: dict,
     attempt_view: ScenarioAttemptView,
+    query_params: Optional[dict] = None,
     submitted: bool = False,
     retry_clicked: bool = False,
     selected_option_id: Optional[str] = None,
@@ -231,6 +266,7 @@ def _exec_page_decision(
 ):
     fake_st = _make_fake_streamlit(
         session_state=session_state,
+        query_params=query_params,
         submitted=submitted,
         retry_clicked=retry_clicked,
         selected_option_id=selected_option_id,
@@ -262,7 +298,16 @@ def _exec_page_decision(
     else:
         completion_result_mock = MagicMock(return_value=completion_result_return or _make_completion_result())
 
-    with patch.dict(sys.modules, {"streamlit": fake_st}):
+    # SIM-SMOKE-02E: `utils.dashboard_components` (imported at module load
+    # time above, while the real `streamlit` was still active) keeps its own
+    # `import streamlit as st` binding regardless of the `patch.dict` below,
+    # which only affects *new* imports of `streamlit`. `pages/Scenario_Simulator.py`
+    # calls `inject_certbound_theme()`/`render_page_header()`/
+    # `render_empty_state()` through that same cached module, so it must be
+    # patched here too or those calls silently reach the real Streamlit
+    # module instead of this test's own `fake_st`.
+    with patch.dict(sys.modules, {"streamlit": fake_st}), \
+         patch.object(dashboard_components, "st", fake_st):
         with patch("utils.access_control.require_paid_access", return_value=True), \
              patch("utils.access_control.get_current_user_email", return_value=learner_email), \
              patch("utils.access_control.render_app_chrome"), \
@@ -383,6 +428,78 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         retry_call_args = submit_mock_3.call_args.args
         self.assertIs(retry_call_args[1], prepared)
         self.assertNotIn(_PENDING_STATE_KEY, session_state)
+
+    def test_enabling_diagnostics_does_not_change_uncertain_retry_or_rerun_orchestration(self):
+        """SIM-RUNTIME-03A: `CERTBOUND_SCENARIO_SMOKE_DIAGNOSTICS=1` must
+        never change the page's pending-state, rerun, or retry
+        orchestration -- it may only add stderr-only diagnostic markers
+        (see `tests/test_scenario_learner_controller.py`'s
+        `ScenarioSmokeDiagnosticsTests` for direct coverage of the marker
+        content itself). Repeats the uncertain -> plain-rerun -> retry
+        sequence above with diagnostics enabled and asserts byte-for-byte
+        identical pending-state/rerun/mock-call-shaped behavior."""
+
+        def _run_sequence():
+            session_state: dict = {}
+            attempt_view = _make_attempt_view()
+            prepared = _make_prepared()
+
+            exec_exc_1, _fake_st_1, _start_mock_1, _prepare_mock_1, _submit_mock_1, _completion_mock = (
+                _exec_page_decision(
+                    session_state=session_state,
+                    attempt_view=attempt_view,
+                    submitted=True,
+                    selected_option_id="A",
+                    prepare_return=prepared,
+                    submit_side_effect=ScenarioLearnerBackendError("uncertain network failure"),
+                )
+            )
+            pending_after_uncertain = session_state.get(_PENDING_STATE_KEY)
+
+            exec_exc_2, _fake_st_2, start_mock_2, prepare_mock_2, submit_mock_2, _completion_mock = (
+                _exec_page_decision(
+                    session_state=session_state,
+                    attempt_view=attempt_view,
+                    submitted=False,
+                    retry_clicked=False,
+                )
+            )
+
+            exec_exc_3, _fake_st_3, start_mock_3, prepare_mock_3, submit_mock_3, _completion_mock = (
+                _exec_page_decision(
+                    session_state=session_state,
+                    attempt_view=attempt_view,
+                    submitted=False,
+                    retry_clicked=True,
+                    submit_return=_make_outcome(attempt_id=attempt_view.attempt_id),
+                )
+            )
+
+            return (
+                isinstance(exec_exc_1, SystemExit),
+                isinstance(exec_exc_2, SystemExit),
+                isinstance(exec_exc_3, SystemExit),
+                pending_after_uncertain is not None,
+                start_mock_2.called,
+                prepare_mock_2.called,
+                submit_mock_2.called,
+                start_mock_3.called,
+                prepare_mock_3.called,
+                submit_mock_3.call_count,
+                _PENDING_STATE_KEY not in session_state,
+            )
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CERTBOUND_SCENARIO_SMOKE_DIAGNOSTICS", None)
+            result_disabled = _run_sequence()
+
+            os.environ["CERTBOUND_SCENARIO_SMOKE_DIAGNOSTICS"] = "1"
+            try:
+                result_enabled = _run_sequence()
+            finally:
+                os.environ.pop("CERTBOUND_SCENARIO_SMOKE_DIAGNOSTICS", None)
+
+        self.assertEqual(result_disabled, result_enabled)
 
     def test_pending_submission_shows_only_retry_control_never_calls_start_or_resume(self):
         """Requirement 13: a pending prepared submission is checked and
@@ -575,18 +692,16 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         self.assertNotIn(_PENDING_STATE_KEY, session_state)
 
     def test_terminal_success_stores_completion_and_never_autostarts_replacement_attempt(self):
-        """Requirement 16: a confirmed terminal `ScenarioDecisionPersistenceOutcome`
-        must be shown as "Scenario complete" and must never cause a
-        subsequent rerun of this session to call
-        `start_or_resume_ba201_attempt(...)` again (which would otherwise
-        create a brand-new replacement attempt) -- SIM-VSLICE-02B: the page
-        never reloads content to render this; it stores only a small
-        email-bound completion marker."""
+        """Requirement 16 / SIM-UI-04: a confirmed terminal
+        `ScenarioDecisionPersistenceOutcome` must record both the session
+        completion marker and the `completed_attempt` query reference, and
+        must never cause a subsequent rerun to call
+        `start_or_resume_ba201_attempt(...)` again."""
         session_state: dict = {}
         attempt_view = _make_attempt_view()
         completed_outcome = _make_outcome(attempt_id=attempt_view.attempt_id, is_complete=True)
 
-        exec_exc_1, _fake_st_1, start_mock_1, _prepare_mock_1, submit_mock_1, _completion_mock = _exec_page_decision(
+        exec_exc_1, fake_st_1, start_mock_1, _prepare_mock_1, submit_mock_1, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
             submitted=True,
@@ -596,9 +711,8 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         self.assertIsInstance(exec_exc_1, SystemExit)  # success path reruns
         self.assertIn(_COMPLETED_STATE_KEY, session_state)
         self.assertNotIn(_PENDING_STATE_KEY, session_state)
+        self.assertEqual(fake_st_1.query_params.get(_COMPLETED_QUERY_PARAM), attempt_view.attempt_id)
 
-        # Next rerun of the same session: must render completion directly
-        # and must NEVER call start_or_resume_ba201_attempt(...) again.
         exec_exc_2, fake_st_2, start_mock_2, prepare_mock_2, submit_mock_2, _completion_mock = _exec_page_decision(
             session_state=session_state,
             attempt_view=attempt_view,
@@ -609,6 +723,29 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         fake_st_2.form.assert_not_called()
         prepare_mock_2.assert_not_called()
         submit_mock_2.assert_not_called()
+
+    def test_mid_scenario_refresh_still_resumes_existing_attempt(self):
+        session_state: dict = {}
+        attempt_view = _make_attempt_view()
+
+        exec_exc_1, fake_st_1, start_mock_1, _prepare_mock_1, _submit_mock_1, _completion_mock = _exec_page_decision(
+            session_state=session_state,
+            attempt_view=attempt_view,
+            submitted=False,
+        )
+        self.assertIsNone(exec_exc_1)
+        start_mock_1.assert_called_once()
+        fake_st_1.form.assert_called_once()
+        self.assertNotIn(_COMPLETED_QUERY_PARAM, fake_st_1.query_params)
+
+        exec_exc_2, fake_st_2, start_mock_2, _prepare_mock_2, _submit_mock_2, _completion_mock = _exec_page_decision(
+            session_state={},
+            attempt_view=attempt_view,
+            submitted=False,
+        )
+        self.assertIsNone(exec_exc_2)
+        start_mock_2.assert_called_once()
+        fake_st_2.form.assert_called_once()
 
     def test_completion_marker_for_different_learner_is_cleared_and_start_resume_proceeds(self):
         """SIM-VSLICE-02B: a completion marker bound to one learner's
@@ -735,11 +872,210 @@ class DecisionSubmissionIdempotencyTests(unittest.TestCase):
         prepare_mock.assert_called_once()
         self.assertEqual(prepare_mock.call_args.kwargs["selected_option_id"], "B")
 
+    def test_hard_refresh_at_real_decision_five_resumes_and_one_submission_advances(self):
+        """SIM-RUNTIME-03A correction: the real BA-201 fifth decision
+        (scene `s05_workshop_setup`, domain d2 "Collaboration with
+        Stakeholders") is NONTERMINAL -- a successful submission there
+        advances to `s06_conflict`, never to completion. The actual
+        terminal scene is `s24_golive_readiness` (covered separately by
+        `test_terminal_success_stores_completion_and_never_autostarts_replacement_attempt`
+        and by the controller-level `_advance_to_scene("s24_golive_readiness")`
+        fixtures in `tests/test_scenario_learner_controller.py`).
+
+        `ScenarioSceneView` is deliberately learner-safe and has no
+        `scene_id` field (see its own docstring in
+        `utils/scenario_learner_controller.py`), so this page-orchestration
+        test cannot assert the exact persisted scene id -- it approximates
+        "Decision 5" via `progress_label` and the real domain-d2 label,
+        and proves the ORCHESTRATION contract (prepare once, submit once,
+        clear pending, never store a completion marker, never write
+        `completed_attempt`, rerun once, and resume as an ADVANCED
+        in-progress attempt on the next pass) using a `PreparedScenarioDecision`
+        /`ScenarioDecisionPersistenceOutcome` pair shaped exactly like the
+        real nonterminal `s05_workshop_setup` -> `s06_conflict` transition.
+
+        This is a MOCKED page-orchestration test, not a reproduction of the
+        live backend failure -- it locks in the correct expected UI
+        behavior for a clean nonterminal fifth-decision response."""
+        session_state: dict = {}
+        decision_five_view = _make_attempt_view(
+            progress_label="Decision 5",
+            domain_label="Collaboration with Stakeholders",  # real domain d2 label
+            option_a_label="Invite all 14 to one large kickoff workshop.",
+            option_b_label="Use a Power/Interest assessment for a focused initial session.",
+        )
+
+        # Pass 1: hard refresh -- fresh session_state, nothing pending/completed.
+        exec_exc_1, fake_st_1, start_mock_1, prepare_mock_1, submit_mock_1, _completion_mock_1 = _exec_page_decision(
+            session_state=session_state,
+            attempt_view=decision_five_view,
+            submitted=False,
+        )
+        self.assertIsNone(exec_exc_1)
+        start_mock_1.assert_called_once()
+        fake_st_1.form.assert_called_once()
+        prepare_mock_1.assert_not_called()
+        submit_mock_1.assert_not_called()
+        self.assertNotIn(_PENDING_STATE_KEY, session_state)
+        self.assertNotIn(_COMPLETED_STATE_KEY, session_state)
+
+        # Pass 2: one intentional, NONTERMINAL submission -- real
+        # s05_workshop_setup(B) -> s06_conflict shape.
+        nonterminal_prepared = PreparedScenarioDecision(
+            normalized_email=_LEARNER_EMAIL,
+            certification_exam_name=BA201_CERTIFICATION_EXAM_NAME,
+            simulation_id=BA201_SIMULATION_ID,
+            scenario_version_id=_VERSION_ID,
+            scenario_version="1.0.0",
+            canonical_content_sha256="a" * 64,
+            engine_version=ENGINE_VERSION,
+            attempt_id=decision_five_view.attempt_id,
+            selected_option_id="B",
+            idempotency_key="77777777-7777-4777-8777-777777777777",
+            expected_sequence_number=5,
+            expected_scene_id="s05_workshop_setup",
+            state_before_json='{"currentSceneId":"s05_workshop_setup"}',
+            state_after_json='{"currentSceneId":"s06_conflict"}',
+            resulting_scene_id="s06_conflict",
+            is_terminal=False,
+            terminal_ending_id=None,
+            terminal_result_snapshot_json=None,
+        )
+        advanced_outcome = _make_outcome(
+            attempt_id=decision_five_view.attempt_id,
+            is_complete=False,
+            current_scene_id="s06_conflict",
+        )
+        exec_exc_2, fake_st_2, start_mock_2, prepare_mock_2, submit_mock_2, _completion_mock_2 = _exec_page_decision(
+            session_state=session_state,
+            attempt_view=decision_five_view,
+            submitted=True,
+            selected_option_id="B",
+            prepare_return=nonterminal_prepared,
+            submit_return=advanced_outcome,
+        )
+        self.assertIsInstance(exec_exc_2, SystemExit)  # nonterminal success reruns exactly once
+        prepare_mock_2.assert_called_once()
+        submit_mock_2.assert_called_once()
+        self.assertNotIn(_PENDING_STATE_KEY, session_state)  # requirement 5
+        self.assertNotIn(_COMPLETED_STATE_KEY, session_state)  # requirement 6: never a completion marker
+        self.assertNotIn(_COMPLETED_QUERY_PARAM, fake_st_2.query_params)  # requirement 7
+
+        # Pass 3: the NEXT render resumes an ADVANCED in-progress attempt
+        # (never the completion view) -- requirement 9.
+        advanced_view = _make_attempt_view(progress_label="Decision 6")
+        exec_exc_3, fake_st_3, start_mock_3, prepare_mock_3, submit_mock_3, _completion_mock_3 = _exec_page_decision(
+            session_state=session_state,
+            attempt_view=advanced_view,
+            submitted=False,
+        )
+        self.assertIsNone(exec_exc_3)
+        start_mock_3.assert_called_once()
+        fake_st_3.form.assert_called_once()  # the decision form renders again -- not the completion view
+        prepare_mock_3.assert_not_called()
+        submit_mock_3.assert_not_called()
+        self.assertNotIn(_COMPLETED_STATE_KEY, session_state)
+
+    def test_terminal_uncertain_retry_reuses_key_and_reaches_completion_no_duplicate(self):
+        """SIM-RUNTIME-03 reproduction 4 (terminal case): a TERMINAL
+        prepared decision whose first submission is uncertain must retain
+        the exact pending prepared request (same idempotency key) and,
+        once retried, reach a confirmed completion -- never a second
+        preparation, never a second distinct submission attempt beyond the
+        explicit retry."""
+        session_state: dict = {}
+        attempt_view = _make_attempt_view()
+        terminal_prepared = _make_prepared(is_terminal=True)
+
+        exec_exc_1, _fake_st_1, _start_mock_1, prepare_mock_1, submit_mock_1, _completion_mock_1 = _exec_page_decision(
+            session_state=session_state,
+            attempt_view=attempt_view,
+            submitted=True,
+            selected_option_id="A",
+            prepare_return=terminal_prepared,
+            submit_side_effect=ScenarioLearnerBackendError("uncertain network failure"),
+        )
+        self.assertIsNone(exec_exc_1)  # uncertain outcome never calls st.stop()/st.rerun()
+        prepare_mock_1.assert_called_once()
+        submit_mock_1.assert_called_once()
+        self.assertIn(_PENDING_STATE_KEY, session_state)
+        self.assertIs(session_state[_PENDING_STATE_KEY], terminal_prepared)
+
+        completed_outcome = _make_outcome(
+            attempt_id=attempt_view.attempt_id, is_complete=True, idempotent_replay=True
+        )
+        exec_exc_2, _fake_st_2, start_mock_2, prepare_mock_2, submit_mock_2, _completion_mock_2 = _exec_page_decision(
+            session_state=session_state,
+            attempt_view=attempt_view,
+            submitted=False,
+            retry_clicked=True,
+            submit_return=completed_outcome,
+        )
+        self.assertIsInstance(exec_exc_2, SystemExit)  # confirmed completion reruns
+        start_mock_2.assert_not_called()
+        prepare_mock_2.assert_not_called()
+        submit_mock_2.assert_called_once()
+        retry_call_args = submit_mock_2.call_args.args
+        self.assertIs(retry_call_args[1], terminal_prepared)  # exact same prepared object/idempotency key
+        self.assertNotIn(_PENDING_STATE_KEY, session_state)
+        self.assertIn(_COMPLETED_STATE_KEY, session_state)
+
     def test_page_never_imports_scenario_persistence_directly(self):
         source = PAGE_PATH.read_text(encoding="utf-8")
         self.assertNotIn("import utils.scenario_persistence", source)
         self.assertNotIn("from utils.scenario_persistence", source)
         self.assertNotIn("from utils import scenario_persistence", source)
+
+
+class DashboardComponentsModuleCacheIsolationTests(unittest.TestCase):
+    """SIM-SMOKE-02E: proves `_exec_page_decision` correctly routes calls
+    made through the already-imported, module-cached
+    `utils.dashboard_components` (e.g. `inject_certbound_theme()` /
+    `render_page_header()`, both called unconditionally by the real page) to
+    each test's own `fake_st`, instead of leaking through to the real,
+    installed Streamlit module."""
+
+    def test_pre_imported_dashboard_components_module_is_the_real_one_before_exec(self):
+        self.assertIn("utils.dashboard_components", sys.modules)
+        self.assertIs(sys.modules["utils.dashboard_components"], dashboard_components)
+
+    def test_dashboard_rendering_uses_the_exact_same_fake_st_as_the_page(self):
+        real_streamlit_markdown = dashboard_components.st.markdown
+        session_state: dict = {}
+        _exec_exc, fake_st, *_rest = _exec_page_decision(
+            session_state=session_state, attempt_view=_make_attempt_view(), submitted=False
+        )
+        fake_st.markdown.assert_called()
+        self.assertIsNot(fake_st.markdown, real_streamlit_markdown)
+
+    def test_dashboard_components_st_restored_to_exact_prior_object_after_exec(self):
+        prior_dashboard_st = dashboard_components.st
+        session_state: dict = {}
+        _exec_page_decision(session_state=session_state, attempt_view=_make_attempt_view(), submitted=False)
+        self.assertIs(dashboard_components.st, prior_dashboard_st)
+
+    def test_dashboard_components_st_restored_even_when_page_raises_systemexit(self):
+        prior_dashboard_st = dashboard_components.st
+        session_state: dict = {}
+        attempt_view = _make_attempt_view()
+        exec_exc, _fake_st, _start_mock, prepare_mock, submit_mock, _completion_mock = _exec_page_decision(
+            session_state=session_state,
+            attempt_view=attempt_view,
+            submitted=True,
+            selected_option_id="A",
+            submit_return=_make_outcome(attempt_id=attempt_view.attempt_id),
+        )
+        self.assertIsInstance(exec_exc, SystemExit)  # success path reruns
+        self.assertIs(dashboard_components.st, prior_dashboard_st)
+
+    def test_result_independent_of_prior_dashboard_components_import_state(self):
+        for _ in range(2):
+            session_state: dict = {}
+            _exec_exc, fake_st, start_resume_mock, _prepare_mock, _submit_mock, _completion_mock = _exec_page_decision(
+                session_state=session_state, attempt_view=_make_attempt_view(), submitted=False
+            )
+            start_resume_mock.assert_called_once()
+            fake_st.markdown.assert_called()
 
 
 if __name__ == "__main__":

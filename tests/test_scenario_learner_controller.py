@@ -9,7 +9,9 @@ actual repository content, not a synthetic stand-in.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import io
 import os
 import re
 import sys
@@ -23,6 +25,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import utils.scenario_learner_controller as scenario_learner_controller
 from utils.scenario_catalog import resolve_default_scenario_version_path
 from utils.scenario_engine import (
     ENGINE_VERSION,
@@ -2061,6 +2064,467 @@ class PreparedDecisionControllerTests(unittest.TestCase):
         self.assertEqual(len(submit_calls), 1)
         self.assertEqual(submit_calls[0][1]["p_selected_option_id"], "B")
         self.assertEqual(submit_calls[0][1]["p_idempotency_key"], _IDEMPOTENCY_KEY)
+
+    # -- SIM-RUNTIME-03 reproduction 1: five sequential real decisions -------
+
+    def test_five_sequential_real_decisions_each_succeed_on_exactly_one_call(self):
+        """SIM-RUNTIME-03 reproduction: drives FIVE consecutive, REAL,
+        sequential BA-201 decisions (s01_kickoff -> s02a_cio_response ->
+        s03_data_landscape -> s04_problem_statement -> s05_workshop_setup,
+        matching the live smoke test's Decisions 1-5 exactly, including the
+        scene the live bug report calls "Decision 5") through
+        `prepare_ba201_decision(...)` + `submit_prepared_ba201_decision(...)`,
+        each with exactly ONE prepare call and ONE submit call.
+
+        `get_scenario_attempt_v1`'s canned response is advanced by hand
+        between steps (mirroring what a real V68 backend would return after
+        each prior commit) specifically because the shared `FakeSupabase`
+        test double used across this module does not auto-advance
+        `get_scenario_attempt_v1` from `_StatefulDecisionStore`'s internal
+        state -- this is the first test in this suite to genuinely chain
+        multiple DIFFERENT real decisions through the same attempt rather
+        than merely retrying one.
+
+        This proves there is no application-layer defect in the two-stage
+        prepare/submit/`_persisted_response_matches_prepared` comparison
+        pipeline that would force a second click for any of these five
+        decisions, including the fifth -- every option chosen here is one
+        BA-201 actually declares (verified against
+        `scenario_content/business_analyst/ba201-sim-meridian-health-01/1.0.0/scenario.json`),
+        s05_workshop_setup is domain d2's first scene (a real, nonterminal
+        content transition, not the scenario's terminal decision -- see this
+        module's own note on `s24_golive_readiness` being the actual final
+        scene)."""
+        run = start_scenario_run(_CONTENT)
+        client, version_id, attempt_id = self._client_with_attempt(run=run)
+
+        options = ["B", "A", "A", "B", "B"]
+        expected_scene_sequence = [
+            "s01_kickoff",
+            "s02a_cio_response",
+            "s03_data_landscape",
+            "s04_problem_statement",
+            "s05_workshop_setup",
+        ]
+
+        for index, option_id in enumerate(options):
+            expected_sequence_number = index + 1
+            self.assertEqual(run.current_scene_id, expected_scene_sequence[index])
+
+            client.set_rpc_response(
+                "get_scenario_attempt_v1",
+                [_attempt_row(attempt_id=attempt_id, version_id=version_id, run=run)],
+            )
+
+            prepared = prepare_ba201_decision(
+                _LEARNER_EMAIL_RAW,
+                attempt_id=attempt_id,
+                selected_option_id=option_id,
+                idempotency_key=str(uuid.uuid4()),
+                client=client,
+            )
+            self.assertEqual(prepared.expected_sequence_number, expected_sequence_number)
+            self.assertEqual(prepared.expected_scene_id, run.current_scene_id)
+
+            run_after = apply_decision(run, option_id)
+            self.assertFalse(run_after.is_complete, "fixture path is nonterminal through all 5 steps")
+
+            client.set_rpc_response(
+                "submit_scenario_decision_v1",
+                [_submit_row(attempt_id=attempt_id, run_after=run_after, sequence_number=expected_sequence_number)],
+            )
+
+            outcome = submit_prepared_ba201_decision(_LEARNER_EMAIL_RAW, prepared, client=client)
+
+            self.assertFalse(outcome.is_complete)
+            self.assertFalse(outcome.idempotent_replay)
+            self.assertEqual(outcome.current_scene_id, run_after.current_scene_id)
+
+            run = run_after
+
+        self.assertEqual(run.current_scene_id, "s06_conflict")
+        submit_calls = self._submit_calls(client)
+        self.assertEqual(len(submit_calls), 5, "each decision must persist after exactly one submit call")
+        self.assertEqual(
+            [call[1]["p_expected_sequence_number"] for call in submit_calls],
+            [1, 2, 3, 4, 5],
+        )
+        get_attempt_calls = self._get_attempt_calls(client)
+        self.assertEqual(len(get_attempt_calls), 5, "each decision must prepare with exactly one attempt lookup")
+
+    # -- SIM-RUNTIME-03 reproduction 3: terminal first-click success --------
+
+    def test_terminal_decision_persists_and_completes_on_exactly_one_call(self):
+        """SIM-RUNTIME-03 reproduction: a genuinely TERMINAL decision (the
+        real BA-201 final scene, `s24_golive_readiness`) must persist its
+        sequence number, mark the attempt completed, and be observable via
+        `ScenarioDecisionPersistenceOutcome` after exactly ONE
+        `submit_prepared_ba201_decision(...)` call -- no retry required."""
+        run = _advance_to_scene("s24_golive_readiness")
+        client, _version_id, attempt_id = self._client_with_attempt(run=run)
+        expected_sequence_number = len(run.decisions) + 1
+
+        prepared = prepare_ba201_decision(
+            _LEARNER_EMAIL_RAW,
+            attempt_id=attempt_id,
+            selected_option_id="A",
+            idempotency_key=_IDEMPOTENCY_KEY,
+            client=client,
+        )
+        self.assertTrue(prepared.is_terminal)
+
+        run_after = apply_decision(run, "A")
+        self.assertTrue(run_after.is_complete)
+
+        client.set_rpc_response(
+            "submit_scenario_decision_v1",
+            [_submit_row(attempt_id=attempt_id, run_after=run_after, sequence_number=expected_sequence_number)],
+        )
+
+        outcome = submit_prepared_ba201_decision(_LEARNER_EMAIL_RAW, prepared, client=client)
+
+        self.assertTrue(outcome.is_complete)
+        self.assertEqual(outcome.attempt_status, "completed")
+        self.assertIsNone(outcome.current_scene_id)
+        self.assertFalse(outcome.idempotent_replay)
+        submit_calls = self._submit_calls(client)
+        self.assertEqual(len(submit_calls), 1)
+        self.assertEqual(submit_calls[0][1]["p_expected_sequence_number"], expected_sequence_number)
+        self.assertTrue(submit_calls[0][1]["p_is_terminal"])
+
+
+class ScenarioSmokeDiagnosticsTests(unittest.TestCase):
+    """SIM-RUNTIME-03A: the opt-in, environment-gated
+    `_scenario_smoke_trace()` helper wired around the two-stage BA-201
+    decision-submission pipeline (`prepare_ba201_decision(...)` /
+    `submit_prepared_ba201_decision(...)`).
+
+    Proves: (1) it is a strict no-op by default and for every explicitly
+    "falsy-looking" env value; (2) enabling it only ever emits fixed,
+    allowlisted event/field/value combinations, with any unrecognized
+    event/field/value silently dropped; (3) a real persisted-response
+    mismatch reports exactly one fixed mismatch-field category; (4) no
+    learner-identifying or request/response-shaped value can ever reach
+    the captured output, even across a full real prepare+submit pass; and
+    (5) enabling diagnostics never changes the real pipeline's return
+    values or raised exceptions.
+    """
+
+    def setUp(self):
+        self.env_patcher = patch.dict(os.environ, {}, clear=False)
+        self.env_patcher.start()
+        self.addCleanup(self.env_patcher.stop)
+        os.environ.pop(scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR, None)
+
+    def _captured(self, fn):
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            result = fn()
+        return result, buf.getvalue()
+
+    def _client_with_attempt(self, *, run, attempt_id=None, status: str = "in_progress", version_id=None):
+        version_id = version_id or str(uuid.uuid4())
+        attempt_id = attempt_id or str(uuid.uuid4())
+        client = _make_client_with_published_version(version_id)
+        client.set_rpc_response(
+            "get_scenario_attempt_v1",
+            [_attempt_row(attempt_id=attempt_id, version_id=version_id, run=run, status=status)],
+        )
+        return client, version_id, attempt_id
+
+    # -- 1: strict no-op by default / for explicitly falsy-looking values --
+
+    def test_disabled_by_default_emits_nothing_for_a_real_prepare_and_submit(self):
+        self.assertNotIn(scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR, os.environ)
+        run = start_scenario_run(_CONTENT)
+        client, _version_id, attempt_id = self._client_with_attempt(run=run)
+
+        def _do():
+            prepared = prepare_ba201_decision(
+                _LEARNER_EMAIL_RAW,
+                attempt_id=attempt_id,
+                selected_option_id="B",
+                idempotency_key=_IDEMPOTENCY_KEY,
+                client=client,
+            )
+            run_after = apply_decision(run, "B")
+            client.set_rpc_response(
+                "submit_scenario_decision_v1",
+                [_submit_row(attempt_id=attempt_id, run_after=run_after, sequence_number=1)],
+            )
+            return submit_prepared_ba201_decision(_LEARNER_EMAIL_RAW, prepared, client=client)
+
+        outcome, output = self._captured(_do)
+        self.assertEqual(output, "")
+        self.assertFalse(outcome.is_complete)
+
+    def test_explicitly_disabled_looking_values_emit_nothing(self):
+        for disabled_value in ["0", "false", "False", "no", "", "true", "TRUE", "1 "]:
+            os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = disabled_value
+            _, output = self._captured(
+                lambda: scenario_learner_controller._scenario_smoke_trace("scenario_decision_prepare_started")
+            )
+            self.assertEqual(output, "", f"unexpected output for env value {disabled_value!r}")
+
+    # -- 2: each category emits only when enabled, only allowlisted fields -
+
+    def test_enabled_prepare_started_emits(self):
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        _, output = self._captured(
+            lambda: scenario_learner_controller._scenario_smoke_trace("scenario_decision_prepare_started")
+        )
+        self.assertIn("event=scenario_decision_prepare_started", output)
+        self.assertTrue(output.startswith("[certbound_scenario_smoke]"))
+
+    def test_enabled_submit_started_emits_only_allowlisted_fields(self):
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        _, output = self._captured(
+            lambda: scenario_learner_controller._scenario_smoke_trace(
+                "scenario_decision_submit_started", expected_sequence_number=5, expected_terminal=False
+            )
+        )
+        self.assertIn("event=scenario_decision_submit_started", output)
+        self.assertIn("expected_sequence_number=5", output)
+        self.assertIn("expected_terminal=False", output)
+
+    def test_enabled_rpc_exception_emits_safe_class_name(self):
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        _, output = self._captured(
+            lambda: scenario_learner_controller._scenario_smoke_trace(
+                "scenario_decision_submit_rpc_exception", exception_class="ScenarioSequenceConflictError"
+            )
+        )
+        self.assertIn("event=scenario_decision_submit_rpc_exception", output)
+        self.assertIn("exception_class=ScenarioSequenceConflictError", output)
+
+    def test_remaining_result_categories_each_emit_when_enabled(self):
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        cases = [
+            ("scenario_decision_submit_confirmed_nonterminal", {"expected_sequence_number": 3, "returned_sequence_number": 3}),
+            ("scenario_decision_submit_confirmed_terminal", {"expected_sequence_number": 24, "returned_sequence_number": 24}),
+            ("scenario_decision_submit_idempotent_replay", {"returned_terminal": True}),
+            ("scenario_decision_submit_pending_retry_retained", {"expected_terminal": False}),
+        ]
+        for event, kwargs in cases:
+            _, output = self._captured(
+                lambda event=event, kwargs=kwargs: scenario_learner_controller._scenario_smoke_trace(event, **kwargs)
+            )
+            self.assertIn(f"event={event}", output)
+
+    def test_unknown_event_name_is_dropped_entirely(self):
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        _, output = self._captured(
+            lambda: scenario_learner_controller._scenario_smoke_trace("not_a_real_event", exception_class="Foo")
+        )
+        self.assertEqual(output, "")
+
+    def test_disallowed_field_name_is_silently_omitted(self):
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        _, output = self._captured(
+            lambda: scenario_learner_controller._scenario_smoke_trace(
+                "scenario_decision_prepare_started", learner_email="learner@example.com"
+            )
+        )
+        self.assertNotIn("learner@example.com", output)
+        self.assertEqual(output.strip(), "[certbound_scenario_smoke] event=scenario_decision_prepare_started")
+
+    def test_out_of_range_or_wrong_type_small_int_is_dropped(self):
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        for bad_value in [-1, 10000, True, "5", 5.0]:
+            _, output = self._captured(
+                lambda bad_value=bad_value: scenario_learner_controller._scenario_smoke_trace(
+                    "scenario_decision_submit_started", expected_sequence_number=bad_value, expected_terminal=False
+                )
+            )
+            self.assertNotIn("expected_sequence_number=", output, f"should have dropped {bad_value!r}")
+            self.assertIn("expected_terminal=False", output, "the other, validly-typed field must still emit")
+
+    def test_unsafe_exception_class_value_is_dropped(self):
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        for bad_value in ["Some Exception: token=abc123", "module.ClassName", "", "a" * 65]:
+            _, output = self._captured(
+                lambda bad_value=bad_value: scenario_learner_controller._scenario_smoke_trace(
+                    "scenario_decision_submit_rpc_exception", exception_class=bad_value
+                )
+            )
+            self.assertNotIn("exception_class=", output, f"should have dropped {bad_value!r}")
+
+    # -- 3: a real mismatch reports exactly one fixed mismatch-field value -
+
+    def test_response_mismatch_emits_exactly_one_fixed_mismatch_field(self):
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        run = start_scenario_run(_CONTENT)
+        client, _version_id, attempt_id = self._client_with_attempt(run=run)
+        divergent_run_after = apply_decision(run, "A")  # NOT what is prepared below ("B")
+
+        prepared = prepare_ba201_decision(
+            _LEARNER_EMAIL_RAW,
+            attempt_id=attempt_id,
+            selected_option_id="B",
+            idempotency_key=_IDEMPOTENCY_KEY,
+            client=client,
+        )
+        client.set_rpc_response(
+            "submit_scenario_decision_v1",
+            [_submit_row(attempt_id=attempt_id, run_after=divergent_run_after, sequence_number=1)],
+        )
+
+        def _do():
+            with self.assertRaises(ScenarioLearnerBackendError):
+                submit_prepared_ba201_decision(_LEARNER_EMAIL_RAW, prepared, client=client)
+
+        _, output = self._captured(_do)
+        self.assertEqual(
+            output.count("event=scenario_decision_submit_response_mismatch"),
+            1,
+            "exactly one mismatch diagnostic event must be emitted",
+        )
+        self.assertIn("mismatch_field=current_scene", output)
+        for other_field in (
+            "attempt_id",
+            "sequence_number",
+            "scene_id",
+            "lifecycle_status",
+            "terminal_status",
+            "engine_state",
+            "malformed_response",
+            "unknown",
+        ):
+            self.assertNotIn(f"mismatch_field={other_field}", output)
+
+    # -- 4: no prohibited value ever reaches captured output ----------------
+
+    def test_full_real_pipeline_diagnostics_never_leak_prohibited_values(self):
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        run = start_scenario_run(_CONTENT)
+        client, version_id, attempt_id = self._client_with_attempt(run=run)
+
+        def _do():
+            prepared = prepare_ba201_decision(
+                _LEARNER_EMAIL_RAW,
+                attempt_id=attempt_id,
+                selected_option_id="B",
+                idempotency_key=_IDEMPOTENCY_KEY,
+                client=client,
+            )
+            run_after = apply_decision(run, "B")
+            client.set_rpc_response(
+                "submit_scenario_decision_v1",
+                [_submit_row(attempt_id=attempt_id, run_after=run_after, sequence_number=1)],
+            )
+            return submit_prepared_ba201_decision(_LEARNER_EMAIL_RAW, prepared, client=client)
+
+        outcome, output = self._captured(_do)
+        self.assertFalse(outcome.is_complete)
+        self.assertTrue(output, "sanity check: diagnostics must actually have fired")
+        prohibited_values = [
+            _LEARNER_EMAIL_NORMALIZED,
+            "learner@example.com",
+            attempt_id,
+            version_id,
+            _IDEMPOTENCY_KEY,
+            "s01_kickoff",
+            "s02a_cio_response",
+            "projectHealth",
+        ]
+        for value in prohibited_values:
+            self.assertNotIn(value, output, f"prohibited value {value!r} leaked into diagnostics output")
+
+    # -- 5: enabling diagnostics never changes real pipeline behavior ------
+
+    def test_enabling_diagnostics_does_not_change_nonterminal_outcome(self):
+        fixed_attempt_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+        def _run_once():
+            run = start_scenario_run(_CONTENT)
+            client, _version_id, attempt_id = self._client_with_attempt(
+                run=run, attempt_id=fixed_attempt_id
+            )
+            prepared = prepare_ba201_decision(
+                _LEARNER_EMAIL_RAW,
+                attempt_id=attempt_id,
+                selected_option_id="B",
+                idempotency_key=_IDEMPOTENCY_KEY,
+                client=client,
+            )
+            run_after = apply_decision(run, "B")
+            client.set_rpc_response(
+                "submit_scenario_decision_v1",
+                [_submit_row(attempt_id=attempt_id, run_after=run_after, sequence_number=1)],
+            )
+            return submit_prepared_ba201_decision(_LEARNER_EMAIL_RAW, prepared, client=client)
+
+        os.environ.pop(scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR, None)
+        try:
+            outcome_disabled = _run_once()
+            os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+            outcome_enabled = _run_once()
+        finally:
+            os.environ.pop(scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR, None)
+
+        self.assertEqual(dataclasses.asdict(outcome_disabled), dataclasses.asdict(outcome_enabled))
+        self.assertFalse(outcome_disabled.is_complete)
+
+    def test_enabling_diagnostics_does_not_change_terminal_outcome(self):
+        fixed_attempt_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+        def _run_once():
+            run = _advance_to_scene("s24_golive_readiness")
+            client, _version_id, attempt_id = self._client_with_attempt(
+                run=run, attempt_id=fixed_attempt_id
+            )
+            expected_sequence_number = len(run.decisions) + 1
+            prepared = prepare_ba201_decision(
+                _LEARNER_EMAIL_RAW,
+                attempt_id=attempt_id,
+                selected_option_id="A",
+                idempotency_key=_IDEMPOTENCY_KEY,
+                client=client,
+            )
+            run_after = apply_decision(run, "A")
+            client.set_rpc_response(
+                "submit_scenario_decision_v1",
+                [_submit_row(attempt_id=attempt_id, run_after=run_after, sequence_number=expected_sequence_number)],
+            )
+            return submit_prepared_ba201_decision(_LEARNER_EMAIL_RAW, prepared, client=client)
+
+        os.environ.pop(scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR, None)
+        try:
+            outcome_disabled = _run_once()
+            os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+            outcome_enabled = _run_once()
+        finally:
+            os.environ.pop(scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR, None)
+
+        self.assertEqual(dataclasses.asdict(outcome_disabled), dataclasses.asdict(outcome_enabled))
+        self.assertTrue(outcome_disabled.is_complete)
+
+    def test_enabling_diagnostics_does_not_change_mismatch_exception_behavior(self):
+        def _run_once():
+            run = start_scenario_run(_CONTENT)
+            client, _version_id, attempt_id = self._client_with_attempt(run=run)
+            divergent_run_after = apply_decision(run, "A")
+            prepared = prepare_ba201_decision(
+                _LEARNER_EMAIL_RAW,
+                attempt_id=attempt_id,
+                selected_option_id="B",
+                idempotency_key=_IDEMPOTENCY_KEY,
+                client=client,
+            )
+            client.set_rpc_response(
+                "submit_scenario_decision_v1",
+                [_submit_row(attempt_id=attempt_id, run_after=divergent_run_after, sequence_number=1)],
+            )
+            with self.assertRaises(ScenarioLearnerBackendError) as ctx:
+                submit_prepared_ba201_decision(_LEARNER_EMAIL_RAW, prepared, client=client)
+            return type(ctx.exception), str(ctx.exception)
+
+        os.environ.pop(scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR, None)
+        result_disabled = _run_once()
+        os.environ[scenario_learner_controller._SCENARIO_SMOKE_DIAGNOSTICS_ENV_VAR] = "1"
+        result_enabled = _run_once()
+
+        self.assertEqual(result_disabled, result_enabled)
 
 
 class CompletionResultControllerTests(unittest.TestCase):
