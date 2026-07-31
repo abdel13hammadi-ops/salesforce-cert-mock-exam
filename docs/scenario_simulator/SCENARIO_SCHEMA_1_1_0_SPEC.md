@@ -1,12 +1,12 @@
 # CertBound Scenario Simulator Content Schema — Normative Specification v1.1.0
 
 **Task ID:** SIM-SCHEMA-11-SPEC-05 (illustrative corrective-budget fixture alignment after SIM-SCHEMA-11-VALIDATOR-01)  
-**Status:** Draft normative specification (documentation only) — **revision 5**  
-**Supersedes:** SIM-SCHEMA-11-SPEC-04 (revision 4) of this file  
+**Status:** Draft normative specification (documentation only) — **revision 6**  
+**Supersedes:** SIM-SCHEMA-11-SPEC-05 (revision 5) of this file  
 **Adversarial input:** `docs/scenario_simulator/SCENARIO_SCHEMA_1_1_0_ADVERSARIAL_REVIEW.md`  
 **Predecessor review:** `docs/scenario_simulator/CB-SC-001_engineering_compatibility_review.md`  
 **Repository:** `C:\Users\Abdel\Projects\salesforce-cert-mock-exam-latest`  
-**Date:** 2026-07-30
+**Date:** 2026-07-31
 
 ---
 
@@ -20,7 +20,7 @@ This document is the **complete normative specification** for CertBound Scenario
 
 **Normative language:** MUST / MUST NOT / SHOULD / SHOULD NOT / MAY (RFC 2119).
 
-**Correction notice:** Revision 2 closed every BLOCKER and HIGH finding from SIM-SCHEMA-11-REVIEW-01 (see `SCENARIO_SCHEMA_1_1_0_CORRECTION_REPORT.md`). Revision 3 aligned learner-presence representation with the executable JSON Schema (see `SCENARIO_SCHEMA_1_1_0_SPEC_03_ALIGNMENT_REPORT.md`). Revision 4 requires `debriefSeed` on every executable 1.1.0 option, closing JR-H-001 (see `SCENARIO_SCHEMA_1_1_0_SPEC_04_DEBRIEF_ALIGNMENT_REPORT.md`). Revision 5 aligns the §23 illustrative vertical-slice corrective-budget policy with its single authored corrective scene (see `SCENARIO_SCHEMA_1_1_0_SPEC_05_FIXTURE_ALIGNMENT_REPORT.md`).
+**Correction notice:** Revision 2 closed every BLOCKER and HIGH finding from SIM-SCHEMA-11-REVIEW-01 (see `SCENARIO_SCHEMA_1_1_0_CORRECTION_REPORT.md`). Revision 3 aligned learner-presence representation with the executable JSON Schema (see `SCENARIO_SCHEMA_1_1_0_SPEC_03_ALIGNMENT_REPORT.md`). Revision 4 requires `debriefSeed` on every executable 1.1.0 option, closing JR-H-001 (see `SCENARIO_SCHEMA_1_1_0_SPEC_04_DEBRIEF_ALIGNMENT_REPORT.md`). Revision 5 aligns the §23 illustrative vertical-slice corrective-budget policy with its single authored corrective scene (see `SCENARIO_SCHEMA_1_1_0_SPEC_05_FIXTURE_ALIGNMENT_REPORT.md`). **Revision 6** freezes the exact deterministic option-display algorithm for both supported `optionDisplayPolicy` values, removing prior §17 first-block ambiguity (see `SCENARIO_ENGINE_V2_SPEC_17_ALIGNMENT_REPORT.md`). This revision **clarifies** behavior already implemented and tested by SCENARIO_ENGINE_V2; it does **not** change runtime semantics.
 
 ---
 
@@ -663,29 +663,156 @@ ClassificationTrace SHOULD be stored once at completion inside `terminalResult` 
 
 ---
 
-## 17. Randomized option display (closes ADV-H-011)
+## 17. Option display order (closes ADV-H-011)
 
-### Decision (normative)
+**Revision 6 note:** Prior text described the SHA-256 byte stream as `SHA256(material)` followed by `SHA256(material || counter)`, which was ambiguous about whether the first digest omitted the counter suffix. The normative algorithm below matches the hardened SCENARIO_ENGINE_V2 implementation and its golden-vector conformance test. **No runtime semantic change** — this revision documents existing behavior.
 
-Policy default: `randomize_per_attempt_scene`.
+### 17.1 Supported policies
 
-1. Server derives display order using a **fully specified** algorithm.  
-2. Server includes `optionDisplayOrder: string[]` (option ids) in the scene response and current attempt snapshot.  
-3. Client submits **optionId only** — never index.  
-4. Replay regenerates order with the same algorithm and MUST verify equality with stored `optionDisplayOrder` when present.  
+`optionDisplayPolicy` MUST be one of the schema-declared enum values. Any other value MUST be rejected at content load or runtime (fail closed).
+
+| Policy | Behavior |
+|---|---|
+| `authored_order` | §17.2 |
+| `randomize_per_attempt_scene` | §17.3–§17.8 (default) |
+
+### 17.2 Policy: `authored_order`
+
+When `optionDisplayPolicy` is `authored_order`:
+
+1. The server MUST return options in the **authored document-array order** of `scene.decision.options[]` (each entry's `id` field, in array index order).
+2. No seed material is calculated.
+3. No shuffle is performed.
+4. Stable attempt identity (`attemptId`) MUST NOT affect display order.
+5. Repeated initialization and replay with the same content MUST produce the same authored order.
+6. The server MUST still include `optionDisplayOrder: string[]` (option ids) in the scene response and attempt snapshot.
+7. Client submissions MUST use **optionId only** — never display index or position.
+8. Stable option IDs remain the submission identity regardless of display order.
+
+### 17.3 Policy: `randomize_per_attempt_scene` — overview
+
+When `optionDisplayPolicy` is `randomize_per_attempt_scene`:
+
+1. The server derives display order using the **fully specified** deterministic algorithm in §17.4–§17.8.
+2. The server MUST include `optionDisplayOrder: string[]` in the scene response and current attempt snapshot.
+3. Client submissions MUST use **optionId only** — never index.
+4. Replay MUST regenerate order with the same algorithm and MUST verify equality with stored `optionDisplayOrder` when present.
 5. Accessibility announces in displayed order. Analytics join on optionId.
-
-### Seed and shuffle
-
-```
-material = UTF8(attemptId + "\n" + simulationId + "\n" + version + "\n" + canonicalContentSha256 + "\n" + sceneId)
-stream = SHA256(material) as big-endian integer bytes, extended by SHA256(material || counter) as needed
-order = Fisher–Yates shuffle of authored option id list using stream as uniform draws
-```
-
-Copied attempts (new attemptId) get new orders. Instructor review uses stored `optionDisplayOrder`. Mid-scene resume uses snapshot order (verified).
+6. Copied attempts (new `attemptId`) get new orders. Mid-scene resume uses snapshot order (verified).
+7. Implementations MUST NOT use language-runtime hash functions (e.g. Python `hash()`), process-local PRNG state, or wall-clock time. `PYTHONHASHSEED` and similar environment variables are irrelevant.
 
 **No DB migration** — snapshot jsonb holds `optionDisplayOrder` / per-scene map.
+
+### 17.4 Seed material (exact field order)
+
+Let:
+
+- `attemptId` = stable attempt identity string supplied by the server/persistence layer (non-empty for a live attempt).
+- `simulationId` = published scenario `simulationId`.
+- `version` = published scenario content `version`.
+- `canonicalContentSha256` = published lowercase hex digest pinned on the attempt (§18).
+- `sceneId` = current scene `id`.
+
+Construct seed material as a **single UTF-8 byte sequence**:
+
+```
+seedMaterialBytes = UTF8(
+  attemptId + "\n" +
+  simulationId + "\n" +
+  version + "\n" +
+  canonicalContentSha256 + "\n" +
+  sceneId
+)
+```
+
+Rules:
+
+- Separator is exactly one U+000A newline character (`"\n"`) between consecutive fields; **no** trailing newline after the final field.
+- Fields are concatenated **verbatim** as stored in the pinned content/attempt identity — no trimming, case folding, or Unicode normalization beyond UTF-8 encoding of the source strings.
+- Empty strings are permitted if the underlying field is empty (not recommended for production attempts, but encoding proceeds normally).
+- Encoding MUST be UTF-8.
+
+### 17.5 SHA-256 digest block stream
+
+Define an unbounded deterministic byte stream from `seedMaterialBytes`:
+
+```
+counter ← 0
+loop forever:
+  block ← SHA256( seedMaterialBytes || uint32be(counter) )
+  emit block[0], block[1], …, block[31]   // 32 bytes, big-endian digest as raw bytes
+  counter ← counter + 1
+```
+
+Where:
+
+- `counter` starts at **0** and increments by **1** after each digest.
+- `uint32be(counter)` is the counter encoded as **4 unsigned big-endian bytes** (values 0…4294967295).
+- The **first** digest uses `counter = 0` (there is no separate bare `SHA256(seedMaterialBytes)` block).
+- When more bytes are needed, the next digest uses the next counter value; unused bytes from a prior digest are **not** retained — consumption is strictly sequential through the concatenated stream of all digest bytes in counter order.
+
+### 17.6 Uniform index draw (rejection sampling)
+
+To obtain a uniform integer `j` in `[0, upperInclusive]` inclusive:
+
+1. Let `n = upperInclusive + 1`. If `n > 256`, the engine MUST fail closed (scenes MUST NOT exceed 256 options under this algorithm).
+2. Let `limit = floor(256 / n) * n`.
+3. Read the next byte `b` from the digest stream (§17.5).
+4. If `b >= limit`, discard `b` and repeat step 3.
+5. Return `j = b mod n`.
+
+This removes modulo bias. Draws are deterministic given the seed material and prior consumption.
+
+### 17.7 Fisher–Yates shuffle
+
+Input: `optionIds` = list of stable option id strings in **authored document-array order** (`scene.decision.options[].id`).
+
+Algorithm (in-place on a mutable copy `order`):
+
+```
+order ← copy(optionIds)
+stream ← digest byte stream from §17.5 using seedMaterialBytes from §17.4
+for index from len(order)-1 down to 1:
+  swapIndex ← uniform index draw from stream with upperInclusive = index   // §17.6
+  swap order[index] and order[swapIndex]
+return order as tuple/list of option ids
+```
+
+Properties:
+
+- Iteration is **backward** from `len-1` to `1` (inclusive).
+- Each draw consumes however many stream bytes rejection sampling requires (§17.6).
+- Output is a permutation of the input option ids; ids themselves are unchanged — only order changes.
+
+### 17.8 Identity, replay, and unsupported policies
+
+**Determinism:** Identical `(simulationId, version, canonicalContentSha256, attemptId, sceneId, optionIds, policy)` MUST produce identical `optionDisplayOrder`.
+
+**Attempt variance:** Different `attemptId` values MAY produce different valid orders under `randomize_per_attempt_scene`.
+
+**Submission identity:** Learners submit stable `optionId` values only; display position MUST NOT be accepted as identity.
+
+**Replay:** Replay recomputes order from pinned content identity + `attemptId` + decision history context; stored per-scene order maps MUST match recomputation when present.
+
+**Unsupported policy:** If `optionDisplayPolicy` is not one of the supported enum values, load/runtime MUST fail closed with a domain error — MUST NOT silently default to shuffle or authored order.
+
+### 17.9 Conformance golden vector
+
+Implementations SHOULD verify the following fixed case (matches SCENARIO_ENGINE_V2 hardened test):
+
+| Field | Value |
+|---|---|
+| `optionIds` (authored order) | `["opt-a", "opt-b", "opt-c"]` |
+| `attemptId` | `golden-attempt` |
+| `simulationId` | `golden-sim` |
+| `version` | `1.0.0` |
+| `canonicalContentSha256` | `0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef` |
+| `sceneId` | `SC-GOLDEN` |
+| `optionDisplayPolicy` | `randomize_per_attempt_scene` |
+
+**Expected resulting order:** `["opt-b", "opt-c", "opt-a"]`
+
+Any conforming implementation using §17.4–§17.7 MUST reproduce this order exactly.
 
 ---
 

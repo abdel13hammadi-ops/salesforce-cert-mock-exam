@@ -243,10 +243,15 @@ JSON Schema **does not** enforce:
 
 **Runtime (not in content document):**
 
-- Seed material: `attemptId + simulationId + version + canonicalContentSha256 + sceneId` (UTF-8, newline-separated)
-- Algorithm: Fisher–Yates shuffle using SHA-256 byte stream
-- Server returns resolved option id order; snapshot stores per-scene map
-- Submissions use `optionId` only
+Normative algorithm: **`SCENARIO_SCHEMA_1_1_0_SPEC.md` §17** (revision 6).
+
+Summary for validator cross-reference (CV-103):
+
+- **`authored_order`:** return `scene.decision.options[].id` in authored array order; no seed; no shuffle; attempt identity does not affect order.
+- **`randomize_per_attempt_scene`:** seed material = UTF-8(`attemptId + "\n" + simulationId + "\n" + version + "\n" + canonicalContentSha256 + "\n" + sceneId`); digest stream = `SHA256(seedMaterialBytes || uint32be(counter))` for `counter = 0, 1, 2, …`; Fisher–Yates backward shuffle with rejection-sampled uniform byte draws (§17.6–§17.7).
+- **Unsupported policies:** fail closed.
+- Server returns resolved option id order; snapshot stores per-scene map; submissions use `optionId` only.
+- Conformance golden vector: §17.9 → `["opt-b", "opt-c", "opt-a"]`.
 
 ---
 
