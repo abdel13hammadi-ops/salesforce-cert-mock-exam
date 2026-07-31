@@ -17,9 +17,43 @@ except ImportError:  # pragma: no cover - exercised when dependency is missing
     Draft202012Validator = None  # type: ignore[assignment,misc]
     JsonSchemaValidationError = Exception  # type: ignore[assignment,misc]
 
+from utils.scenario_validation_findings import (
+    ValidationFinding,
+    findings_contain_blocking,
+    first_blocking_finding,
+)
+
+# Re-exported for callers that import schema constants from this module.
+__all__ = (
+    "DEFAULT_SCHEMA_VERSION",
+    "EXECUTABLE_SCHEMA_VERSIONS_V1",
+    "REPO_ROOT",
+    "SCHEMA_VERSION_1_1",
+    "SUPPORTED_SCHEMA_VERSIONS",
+    "TERMINAL_SENTINEL",
+    "ScenarioContent",
+    "ScenarioContentError",
+    "ScenarioValidationError",
+    "build_scenario_content",
+    "collect_scenario_validation_findings",
+    "compute_canonical_content_sha256",
+    "compute_graph_metadata",
+    "load_json_document",
+    "load_schema",
+    "load_scenario_content",
+    "schema_path_for_version",
+    "scenario_content_root",
+    "validate_json_schema",
+    "validate_scenario_document",
+    "validate_scenario_for_publication",
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION_1_1 = "1.1.0"
 TERMINAL_SENTINEL = "EVALUATE_ENDING"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({DEFAULT_SCHEMA_VERSION, SCHEMA_VERSION_1_1})
+EXECUTABLE_SCHEMA_VERSIONS_V1 = frozenset({DEFAULT_SCHEMA_VERSION})
 
 _SCHEMA_CACHE: dict[str, Mapping[str, Any]] = {}
 
@@ -535,12 +569,174 @@ def compute_structure_counts(document: Mapping[str, Any]) -> ScenarioStructureCo
     )
 
 
+def _document_declared_schema_version(document: Mapping[str, Any]) -> str:
+    raw = document.get("schemaVersion") if isinstance(document, Mapping) else None
+    if raw is None:
+        return ""
+    return str(raw).strip()
+
+
+def _resolve_document_schema_version(
+    document: Mapping[str, Any],
+    *,
+    schema_version: str | None = None,
+) -> str:
+    """Return the authoritative document schemaVersion.
+
+    Caller hints must match the document exactly when provided. The document
+    field is never overridden by a conflicting hint.
+    """
+    declared = _document_declared_schema_version(document)
+    if schema_version is not None:
+        hint = str(schema_version).strip()
+        if not declared:
+            raise ScenarioValidationError(
+                "schemaVersion is missing from the document and cannot be supplied by override",
+                path="schemaVersion",
+            )
+        if hint != declared:
+            raise ScenarioValidationError(
+                f"schemaVersion hint {hint!r} does not match document schemaVersion {declared!r}",
+                path="schemaVersion",
+            )
+    if not declared:
+        raise ScenarioValidationError(
+            "schemaVersion is required and must be a supported version",
+            path="schemaVersion",
+        )
+    return declared
+
+
+def _version_mismatch_finding(declared: str, hint: str) -> ValidationFinding:
+    return ValidationFinding(
+        rule_id="CV-001",
+        layer="structural",
+        severity="blocker",
+        path="/schemaVersion",
+        message=(
+            f"schemaVersion hint {hint!r} does not match document schemaVersion {declared!r}"
+        ),
+        identifier=declared or hint,
+    )
+
+
+def collect_scenario_validation_findings(
+    document: Mapping[str, Any],
+    *,
+    schema_version: str | None = None,
+    publication: bool = False,
+) -> tuple[ValidationFinding, ...]:
+    from utils.scenario_validation_v1_1 import validate_v1_1_scenario_document
+
+    if not isinstance(document, Mapping):
+        return (
+            ValidationFinding(
+                rule_id="CV-001",
+                layer="structural",
+                severity="blocker",
+                path="/",
+                message="scenario document root must be a JSON object",
+            ),
+        )
+
+    declared = _document_declared_schema_version(document)
+    if schema_version is not None:
+        hint = str(schema_version).strip()
+        if not declared or hint != declared:
+            return (_version_mismatch_finding(declared, hint),)
+
+    if not declared:
+        return (
+            ValidationFinding(
+                rule_id="CV-001",
+                layer="structural",
+                severity="blocker",
+                path="/schemaVersion",
+                message="schemaVersion is required and must be a supported version",
+            ),
+        )
+
+    version = declared
+    if version == SCHEMA_VERSION_1_1:
+        return validate_v1_1_scenario_document(document, publication=publication)
+    if version == DEFAULT_SCHEMA_VERSION:
+        try:
+            _validate_and_compute_graph_metadata(document, schema_version=version)
+        except ScenarioValidationError as exc:
+            return (
+                ValidationFinding(
+                    rule_id="V1-CUSTOM",
+                    layer="structural",
+                    severity="blocker",
+                    path=exc.path or "/",
+                    message=str(exc),
+                ),
+            )
+        return ()
+    return (
+        ValidationFinding(
+            rule_id="CV-001",
+            layer="structural",
+            severity="blocker",
+            path="/schemaVersion",
+            message=f"unsupported schemaVersion {version!r}",
+            identifier=version,
+        ),
+    )
+
+
+def validate_scenario_for_publication(
+    document: Mapping[str, Any],
+    *,
+    schema_version: str | None = None,
+) -> None:
+    from utils.scenario_validation_v1_1 import validate_v1_1_scenario_for_publication
+
+    try:
+        version = _resolve_document_schema_version(document, schema_version=schema_version)
+    except ScenarioValidationError:
+        raise
+
+    if version == SCHEMA_VERSION_1_1:
+        findings = validate_v1_1_scenario_for_publication(document)
+        first = first_blocking_finding(findings)
+        if first is not None:
+            raise ScenarioValidationError(
+                f"[{first.rule_id}] {first.message}",
+                path=first.path,
+            )
+        return
+    if version != DEFAULT_SCHEMA_VERSION:
+        raise ScenarioValidationError(
+            f"unsupported schemaVersion {version!r}",
+            path="schemaVersion",
+        )
+    validate_scenario_document(document, schema_version=version)
+
+
 def validate_scenario_document(
     document: Mapping[str, Any],
     *,
     schema_version: str | None = None,
 ) -> None:
-    _validate_and_compute_graph_metadata(document, schema_version=schema_version)
+    from utils.scenario_validation_v1_1 import validate_v1_1_scenario_document
+
+    version = _resolve_document_schema_version(document, schema_version=schema_version)
+    if version == SCHEMA_VERSION_1_1:
+        findings = validate_v1_1_scenario_document(document)
+        first = first_blocking_finding(findings)
+        if first is not None:
+            raise ScenarioValidationError(
+                f"[{first.rule_id}] {first.message}",
+                path=first.path,
+            )
+        return
+    if version != DEFAULT_SCHEMA_VERSION:
+        raise ScenarioValidationError(
+            f"unsupported schemaVersion {version!r}",
+            path="schemaVersion",
+        )
+    _validate_and_compute_graph_metadata(document, schema_version=version)
 
 
 def _parse_domains(document: Mapping[str, Any]) -> tuple[ScenarioDomain, ...]:
@@ -647,7 +843,31 @@ def build_scenario_content(
     source_path: Path | None = None,
     schema_version: str | None = None,
 ) -> ScenarioContent:
-    graph_metadata = _validate_and_compute_graph_metadata(document, schema_version=schema_version)
+    # Execution guard uses the document-declared version; hints may only match.
+    declared = _document_declared_schema_version(document)
+    if schema_version is not None:
+        hint = str(schema_version).strip()
+        if not declared or hint != declared:
+            raise ScenarioValidationError(
+                f"schemaVersion hint {hint!r} does not match document schemaVersion {declared!r}",
+                path="schemaVersion",
+            )
+    if not declared:
+        raise ScenarioValidationError(
+            "schemaVersion is required and must be a supported version",
+            path="schemaVersion",
+        )
+    if declared == SCHEMA_VERSION_1_1:
+        raise ScenarioContentError(
+            "schemaVersion 1.1.0 content is not executable on SCENARIO_ENGINE_V1; "
+            "requires SCENARIO_ENGINE_V2"
+        )
+    if declared not in EXECUTABLE_SCHEMA_VERSIONS_V1:
+        raise ScenarioContentError(
+            f"schemaVersion {declared!r} is not executable on SCENARIO_ENGINE_V1"
+        )
+    version = declared
+    graph_metadata = _validate_and_compute_graph_metadata(document, schema_version=version)
     initial_state_raw = document.get("initialState") or {}
     initial_state = {
         str(key): float(value)
@@ -658,7 +878,7 @@ def build_scenario_content(
     return ScenarioContent(
         simulation_id=str(document.get("simulationId") or ""),
         version=str(document.get("version") or ""),
-        schema_version=str(document.get("schemaVersion") or schema_version or DEFAULT_SCHEMA_VERSION),
+        schema_version=str(document.get("schemaVersion") or version),
         certification_exam_name=str(document.get("certificationExamName") or ""),
         exam_code=str(document.get("examCode") or ""),
         title=str(document.get("title") or ""),

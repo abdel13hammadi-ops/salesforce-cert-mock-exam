@@ -11,9 +11,12 @@ from utils.scenario_schema import (
     ScenarioContent,
     ScenarioContentError,
     ScenarioValidationError,
+    collect_scenario_validation_findings,
+    load_json_document,
     load_scenario_content,
     scenario_content_root,
 )
+from utils.scenario_validation_findings import ValidationFinding, findings_contain_blocking, first_blocking_finding
 
 CATALOG_FILENAME = "catalog.json"
 
@@ -240,6 +243,37 @@ def resolve_default_scenario_version_path(
     )
 
 
+def validate_catalog_scenario_document(
+    document: Mapping[str, Any],
+    *,
+    publication: bool = False,
+) -> tuple[ValidationFinding, ...]:
+    return collect_scenario_validation_findings(document, publication=publication)
+
+
+def validate_catalog_scenario_file(
+    path: Path,
+    *,
+    publication: bool = False,
+) -> tuple[ValidationFinding, ...]:
+    document = load_json_document(path)
+    return validate_catalog_scenario_document(document, publication=publication)
+
+
+def assert_catalog_scenario_valid(
+    document: Mapping[str, Any],
+    *,
+    publication: bool = False,
+) -> None:
+    findings = validate_catalog_scenario_document(document, publication=publication)
+    first = first_blocking_finding(findings)
+    if first is not None:
+        raise ScenarioValidationError(
+            f"[{first.rule_id}] {first.message}",
+            path=first.path,
+        )
+
+
 def load_resolved_scenario_content(
     *,
     certification_exam_name: str,
@@ -254,6 +288,8 @@ def load_resolved_scenario_content(
         version=version,
         content_root=content_root,
     )
+    document = load_json_document(path)
+    assert_catalog_scenario_valid(document, publication=False)
     content = load_scenario_content(path)
     if content.certification_exam_name != certification_exam_name.strip():
         raise ScenarioValidationError(
