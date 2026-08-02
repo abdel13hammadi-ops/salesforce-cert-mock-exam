@@ -157,6 +157,16 @@ NAV_ROUTES: Tuple[NavRoute, ...] = (
         feature_flag_env=CERTBOUND_ENABLE_SCENARIO_SIMULATOR,
         parent_key="practice",
     ),
+    NavRoute(
+        "scenario_simulator_v2",
+        "Scenario Simulator V2",
+        "pages/Scenario_Simulator_V2.py",
+        "🧭",
+        NAV_GROUP_HIDDEN,
+        requires_premium=True,
+        feature_flag_env=CERTBOUND_ENABLE_SCENARIO_SIMULATOR,
+        parent_key="practice",
+    ),
 )
 
 

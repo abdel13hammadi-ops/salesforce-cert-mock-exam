@@ -22,6 +22,7 @@ import unittest
 import uuid
 from dataclasses import FrozenInstanceError
 from typing import Any
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -36,6 +37,7 @@ from utils.scenario_controller_v2 import (
     ScenarioControllerV2InvalidIdentityError,
     ScenarioControllerV2InvalidRequestError,
     ScenarioControllerV2PersistenceUnavailableError,
+    ScenarioControllerV2ScenarioUnavailableError,
     ScenarioControllerV2StaleSessionError,
     ScenarioControllerV2TerminalAttemptError,
     ScenarioControllerV2UnauthenticatedError,
@@ -709,6 +711,118 @@ class TestEngineV1IsolationAJ(unittest.TestCase):
         self.assertNotIn("scenario_learner_controller", vars(v2_controller))
         v1_source_globals = v1_controller.__dict__
         self.assertNotIn("scenario_controller_v2", v1_source_globals)
+
+
+class TestControllerReviewRegressionGaps(unittest.TestCase):
+    """Non-blocking review gaps folded into permanent regressions."""
+
+    def setUp(self) -> None:
+        self.content = _new_content()
+        self.persistence = FakeOrchestrationPersistence(content=self.content)
+        self.identity = _new_identity()
+
+    def test_scenario_version_not_found_maps_to_scenario_unavailable(self):
+        from utils.scenario_orchestration_v2 import ScenarioOrchestrationV2InvalidRequestError
+
+        with patch(
+            "utils.scenario_controller_v2.start_or_resume_scenario_run_v2",
+            side_effect=ScenarioOrchestrationV2InvalidRequestError(
+                "scenario_version_not_found: missing published version"
+            ),
+        ):
+            with self.assertRaises(ScenarioControllerV2ScenarioUnavailableError) as ctx:
+                start_or_resume_learner_scenario_v2(
+                    self.content,
+                    identity=self.identity,
+                    scenario_version_id=_SCENARIO_VERSION_ID,
+                    attempt_id=_new_attempt_id(),
+                    persistence=self.persistence,
+                )
+        self.assertNotIn("scenario_version_not_found", str(ctx.exception))
+
+    def test_scenario_version_not_published_maps_to_scenario_unavailable(self):
+        from utils.scenario_orchestration_v2 import ScenarioOrchestrationV2InvalidRequestError
+
+        with patch(
+            "utils.scenario_controller_v2.start_or_resume_scenario_run_v2",
+            side_effect=ScenarioOrchestrationV2InvalidRequestError(
+                "scenario_version_not_published: version is draft"
+            ),
+        ):
+            with self.assertRaises(ScenarioControllerV2ScenarioUnavailableError):
+                start_or_resume_learner_scenario_v2(
+                    self.content,
+                    identity=self.identity,
+                    scenario_version_id=_SCENARIO_VERSION_ID,
+                    attempt_id=_new_attempt_id(),
+                    persistence=self.persistence,
+                )
+
+    def test_canonical_decision_sequence_error_maps_to_corrupted_attempt(self):
+        from utils.scenario_orchestration_v2 import ScenarioOrchestrationV2CanonicalDecisionSequenceError
+
+        with patch(
+            "utils.scenario_controller_v2.resume_and_replay_scenario_run_v2",
+            side_effect=ScenarioOrchestrationV2CanonicalDecisionSequenceError("sequence gap at 3"),
+        ):
+            with self.assertRaises(ScenarioControllerV2CorruptedAttemptError) as ctx:
+                resume_learner_scenario_v2(
+                    self.content,
+                    identity=self.identity,
+                    attempt_id=_new_attempt_id(),
+                    persistence=self.persistence,
+                )
+        self.assertNotIn("sequence gap", str(ctx.exception))
+
+    def test_controller_state_is_intentionally_not_json_or_pickle_serializable(self):
+        start_result = start_or_resume_learner_scenario_v2(
+            self.content,
+            identity=self.identity,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            attempt_id=_new_attempt_id(),
+            persistence=self.persistence,
+        )
+        import json
+        import pickle
+
+        with self.assertRaises((TypeError, pickle.PicklingError)):
+            pickle.dumps(start_result.state)
+        with self.assertRaises(TypeError):
+            json.dumps(start_result.state)
+
+    def test_resume_from_attempt_id_only_after_process_loss(self):
+        attempt_id = _new_attempt_id()
+        initial = start_or_resume_learner_scenario_v2(
+            self.content,
+            identity=self.identity,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            attempt_id=attempt_id,
+            persistence=self.persistence,
+        )
+        option_id = initial.state.learner_view.scene_view.options[0].id
+        after_submit = submit_learner_scenario_choice_v2(
+            self.content,
+            identity=self.identity,
+            state=initial.state,
+            selected_option_id=option_id,
+            persistence=self.persistence,
+        )
+        retained_attempt_id = str(attempt_id)
+        del initial, after_submit
+        recovered = resume_learner_scenario_v2(
+            self.content,
+            identity=self.identity,
+            attempt_id=retained_attempt_id,
+            persistence=self.persistence,
+        )
+        self.assertFalse(recovered.state.is_complete)
+        self.assertEqual(recovered.state.submission_context.expected_sequence_number, 2)
+
+    def test_serialize_invalid_input_rejected(self):
+        for bogus in (None, {"state": "not-a-result"}, "not-a-result"):
+            with self.subTest(bogus=type(bogus).__name__):
+                with self.assertRaises(ScenarioControllerV2InvalidRequestError):
+                    serialize_learner_controller_result_v2(bogus)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

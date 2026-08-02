@@ -46,10 +46,12 @@ class TestScenarioCatalogFoundation(unittest.TestCase):
         catalog = load_certification_catalog("business_analyst")
         self.assertEqual(catalog.certification_slug, "business_analyst")
         self.assertEqual(catalog.certification_exam_name, BA_CERTIFICATION_EXAM_NAME)
-        self.assertEqual(len(catalog.scenarios), 1)
-        self.assertEqual(catalog.scenarios[0].simulation_id, BA_SIMULATION_ID)
-        self.assertEqual(catalog.scenarios[0].exam_code, "BA-201")
-        self.assertNotEqual(catalog.scenarios[0].exam_code, catalog.certification_exam_name)
+        simulation_ids = {entry.simulation_id for entry in catalog.scenarios}
+        self.assertIn(BA_SIMULATION_ID, simulation_ids)
+        self.assertIn("cb-sc-001-onboarding-handoff-vslice", simulation_ids)
+        ba_entry = next(entry for entry in catalog.scenarios if entry.simulation_id == BA_SIMULATION_ID)
+        self.assertEqual(ba_entry.exam_code, "BA-201")
+        self.assertNotEqual(ba_entry.exam_code, catalog.certification_exam_name)
 
     def test_parse_certification_catalog(self) -> None:
         catalog_path = REPO_ROOT / "scenario_content" / "business_analyst" / "catalog.json"

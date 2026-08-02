@@ -17,6 +17,21 @@
           "isDefault": true
         }
       ]
+    },
+    {
+      "simulationId": "cb-sc-001-onboarding-handoff-vslice",
+      "title": "Customer Onboarding Handoff (Vertical Slice)",
+      "examCode": "BA-201",
+      "versions": [
+        {
+          "version": "0.2.1-vslice-engine-v2",
+          "schemaVersion": "1.1.0",
+          "relativePath": "cb_sc_001_onboarding_handoff_v1_1_0.json",
+          "canonicalContentSha256": "c74d61c42dbb2b0c34e6b84f722815d42b4fa4fe6e3aabebce18d46d6b4db551",
+          "estimatedMinutes": 15,
+          "isDefault": true
+        }
+      ]
     }
   ]
 }
