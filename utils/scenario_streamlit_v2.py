@@ -43,8 +43,13 @@ from utils.scenario_controller_v2 import (
     submit_learner_scenario_choice_v2,
 )
 from utils.scenario_engine_v2 import ScenarioContentV2, build_scenario_content_v2
-from utils.scenario_orchestration_v2 import ScenarioOrchestrationV2PersistencePort
+from utils.scenario_orchestration_v2 import (
+    ScenarioOrchestrationV2CanonicalDecisionSequenceError,
+    ScenarioOrchestrationV2PersistencePort,
+    resolve_authoritative_attempt_ref_v2,
+)
 from utils.scenario_schema import REPO_ROOT, load_json_document
+from utils.scenario_supabase_port_v2 import SupabaseScenarioOrchestrationV2Port
 
 # ---------------------------------------------------------------------------
 # CB-SC-001 canonical production identity
@@ -75,6 +80,7 @@ SESSION_KEY_ATTEMPT_ID = "cb_sc001_v2_attempt_id"
 SESSION_KEY_SCENARIO_VERSION_ID = "cb_sc001_v2_scenario_version_id"
 SESSION_KEY_PENDING_IDEMPOTENCY_KEY = "cb_sc001_v2_pending_idempotency_key"
 SESSION_KEY_PENDING_OPTION_ID = "cb_sc001_v2_pending_option_id"
+SESSION_KEY_PENDING_NEW_ATTEMPT_ID = "cb_sc001_v2_pending_new_attempt_id"
 SESSION_KEY_UI_MESSAGE = "cb_sc001_v2_ui_message"
 SESSION_KEY_UI_MESSAGE_KIND = "cb_sc001_v2_ui_message_kind"
 
@@ -84,6 +90,7 @@ ALLOWED_SESSION_KEYS = frozenset(
         SESSION_KEY_SCENARIO_VERSION_ID,
         SESSION_KEY_PENDING_IDEMPOTENCY_KEY,
         SESSION_KEY_PENDING_OPTION_ID,
+        SESSION_KEY_PENDING_NEW_ATTEMPT_ID,
         SESSION_KEY_UI_MESSAGE,
         SESSION_KEY_UI_MESSAGE_KIND,
     }
@@ -105,12 +112,14 @@ WIDGET_KEY_FORM = "cb_sc001_v2_widget_form"
 WIDGET_KEY_CHOICE = "cb_sc001_v2_widget_choice"
 WIDGET_KEY_RETRY = "cb_sc001_v2_widget_retry"
 WIDGET_KEY_RETURN = "cb_sc001_v2_widget_return"
+WIDGET_KEY_START_NEW = "cb_sc001_v2_widget_start_new"
 
 WIDGET_KEYS = (
     WIDGET_KEY_FORM,
     WIDGET_KEY_CHOICE,
     WIDGET_KEY_RETRY,
     WIDGET_KEY_RETURN,
+    WIDGET_KEY_START_NEW,
 )
 
 # ---------------------------------------------------------------------------
@@ -127,6 +136,9 @@ MSG_SELECT_OPTION = "Please select an option before submitting."
 MSG_PENDING_RETRY = "Your last submission has not been confirmed yet. Select Retry submission to try again."
 MSG_PROGRESS_IN_PROGRESS = "Scenario in progress"
 MSG_PROGRESS_COMPLETE = "Scenario complete"
+
+# Learner-safe exit destination (registered primary Practice route).
+RETURN_TO_PRACTICE_PAGE_PATH = "pages/Practice.py"
 
 
 class UiMessageKind(str, Enum):
@@ -394,6 +406,32 @@ def clear_v2_session_keys(session_state: Any) -> None:
         session_state.pop(key, None)
 
 
+def return_to_practice_page_path() -> str:
+    """Canonical Streamlit page path for Return to Practice navigation."""
+    return RETURN_TO_PRACTICE_PAGE_PATH
+
+
+def assert_return_to_practice_route_registered() -> None:
+    """Fail closed if the Practice destination is not a registered nav route."""
+    from utils.navigation import route_for_page_path
+
+    if route_for_page_path(RETURN_TO_PRACTICE_PAGE_PATH) is None:
+        raise AssertionError(
+            f"Return to Practice destination is not registered: {RETURN_TO_PRACTICE_PAGE_PATH!r}"
+        )
+
+
+def prepare_return_to_practice_navigation(session_state: Any) -> str:
+    """Clear only V2 scenario keys; leave authentication session intact.
+
+    Returns the registered Streamlit page path for ``st.switch_page``.
+    """
+    assert_return_to_practice_route_registered()
+    clear_cosmetic_ui_state(session_state)
+    clear_v2_session_keys(session_state)
+    return RETURN_TO_PRACTICE_PAGE_PATH
+
+
 def set_ui_message(session_state: Any, message: UiMessage) -> None:
     session_state[SESSION_KEY_UI_MESSAGE] = message.text
     session_state[SESSION_KEY_UI_MESSAGE_KIND] = message.kind.value
@@ -514,49 +552,21 @@ def _sync_non_authoritative_scenario_version_id(
     write_session_scenario_version_id(session_state, authoritative_scenario_version_id)
 
 
-def fetch_authoritative_cb_sc001_view(
+def _resolve_persistence_port(
+    identity: LearnerIdentityContextV2,
+    persistence: Optional[ScenarioOrchestrationV2PersistencePort],
+) -> ScenarioOrchestrationV2PersistencePort:
+    if persistence is not None:
+        return persistence
+    return SupabaseScenarioOrchestrationV2Port(identity.supabase_client)
+
+
+def _view_from_controller_result(
     *,
     content: ScenarioContentV2,
-    identity: LearnerIdentityContextV2,
-    session_state: Any,
-    scenario_version_id: str,
-    persistence: Optional[ScenarioOrchestrationV2PersistencePort] = None,
+    result: LearnerScenarioControllerResultV2,
+    is_new_attempt: bool,
 ) -> CbSc001AuthoritativeView:
-    """Option B authoritative load: resume when attempt_id exists, else start.
-
-    ``scenario_version_id`` must already be the freshly resolved, hash-verified
-    published version id. Session ``scenario_version_id`` is never trusted for
-    authorization or content selection.
-    """
-    _sync_non_authoritative_scenario_version_id(
-        session_state,
-        authoritative_scenario_version_id=scenario_version_id,
-    )
-    attempt_id = read_session_attempt_id(session_state)
-    if attempt_id:
-        try:
-            result = resume_learner_scenario_v2(
-                content,
-                identity=identity,
-                attempt_id=attempt_id,
-                persistence=persistence,
-            )
-        except ScenarioControllerV2AttemptNotFoundError:
-            clear_v2_session_keys(session_state)
-            raise
-        is_new_attempt = False
-    else:
-        attempt_id = str(uuid.uuid4())
-        result = start_or_resume_learner_scenario_v2(
-            content,
-            identity=identity,
-            scenario_version_id=scenario_version_id,
-            attempt_id=attempt_id,
-            persistence=persistence,
-        )
-        write_session_attempt_id(session_state, result.state.attempt_id)
-        is_new_attempt = True
-
     serialized = serialize_learner_controller_result_v2(result)
     scenario_title = str(content.document.get("title") or CB_SC001_SCENARIO_IDENTIFIER)
     return CbSc001AuthoritativeView(
@@ -565,6 +575,172 @@ def fetch_authoritative_cb_sc001_view(
         is_new_attempt=is_new_attempt,
         scenario_title=scenario_title,
     )
+
+
+def fetch_authoritative_cb_sc001_view(
+    *,
+    content: ScenarioContentV2,
+    identity: LearnerIdentityContextV2,
+    session_state: Any,
+    scenario_version_id: str,
+    persistence: Optional[ScenarioOrchestrationV2PersistencePort] = None,
+) -> CbSc001AuthoritativeView:
+    """Option B authoritative load with server-side attempt selection.
+
+    ``scenario_version_id`` must already be the freshly resolved, hash-verified
+    published version id. Session ``scenario_version_id`` is never trusted for
+    authorization or content selection.
+
+    When session ``attempt_id`` is absent:
+
+    - resume the single in-progress attempt when one exists;
+    - else resume the most recent completed attempt (terminal);
+    - else create the first attempt;
+    - never implicitly create a new attempt merely because a completed
+      attempt already exists.
+    """
+    _sync_non_authoritative_scenario_version_id(
+        session_state,
+        authoritative_scenario_version_id=scenario_version_id,
+    )
+    port = _resolve_persistence_port(identity, persistence)
+    attempt_id = read_session_attempt_id(session_state)
+    is_new_attempt = False
+    if attempt_id:
+        try:
+            result = resume_learner_scenario_v2(
+                content,
+                identity=identity,
+                attempt_id=attempt_id,
+                persistence=port,
+            )
+        except ScenarioControllerV2AttemptNotFoundError:
+            # Fail closed for missing/foreign attempts. Clear the orphaned
+            # session marker so the next ordinary load can select safely.
+            clear_v2_session_keys(session_state)
+            raise
+    else:
+        try:
+            selected = resolve_authoritative_attempt_ref_v2(
+                port,
+                user_email=identity.user_email,
+                scenario_version_id=scenario_version_id,
+            )
+        except ScenarioOrchestrationV2CanonicalDecisionSequenceError as exc:
+            if str(exc).startswith("multiple_in_progress:"):
+                raise ScenarioStreamlitV2ScenarioUnavailableError(MSG_SCENARIO_UNAVAILABLE) from exc
+            raise ScenarioStreamlitV2ScenarioUnavailableError(MSG_SCENARIO_UNAVAILABLE) from exc
+
+        if selected is not None:
+            result = resume_learner_scenario_v2(
+                content,
+                identity=identity,
+                attempt_id=selected.attempt_id,
+                persistence=port,
+            )
+            write_session_attempt_id(session_state, result.state.attempt_id)
+            is_new_attempt = False
+        else:
+            result = start_or_resume_learner_scenario_v2(
+                content,
+                identity=identity,
+                scenario_version_id=scenario_version_id,
+                attempt_id=None,
+                persistence=port,
+            )
+            write_session_attempt_id(session_state, result.state.attempt_id)
+            is_new_attempt = True
+
+    # Ordinary authoritative loads must not leave a prior stale-submit banner.
+    session_state.pop(SESSION_KEY_UI_MESSAGE, None)
+    session_state.pop(SESSION_KEY_UI_MESSAGE_KIND, None)
+
+    return _view_from_controller_result(
+        content=content,
+        result=result,
+        is_new_attempt=is_new_attempt,
+    )
+
+
+def start_new_cb_sc001_attempt_v2(
+    *,
+    content: ScenarioContentV2,
+    identity: LearnerIdentityContextV2,
+    session_state: Any,
+    scenario_version_id: str,
+    persistence: Optional[ScenarioOrchestrationV2PersistencePort] = None,
+) -> CbSc001AuthoritativeView:
+    """Explicit Start New Attempt — never triggered by refresh/session loss.
+
+    - If an in-progress attempt already exists, resume it (no second create).
+    - Otherwise create exactly one new attempt using a pending request id so
+      Streamlit rerun/double-click cannot mint two rows.
+    - Historical completed attempts remain unchanged.
+    """
+    _sync_non_authoritative_scenario_version_id(
+        session_state,
+        authoritative_scenario_version_id=scenario_version_id,
+    )
+    port = _resolve_persistence_port(identity, persistence)
+
+    try:
+        selected = resolve_authoritative_attempt_ref_v2(
+            port,
+            user_email=identity.user_email,
+            scenario_version_id=scenario_version_id,
+        )
+    except ScenarioOrchestrationV2CanonicalDecisionSequenceError as exc:
+        raise ScenarioStreamlitV2ScenarioUnavailableError(MSG_SCENARIO_UNAVAILABLE) from exc
+
+    if selected is not None and selected.status == "in_progress":
+        result = resume_learner_scenario_v2(
+            content,
+            identity=identity,
+            attempt_id=selected.attempt_id,
+            persistence=port,
+        )
+        write_session_attempt_id(session_state, result.state.attempt_id)
+        session_state.pop(SESSION_KEY_PENDING_NEW_ATTEMPT_ID, None)
+        clear_cosmetic_ui_state(session_state)
+        return _view_from_controller_result(content=content, result=result, is_new_attempt=False)
+
+    pending_raw = session_state.get(SESSION_KEY_PENDING_NEW_ATTEMPT_ID)
+    pending_id = str(pending_raw).strip() if isinstance(pending_raw, str) else ""
+    if pending_id:
+        try:
+            result = resume_learner_scenario_v2(
+                content,
+                identity=identity,
+                attempt_id=pending_id,
+                persistence=port,
+            )
+            write_session_attempt_id(session_state, result.state.attempt_id)
+            session_state.pop(SESSION_KEY_PENDING_NEW_ATTEMPT_ID, None)
+            clear_cosmetic_ui_state(session_state)
+            return _view_from_controller_result(
+                content=content,
+                result=result,
+                is_new_attempt=False,
+            )
+        except ScenarioControllerV2AttemptNotFoundError:
+            new_attempt_id = pending_id
+    else:
+        new_attempt_id = str(uuid.uuid4())
+        session_state[SESSION_KEY_PENDING_NEW_ATTEMPT_ID] = new_attempt_id
+
+    result = start_or_resume_learner_scenario_v2(
+        content,
+        identity=identity,
+        scenario_version_id=scenario_version_id,
+        attempt_id=new_attempt_id,
+        persistence=port,
+    )
+    write_session_attempt_id(session_state, result.state.attempt_id)
+    session_state.pop(SESSION_KEY_PENDING_NEW_ATTEMPT_ID, None)
+    clear_cosmetic_ui_state(session_state)
+    # Drop stale radio selection from the prior attempt's form widget.
+    session_state.pop(WIDGET_KEY_CHOICE, None)
+    return _view_from_controller_result(content=content, result=result, is_new_attempt=True)
 
 
 def submit_cb_sc001_v2_choice(

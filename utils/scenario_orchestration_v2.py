@@ -67,6 +67,8 @@ __all__ = (
     "ScenarioOrchestrationV2PersistenceDependencyError",
     # Port + typed values
     "ScenarioOrchestrationV2PersistencePort",
+    "LearnerAttemptSummaryV2",
+    "AuthoritativeAttemptRefV2",
     "TrustedAttemptSnapshotV2",
     "ScenarioOrchestrationSubmissionContextV2",
     "ScenarioOrchestrationLearnerViewV2",
@@ -74,6 +76,7 @@ __all__ = (
     "SubmitScenarioDecisionResultV2",
     # Public API
     "load_canonical_scenario_decisions_v2",
+    "resolve_authoritative_attempt_ref_v2",
     "resume_and_replay_scenario_run_v2",
     "start_or_resume_scenario_run_v2",
     "submit_scenario_decision_v2",
@@ -184,6 +187,24 @@ _RPC_ERROR_PREFIX_MAP: Tuple[Tuple[str, type], ...] = (
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class LearnerAttemptSummaryV2:
+    """Minimum fields for authoritative attempt selection (never learner-facing)."""
+
+    attempt_id: str
+    status: str
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class AuthoritativeAttemptRefV2:
+    """Selected attempt identity for Option B resume without session attempt_id."""
+
+    attempt_id: str
+    status: str
+
+
 class ScenarioOrchestrationV2PersistencePort(Protocol):
     """Minimal persistence/data-access surface for Engine V2 orchestration."""
 
@@ -199,6 +220,18 @@ class ScenarioOrchestrationV2PersistencePort(Protocol):
         Must return the ``get_scenario_attempt_v1`` row shape (attempt columns
         plus a ``decisions`` JSON array). Never returns a raw Supabase client
         response wrapper to callers of this port's consumers.
+        """
+
+    def list_learner_attempt_summaries_v2(
+        self,
+        *,
+        user_email: str,
+        scenario_version_id: str,
+    ) -> Tuple[LearnerAttemptSummaryV2, ...]:
+        """Return ownership-scoped attempt summaries for one scenario version.
+
+        Returns only ``attempt_id``, ``status``, ``started_at``, and
+        ``completed_at``. Callers must supply a trusted server-side email.
         """
 
 
@@ -570,6 +603,69 @@ def load_canonical_scenario_decisions_v2(
 
 
 # ---------------------------------------------------------------------------
+# Public API — authoritative attempt selection (no session attempt_id)
+# ---------------------------------------------------------------------------
+
+
+def resolve_authoritative_attempt_ref_v2(
+    persistence: ScenarioOrchestrationV2PersistencePort,
+    *,
+    user_email: str,
+    scenario_version_id: str,
+) -> Optional[AuthoritativeAttemptRefV2]:
+    """Select the learner's authoritative attempt for CB-SC-001 session loss.
+
+    Rules (deterministic):
+
+    1. Exactly one ``in_progress`` row for ``(user_email, scenario_version_id)``
+       → resume that attempt.
+    2. More than one ``in_progress`` row (unique index violated) → fail closed.
+    3. Else the most recent ``completed`` row by
+       ``(completed_at DESC, started_at DESC, attempt_id DESC)`` → resume terminal.
+    4. Else ``None`` (first-ever attempt may be created by the caller).
+
+    Abandoned attempts are never selected.
+    """
+    normalized_email = _normalize_email_or_raise(user_email)
+    version_id = _require_uuid(scenario_version_id, "scenario_version_id")
+    summaries = _wrap_persistence_call(
+        "list_learner_attempt_summaries_v2",
+        lambda: persistence.list_learner_attempt_summaries_v2(
+            user_email=normalized_email,
+            scenario_version_id=version_id,
+        ),
+    )
+    if not isinstance(summaries, (tuple, list)):
+        raise ScenarioOrchestrationV2MalformedPersistenceResponseError(
+            "malformed_response: list_learner_attempt_summaries_v2 must return a sequence"
+        )
+
+    in_progress = [row for row in summaries if getattr(row, "status", None) == "in_progress"]
+    if len(in_progress) > 1:
+        raise ScenarioOrchestrationV2CanonicalDecisionSequenceError(
+            "multiple_in_progress: more than one in_progress attempt exists for this learner/version"
+        )
+    if len(in_progress) == 1:
+        chosen = in_progress[0]
+        return AuthoritativeAttemptRefV2(attempt_id=str(chosen.attempt_id), status="in_progress")
+
+    completed = [row for row in summaries if getattr(row, "status", None) == "completed"]
+    if not completed:
+        return None
+
+    def _completed_sort_key(row: LearnerAttemptSummaryV2) -> Tuple[str, str, str]:
+        return (
+            str(row.completed_at or ""),
+            str(row.started_at or ""),
+            str(row.attempt_id),
+        )
+
+    completed_sorted = sorted(completed, key=_completed_sort_key, reverse=True)
+    chosen = completed_sorted[0]
+    return AuthoritativeAttemptRefV2(attempt_id=str(chosen.attempt_id), status="completed")
+
+
+# ---------------------------------------------------------------------------
 # Public API — resume / replay
 # ---------------------------------------------------------------------------
 
@@ -652,24 +748,22 @@ def start_or_resume_scenario_run_v2(
     identity is always driven by ``p_attempt_id`` plus the caller's trusted
     user/scenario-version identity.
 
-    - If ``attempt_id`` is omitted, a fresh non-nil UUIDv4 is minted locally.
-      The same UUID is passed to both Engine V2 initialization and
-      ``p_attempt_id`` on the start RPC.
-    - If the caller (this user + this ``scenario_version_id``) has **no**
-      existing in-progress attempt, the RPC creates a **new** attempt using
-      the supplied/minted ``p_attempt_id``, provided that id is not already
-      in use by any other row.
-    - If the caller already has an existing in-progress attempt for this
-      user + scenario version, the RPC treats the call as a **resume** only
-      when ``p_attempt_id`` matches that existing row's id; it then ignores
-      the caller's freshly serialized envelope and returns the existing
-      row's persisted state instead. If ``p_attempt_id`` does not match that
-      existing attempt, V69 fails closed with ``attempt_id_conflict`` rather
-      than silently creating a second attempt or resuming the wrong one.
+    - If ``attempt_id`` is omitted, a fresh non-nil UUIDv4 is minted and used
+      for both Engine V2 initialization and ``p_attempt_id`` so a brand-new
+      attempt's envelope stays attempt-bound. If that mint conflicts with an
+      existing in-progress attempt (typical after browser session loss), this
+      function performs **one** recovery RPC with ``p_attempt_id=NULL``, which
+      V69 treats as resume-existing, then reloads/replays that row.
+    - If ``attempt_id`` is supplied and the caller has **no** existing
+      in-progress attempt, the RPC creates a **new** attempt using that id,
+      provided it is not already in use by any other row.
+    - If the caller already has an existing in-progress attempt and a
+      non-null ``p_attempt_id`` does not match it, V69 fails closed with
+      ``attempt_id_conflict`` (recovered automatically only when the caller
+      omitted ``attempt_id``).
     - If the supplied ``p_attempt_id`` already exists as some *other* row's
       id (any owner, any scenario version), V69 fails closed with
-      ``attempt_id_collision`` -- a generic error that reveals nothing about
-      the colliding row -- rather than reusing or overwriting it.
+      ``attempt_id_collision``.
 
     In every case, this function never trusts the RPC's returned identity by
     itself: after the RPC call it reloads the trusted persisted attempt row
@@ -681,7 +775,12 @@ def start_or_resume_scenario_run_v2(
     normalized_email = _normalize_email_or_raise(user_email)
     version_id = _require_uuid(scenario_version_id, "scenario_version_id")
 
-    trusted_attempt_id = _require_uuid(attempt_id, "attempt_id", allow_nil=False) if attempt_id is not None else str(uuid.uuid4())
+    caller_supplied_attempt_id = attempt_id is not None
+    trusted_attempt_id = (
+        _require_uuid(attempt_id, "attempt_id", allow_nil=False)
+        if caller_supplied_attempt_id
+        else str(uuid.uuid4())
+    )
     run = start_scenario_run_v2(content, attempt_id=trusted_attempt_id)
     params = build_start_or_resume_rpc_params_v2(
         run,
@@ -689,14 +788,27 @@ def start_or_resume_scenario_run_v2(
         scenario_version_id=version_id,
     )
 
-    rpc_data = _wrap_persistence_call(
-        "start_or_resume_scenario_attempt_v1",
-        lambda: persistence.call_start_or_resume_scenario_attempt_v1(params),
-    )
+    def _invoke_start(rpc_params: Mapping[str, Any], *, expected: Optional[str]) -> Any:
+        rpc_data = _wrap_persistence_call(
+            "start_or_resume_scenario_attempt_v1",
+            lambda: persistence.call_start_or_resume_scenario_attempt_v1(rpc_params),
+        )
+        try:
+            return parse_start_or_resume_rpc_response_v2(rpc_data, expected_attempt_id=expected)
+        except ScenarioPersistenceV2RpcResponseError as exc:
+            raise ScenarioOrchestrationV2MalformedPersistenceResponseError(str(exc)) from exc
+
     try:
-        rpc_result = parse_start_or_resume_rpc_response_v2(rpc_data, expected_attempt_id=trusted_attempt_id)
-    except ScenarioPersistenceV2RpcResponseError as exc:
-        raise ScenarioOrchestrationV2MalformedPersistenceResponseError(str(exc)) from exc
+        rpc_result = _invoke_start(params, expected=trusted_attempt_id)
+    except ScenarioOrchestrationV2IdentityMismatchError as exc:
+        # attempt_id_conflict maps here. Recover only when the caller omitted
+        # attempt identity (browser session loss / first authoritative load).
+        message = str(exc)
+        if caller_supplied_attempt_id or "attempt_id_conflict:" not in message:
+            raise
+        recovery_params = dict(params)
+        recovery_params["p_attempt_id"] = None
+        rpc_result = _invoke_start(recovery_params, expected=None)
 
     # Never trust the RPC envelope alone -- reload trusted identity + replay.
     replayed, snapshot = resume_and_replay_scenario_run_v2(

@@ -40,13 +40,16 @@ from utils.scenario_streamlit_v2 import (
     MSG_PROGRESS_IN_PROGRESS,
     MSG_SCENARIO_UNAVAILABLE,
     MSG_STALE_SESSION,
+    RETURN_TO_PRACTICE_PAGE_PATH,
     SESSION_KEY_ATTEMPT_ID,
     SESSION_KEY_PENDING_IDEMPOTENCY_KEY,
     SESSION_KEY_PENDING_OPTION_ID,
     SESSION_KEY_SCENARIO_VERSION_ID,
+    SESSION_KEY_UI_MESSAGE,
     WIDGET_KEYS,
     UiMessageKind,
     assert_option_b_session_state_compliant,
+    assert_return_to_practice_route_registered,
     assert_widget_keys_exclude_attempt_id,
     build_trusted_identity_v2,
     clear_v2_session_keys,
@@ -58,13 +61,18 @@ from utils.scenario_streamlit_v2 import (
     has_pending_submission,
     learner_safe_json_blob,
     load_cb_sc001_v2_content,
+    prepare_return_to_practice_navigation,
     production_content_path_is_non_test,
     read_session_attempt_id,
     read_session_scenario_version_id,
     resolve_cb_sc001_scenario_version_id,
+    start_new_cb_sc001_attempt_v2,
     streamlit_widget_keys,
     submit_cb_sc001_v2_choice,
+    WIDGET_KEY_START_NEW,
 )
+from utils.navigation import route_for_page_path
+from utils.scenario_orchestration_v2 import resolve_authoritative_attempt_ref_v2
 from tests.test_scenario_orchestration_v2 import (
     HAPPY_PATH_DECISIONS,
     FakeOrchestrationPersistence,
@@ -113,7 +121,10 @@ def _install_ownership_guard(persistence: FakeOrchestrationPersistence) -> None:
 
     def start_with_owner(params: Mapping[str, Any]):
         result = original_start(params)
-        owners[str(params["p_attempt_id"])] = str(params["p_user_email"])
+        row = result[0] if isinstance(result, list) and result else {}
+        attempt_key = row.get("attempt_id") or params.get("p_attempt_id")
+        if attempt_key is not None:
+            owners[str(attempt_key)] = str(params["p_user_email"])
         return result
 
     def load_with_owner(*, user_email: str, attempt_id: str):
@@ -979,6 +990,472 @@ class TestScenarioSimulatorV2PageAccess(unittest.TestCase):
         for key in fake_st._widget_keys:
             self.assertNotIn(attempt_id, key)
         assert_widget_keys_exclude_attempt_id(attempt_id, fake_st._widget_keys)
+
+
+class TestBrowserRefreshAndReturnToPractice(unittest.TestCase):
+    """SIM-STREAMLIT-V2-CB-SC-001-BROWSER-REFRESH-FIX-01 regressions."""
+
+    def setUp(self) -> None:
+        self.content = _new_content()
+        self.persistence = FakeOrchestrationPersistence(content=self.content)
+        self.identity = _new_identity()
+        self.session: Dict[str, Any] = {}
+
+    def test_active_rerun_resumes_same_scene(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertFalse(first.serialized.get("isComplete"))
+        scene_before = first.serialized["currentScene"]["sceneId"]
+        self.persistence.start_calls.clear()
+        second = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertEqual(second.attempt_id, first.attempt_id)
+        self.assertEqual(second.serialized["currentScene"]["sceneId"], scene_before)
+        self.assertEqual(len(self.persistence.start_calls), 0)
+        self.assertEqual(len(self.persistence.submit_calls), 0)
+
+    def test_browser_refresh_without_session_attempt_id_does_not_stale(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        attempt_id = first.attempt_id
+        scene_id = first.serialized["currentScene"]["sceneId"]
+        # Simulate browser session loss: only cosmetic widget residue remains.
+        lost_session: Dict[str, Any] = {"cb_sc001_v2_widget_choice": "stale-cosmetic"}
+        self.persistence.start_calls.clear()
+        recovered = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=lost_session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertEqual(recovered.attempt_id, attempt_id)
+        self.assertEqual(recovered.serialized["currentScene"]["sceneId"], scene_id)
+        self.assertNotEqual(recovered.serialized.get("uiMessage"), MSG_STALE_SESSION)
+        self.assertEqual(len(self.persistence.attempts), 1)
+        self.assertEqual(len(self.persistence.submit_calls), 0)
+        self.assertEqual(read_session_attempt_id(lost_session), attempt_id)
+        assert_option_b_session_state_compliant(lost_session)
+
+    def test_refresh_creates_no_duplicate_attempt_or_decision(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        option_id = first.serialized["currentScene"]["options"][0]["id"]
+        submit_cb_sc001_v2_choice(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            selected_option_id=option_id,
+            persistence=self.persistence,
+        )
+        decision_count = len(self.persistence.decisions[first.attempt_id])
+        for _ in range(2):
+            empty: Dict[str, Any] = {}
+            view = fetch_authoritative_cb_sc001_view(
+                content=self.content,
+                identity=self.identity,
+                session_state=empty,
+                scenario_version_id=_SCENARIO_VERSION_ID,
+                persistence=self.persistence,
+            )
+            self.assertEqual(view.attempt_id, first.attempt_id)
+            self.assertEqual(len(self.persistence.attempts), 1)
+            self.assertEqual(len(self.persistence.decisions[first.attempt_id]), decision_count)
+
+    def test_attempt_id_only_resume_succeeds(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        retained = {SESSION_KEY_ATTEMPT_ID: first.attempt_id}
+        resumed = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=retained,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertEqual(resumed.attempt_id, first.attempt_id)
+        self.assertFalse(resumed.serialized.get("isComplete"))
+
+    def test_stale_cosmetic_selection_cleared_on_authoritative_load(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.session[SESSION_KEY_UI_MESSAGE] = MSG_STALE_SESSION
+        self.session[SESSION_KEY_PENDING_OPTION_ID] = "opt-stale-cosmetic"
+        # Pending without idempotency key is incomplete; authoritative load clears banners.
+        fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertNotIn(SESSION_KEY_UI_MESSAGE, self.session)
+        self.assertEqual(read_session_attempt_id(self.session), first.attempt_id)
+
+    def test_real_stale_submit_still_maps_and_does_not_auto_retry(self):
+        view = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        option_id = view.serialized["currentScene"]["options"][0]["id"]
+        with patch(
+            "utils.scenario_streamlit_v2.submit_learner_scenario_choice_v2",
+            side_effect=ScenarioControllerV2StaleSessionError("stale"),
+        ) as mocked_submit:
+            outcome = submit_cb_sc001_v2_choice(
+                content=self.content,
+                identity=self.identity,
+                session_state=self.session,
+                scenario_version_id=_SCENARIO_VERSION_ID,
+                selected_option_id=option_id,
+                persistence=self.persistence,
+            )
+        self.assertTrue(outcome.stale_session)
+        self.assertEqual(outcome.ui_message.text, MSG_STALE_SESSION)
+        self.assertEqual(mocked_submit.call_count, 1)
+        self.assertFalse(has_pending_submission(self.session))
+
+    def test_completed_attempt_refresh_resumes_terminal(self):
+        view = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        current = start_or_resume_learner_scenario_v2(
+            self.content,
+            identity=self.identity,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            attempt_id=view.attempt_id,
+            persistence=self.persistence,
+        )
+        for _, _, option in HAPPY_PATH_DECISIONS:
+            current = submit_learner_scenario_choice_v2(
+                self.content,
+                identity=self.identity,
+                state=current.state,
+                selected_option_id=option,
+                persistence=self.persistence,
+            )
+        attempts_before = len(self.persistence.attempts)
+        decisions_before = len(self.persistence.decisions[view.attempt_id])
+        empty: Dict[str, Any] = {}
+        terminal = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=empty,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertEqual(terminal.attempt_id, view.attempt_id)
+        self.assertTrue(terminal.serialized.get("isComplete"))
+        self.assertIn("terminalResult", terminal.serialized)
+        self.assertEqual(len(self.persistence.attempts), attempts_before)
+        self.assertEqual(len(self.persistence.decisions[view.attempt_id]), decisions_before)
+        blob = learner_safe_json_blob(terminal.serialized)
+        self.assertNotIn(view.attempt_id, blob)
+        for sensitive in ("sequence_mismatch", "postgresql://", "service_role"):
+            self.assertNotIn(sensitive, blob)
+
+    def test_return_to_practice_clears_only_v2_keys_and_targets_registered_page(self):
+        auth_marker = "auth_session_should_remain"
+        self.session[SESSION_KEY_ATTEMPT_ID] = str(uuid.uuid4())
+        self.session[SESSION_KEY_SCENARIO_VERSION_ID] = _SCENARIO_VERSION_ID
+        self.session[SESSION_KEY_PENDING_IDEMPOTENCY_KEY] = str(uuid.uuid4())
+        self.session[SESSION_KEY_PENDING_OPTION_ID] = "opt-x"
+        self.session[auth_marker] = "keep-me"
+        destination = prepare_return_to_practice_navigation(self.session)
+        self.assertEqual(destination, RETURN_TO_PRACTICE_PAGE_PATH)
+        assert_return_to_practice_route_registered()
+        self.assertIsNotNone(route_for_page_path(RETURN_TO_PRACTICE_PAGE_PATH))
+        self.assertEqual(collect_cb_sc001_v2_session_keys(self.session), ())
+        self.assertEqual(self.session.get(auth_marker), "keep-me")
+        # Navigation helper never deletes persistence rows.
+        self.assertEqual(len(self.persistence.attempts), 0)
+        self.assertEqual(len(self.persistence.decisions), 0)
+
+
+class TestTerminalRefreshAndNewAttempt(unittest.TestCase):
+    """SIM-STREAMLIT-V2-CB-SC-001-TERMINAL-REFRESH-FIX-02 regressions."""
+
+    def setUp(self) -> None:
+        self.content = _new_content()
+        self.persistence = FakeOrchestrationPersistence(content=self.content)
+        self.identity = _new_identity()
+        self.session: Dict[str, Any] = {}
+
+    def _complete_current(self, attempt_id: str) -> None:
+        current = start_or_resume_learner_scenario_v2(
+            self.content,
+            identity=self.identity,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            attempt_id=attempt_id,
+            persistence=self.persistence,
+        )
+        for _, _, option in HAPPY_PATH_DECISIONS:
+            current = submit_learner_scenario_choice_v2(
+                self.content,
+                identity=self.identity,
+                state=current.state,
+                selected_option_id=option,
+                persistence=self.persistence,
+            )
+        self.assertTrue(current.state.is_complete)
+
+    def test_completed_session_loss_creates_no_attempt_or_decision(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self._complete_current(first.attempt_id)
+        before_attempts = len(self.persistence.attempts)
+        before_decisions = sum(len(v) for v in self.persistence.decisions.values())
+        self.persistence.start_calls.clear()
+        empty: Dict[str, Any] = {}
+        terminal = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=empty,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertTrue(terminal.serialized.get("isComplete"))
+        self.assertEqual(terminal.attempt_id, first.attempt_id)
+        self.assertEqual(len(self.persistence.attempts), before_attempts)
+        self.assertEqual(sum(len(v) for v in self.persistence.decisions.values()), before_decisions)
+        self.assertEqual(len(self.persistence.start_calls), 0)  # session-loss path resumes via lookup
+
+    def test_no_attempt_id_in_progress_preferred_over_completed(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self._complete_current(first.attempt_id)
+        # Deliberate new attempt leaves one completed + one in_progress.
+        active = start_new_cb_sc001_attempt_v2(
+            content=self.content,
+            identity=self.identity,
+            session_state={},
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertFalse(active.serialized.get("isComplete"))
+        empty: Dict[str, Any] = {}
+        resumed = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=empty,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertEqual(resumed.attempt_id, active.attempt_id)
+        self.assertFalse(resumed.serialized.get("isComplete"))
+
+    def test_multiple_completed_resumes_most_recent(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state={},
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self._complete_current(first.attempt_id)
+        self.persistence.attempts[first.attempt_id]["completed_at"] = "2026-08-01T00:05:00Z"
+        second = start_new_cb_sc001_attempt_v2(
+            content=self.content,
+            identity=self.identity,
+            session_state={},
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self._complete_current(second.attempt_id)
+        self.persistence.attempts[second.attempt_id]["completed_at"] = "2026-08-01T01:00:00Z"
+        empty: Dict[str, Any] = {}
+        latest = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=empty,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertEqual(latest.attempt_id, second.attempt_id)
+        self.assertTrue(latest.serialized.get("isComplete"))
+
+    def test_explicit_start_new_creates_one_and_preserves_completed(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self._complete_current(first.attempt_id)
+        completed_status = self.persistence.attempts[first.attempt_id]["status"]
+        self.assertEqual(completed_status, "completed")
+        created = start_new_cb_sc001_attempt_v2(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertNotEqual(created.attempt_id, first.attempt_id)
+        self.assertTrue(created.is_new_attempt)
+        self.assertFalse(created.serialized.get("isComplete"))
+        self.assertEqual(self.persistence.attempts[first.attempt_id]["status"], "completed")
+        self.assertEqual(len(self.persistence.attempts), 2)
+
+    def test_start_new_double_invocation_does_not_duplicate(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state={},
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self._complete_current(first.attempt_id)
+        session: Dict[str, Any] = {}
+        one = start_new_cb_sc001_attempt_v2(
+            content=self.content,
+            identity=self.identity,
+            session_state=session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        two = start_new_cb_sc001_attempt_v2(
+            content=self.content,
+            identity=self.identity,
+            session_state=session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertEqual(one.attempt_id, two.attempt_id)
+        in_progress = [
+            row for row in self.persistence.attempts.values() if row["status"] == "in_progress"
+        ]
+        self.assertEqual(len(in_progress), 1)
+
+    def test_start_new_while_in_progress_resumes_existing(self):
+        active = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state={},
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        again = start_new_cb_sc001_attempt_v2(
+            content=self.content,
+            identity=self.identity,
+            session_state={},
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self.assertEqual(again.attempt_id, active.attempt_id)
+        self.assertEqual(len(self.persistence.attempts), 1)
+
+    def test_multiple_in_progress_fails_closed(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state={},
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        # Force an integrity-damaged second in_progress row.
+        twin_id = str(uuid.uuid4())
+        self.persistence.attempts[twin_id] = copy.deepcopy(self.persistence.attempts[first.attempt_id])
+        self.persistence.attempts[twin_id]["attempt_id"] = twin_id
+        self.persistence.attempts[twin_id]["user_email"] = _LEARNER_EMAIL
+        self.persistence.decisions[twin_id] = []
+        from utils.scenario_streamlit_v2 import ScenarioStreamlitV2ScenarioUnavailableError
+
+        with self.assertRaises(ScenarioStreamlitV2ScenarioUnavailableError):
+            fetch_authoritative_cb_sc001_view(
+                content=self.content,
+                identity=self.identity,
+                session_state={},
+                scenario_version_id=_SCENARIO_VERSION_ID,
+                persistence=self.persistence,
+            )
+
+    def test_return_to_practice_does_not_create_attempt(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state=self.session,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        before = len(self.persistence.attempts)
+        destination = prepare_return_to_practice_navigation(self.session)
+        self.assertEqual(destination, RETURN_TO_PRACTICE_PAGE_PATH)
+        self.assertEqual(len(self.persistence.attempts), before)
+        self.assertEqual(first.attempt_id, first.attempt_id)
+        self.assertNotIn(WIDGET_KEY_START_NEW, collect_cb_sc001_v2_session_keys(self.session))
+
+    def test_start_new_widget_key_excludes_attempt_id(self):
+        assert_widget_keys_exclude_attempt_id(str(uuid.uuid4()), WIDGET_KEYS)
+        self.assertIn(WIDGET_KEY_START_NEW, WIDGET_KEYS)
+
+    def test_resolve_authoritative_ref_completed_only(self):
+        first = fetch_authoritative_cb_sc001_view(
+            content=self.content,
+            identity=self.identity,
+            session_state={},
+            scenario_version_id=_SCENARIO_VERSION_ID,
+            persistence=self.persistence,
+        )
+        self._complete_current(first.attempt_id)
+        ref = resolve_authoritative_attempt_ref_v2(
+            self.persistence,
+            user_email=_LEARNER_EMAIL,
+            scenario_version_id=_SCENARIO_VERSION_ID,
+        )
+        self.assertIsNotNone(ref)
+        assert ref is not None
+        self.assertEqual(ref.attempt_id, first.attempt_id)
+        self.assertEqual(ref.status, "completed")
 
 
 class TestTrustedIdentity(unittest.TestCase):

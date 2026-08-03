@@ -31,6 +31,7 @@ from utils.scenario_engine_v2 import (
     start_scenario_run_v2,
 )
 from utils.scenario_orchestration_v2 import (
+    LearnerAttemptSummaryV2,
     ScenarioOrchestrationV2CanonicalDecisionSequenceError,
     ScenarioOrchestrationV2IdempotencyConflictError,
     ScenarioOrchestrationV2IdentityMismatchError,
@@ -190,19 +191,76 @@ class FakeOrchestrationPersistence:
         self.start_calls: List[Dict[str, Any]] = []
         self.submit_calls: List[Dict[str, Any]] = []
         self.load_calls: List[Tuple[str, str]] = []
+        self.list_calls: List[Tuple[str, str]] = []
         self.submit_raise: Optional[str] = None
         self.load_raise: Optional[str] = None
         self.cache_corrupt_for: Optional[str] = None
         self.identity_override: Optional[Dict[str, Any]] = None
 
+    def list_learner_attempt_summaries_v2(
+        self,
+        *,
+        user_email: str,
+        scenario_version_id: str,
+    ) -> Tuple[LearnerAttemptSummaryV2, ...]:
+        email = str(user_email).strip().lower()
+        version_id = str(scenario_version_id)
+        self.list_calls.append((email, version_id))
+        rows: List[LearnerAttemptSummaryV2] = []
+        for row in self.attempts.values():
+            if str(row.get("user_email") or "").strip().lower() != email:
+                continue
+            if str(row.get("scenario_version_id")) != version_id:
+                continue
+            rows.append(
+                LearnerAttemptSummaryV2(
+                    attempt_id=str(row["attempt_id"]),
+                    status=str(row["status"]),
+                    started_at=row.get("started_at"),
+                    completed_at=row.get("completed_at"),
+                )
+            )
+        return tuple(rows)
+
     def call_start_or_resume_scenario_attempt_v1(self, params: Mapping[str, Any]) -> List[Dict[str, Any]]:
         self.start_calls.append(copy.deepcopy(dict(params)))
-        attempt_id = params["p_attempt_id"]
+        user_email = str(params["p_user_email"]).strip().lower()
+        version_id = str(params["p_scenario_version_id"])
+        requested_attempt_id = params.get("p_attempt_id")
         envelope = copy.deepcopy(dict(params["p_initial_serialized_state"]))
-        created = attempt_id not in self.attempts
-        if created:
+
+        existing_in_progress = None
+        for row in self.attempts.values():
+            if (
+                str(row.get("user_email") or "").strip().lower() == user_email
+                and str(row.get("scenario_version_id")) == version_id
+                and row.get("status") == "in_progress"
+            ):
+                existing_in_progress = row
+                break
+
+        if existing_in_progress is not None:
+            if requested_attempt_id is not None and str(requested_attempt_id) != str(
+                existing_in_progress["attempt_id"]
+            ):
+                raise _FakeException(
+                    "attempt_id_conflict: supplied p_attempt_id does not match the "
+                    "caller's existing in_progress attempt for this scenario version"
+                )
+            row = existing_in_progress
+            created = False
+        elif requested_attempt_id is not None and str(requested_attempt_id) in self.attempts:
+            # Explicit id already known (e.g. completed row resumed via start_or_resume).
+            row = self.attempts[str(requested_attempt_id)]
+            created = False
+        else:
+            attempt_id = str(requested_attempt_id) if requested_attempt_id is not None else str(uuid.uuid4())
+            if attempt_id in self.attempts:
+                raise _FakeException("attempt_id_collision: the supplied p_attempt_id is already in use")
+            created = True
             self.attempts[attempt_id] = {
                 "attempt_id": attempt_id,
+                "user_email": user_email,
                 "scenario_id": self.scenario_id,
                 "scenario_version_id": self.scenario_version_id,
                 "status": "in_progress",
@@ -218,7 +276,8 @@ class FakeOrchestrationPersistence:
                 "terminal_result_snapshot": None,
             }
             self.decisions[attempt_id] = []
-        row = self.attempts[attempt_id]
+            row = self.attempts[attempt_id]
+
         return [
             {
                 "attempt_id": row["attempt_id"],

@@ -52,11 +52,13 @@ given database session may see. Consequently:
   the authenticated server-side user/session context before ever calling
   this port -- that responsibility is explicitly out of scope for this
   module and is NOT implemented here;
-- this port never uses ``service_role`` table access to bypass that RPC
-  boundary -- every operation below is a ``client.rpc(...)`` call, never a
-  ``client.table(...)`` call, exactly mirroring the discipline
-  ``utils/scenario_persistence.py`` already documents and enforces for
-  Engine V1.
+- mutation paths (start/submit/get-by-id) remain ``client.rpc(...)`` only and
+  never bypass RPC ownership checks;
+- ``list_learner_attempt_summaries_v2`` is the sole approved ``client.table``
+  SELECT: it reads only ``id/status/started_at/completed_at`` for one trusted
+  ``user_email`` + ``scenario_version_id`` so completed-attempt session-loss
+  resume can work without a new RPC/migration (service_role already has
+  ``SELECT`` on ``scenario_attempts`` per V68).
 
 Design notes
 ------------
@@ -111,6 +113,8 @@ from __future__ import annotations
 
 import copy
 from typing import Any, Dict, List, Mapping, Optional, Protocol, Tuple
+
+from utils.scenario_orchestration_v2 import LearnerAttemptSummaryV2
 
 __all__ = (
     "ScenarioSupabasePortV2Error",
@@ -461,6 +465,8 @@ class SupabaseRpcRequestProtocol(Protocol):
 class SupabaseRpcClientProtocol(Protocol):
     def rpc(self, fn: str, params: Mapping[str, Any]) -> SupabaseRpcRequestProtocol: ...  # noqa: E704
 
+    def table(self, name: str) -> Any: ...  # noqa: E704 — approved summary SELECT only
+
 
 # ---------------------------------------------------------------------------
 # Response projection (load_attempt_snapshot only -- the two RPC-call
@@ -575,6 +581,79 @@ class SupabaseScenarioOrchestrationV2Port:
         data = self._call_rpc(_GET_ATTEMPT_RPC_NAME, params)
         row = self._extract_single_attempt_row(data)
         return self._project_attempt_row(row)
+
+    def list_learner_attempt_summaries_v2(
+        self,
+        *,
+        user_email: str,
+        scenario_version_id: str,
+    ) -> Tuple[LearnerAttemptSummaryV2, ...]:
+        """Ownership-scoped SELECT of minimal attempt summary fields.
+
+        Filters by trusted ``user_email`` + ``scenario_version_id``. Returns
+        only ``id``, ``status``, ``started_at``, ``completed_at``. Never
+        returns envelopes, decisions, or other internal columns.
+        """
+        email = str(user_email or "").strip().lower()
+        version_id = str(scenario_version_id or "").strip()
+        if not email or "@" not in email:
+            raise ScenarioSupabasePortV2MalformedResponseError(
+                "malformed_request: list_learner_attempt_summaries_v2 requires a trusted email"
+            )
+        if not version_id:
+            raise ScenarioSupabasePortV2MalformedResponseError(
+                "malformed_request: list_learner_attempt_summaries_v2 requires scenario_version_id"
+            )
+        try:
+            response = (
+                self._client.table("scenario_attempts")
+                .select("id,status,started_at,completed_at")
+                .eq("user_email", email)
+                .eq("scenario_version_id", version_id)
+                .execute()
+            )
+        except Exception as exc:  # noqa: BLE001 - reclassified below
+            raise _classify_rpc_exception("list_learner_attempt_summaries_v2", exc) from exc
+
+        error = getattr(response, "error", None)
+        if error:
+            carrier = _RpcErrorCarrier(error)
+            raise _classify_rpc_exception("list_learner_attempt_summaries_v2", carrier) from carrier
+
+        data = copy.deepcopy(getattr(response, "data", None))
+        if data is None:
+            return ()
+        if not isinstance(data, list):
+            raise ScenarioSupabasePortV2MalformedResponseError(
+                "malformed_response: list_learner_attempt_summaries_v2 expected a list"
+            )
+        summaries: List[LearnerAttemptSummaryV2] = []
+        for row in data:
+            if not isinstance(row, Mapping):
+                raise ScenarioSupabasePortV2MalformedResponseError(
+                    "malformed_response: list_learner_attempt_summaries_v2 row must be an object"
+                )
+            attempt_id = row.get("id")
+            status = row.get("status")
+            if not isinstance(attempt_id, str) or not attempt_id.strip():
+                raise ScenarioSupabasePortV2MalformedResponseError(
+                    "malformed_response: list_learner_attempt_summaries_v2 missing attempt id"
+                )
+            if status not in {"in_progress", "completed", "abandoned"}:
+                raise ScenarioSupabasePortV2MalformedResponseError(
+                    "malformed_response: list_learner_attempt_summaries_v2 has invalid status"
+                )
+            started = row.get("started_at")
+            completed = row.get("completed_at")
+            summaries.append(
+                LearnerAttemptSummaryV2(
+                    attempt_id=str(attempt_id),
+                    status=str(status),
+                    started_at=str(started) if started is not None else None,
+                    completed_at=str(completed) if completed is not None else None,
+                )
+            )
+        return tuple(summaries)
 
     # -- Internal helpers ---------------------------------------------------
 

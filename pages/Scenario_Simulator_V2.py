@@ -20,28 +20,34 @@ from utils.access_control import (
 )
 from utils.dashboard_components import inject_certbound_theme, render_empty_state, render_page_header
 from utils.navigation import CERTBOUND_ENABLE_SCENARIO_SIMULATOR, is_feature_flag_enabled
-from utils.scenario_controller_v2 import ScenarioControllerV2Error
+from utils.scenario_controller_v2 import (
+    ScenarioControllerV2Error,
+    ScenarioControllerV2StaleSessionError,
+)
 from utils.scenario_streamlit_v2 import (
     CB_SC001_CERTIFICATION_EXAM_NAME,
     CB_SC001_SCENARIO_IDENTIFIER,
     MSG_PENDING_RETRY,
+    MSG_SCENARIO_UNAVAILABLE,
     MSG_SELECT_OPTION,
+    ScenarioStreamlitV2Error,
     UiMessageKind,
     WIDGET_KEY_CHOICE,
     WIDGET_KEY_FORM,
     WIDGET_KEY_RETRY,
     WIDGET_KEY_RETURN,
+    WIDGET_KEY_START_NEW,
     build_trusted_identity_v2,
-    clear_cosmetic_ui_state,
-    clear_v2_session_keys,
     extract_progress_label,
     extract_scene_heading,
     fetch_authoritative_cb_sc001_view,
     has_pending_submission,
     load_cb_sc001_v2_content,
     map_controller_error_to_ui_message,
+    prepare_return_to_practice_navigation,
     read_ui_message,
     resolve_cb_sc001_scenario_version_id,
+    start_new_cb_sc001_attempt_v2,
     submit_cb_sc001_v2_choice,
 )
 from utils.session_timeout import enforce_session_timeout, show_session_expired_notice
@@ -74,13 +80,18 @@ def _require_premium_learner_email() -> str:
     return email
 
 
+def _navigate_return_to_practice() -> None:
+    """Clear only V2 scenario keys and switch to the registered Practice page."""
+    destination = prepare_return_to_practice_navigation(st.session_state)
+    st.switch_page(destination)
+
+
 def _render_unavailable(message: str) -> None:
-    render_empty_state(
-        "Scenario unavailable",
-        message,
-        action_label="Return to Practice",
-        action_href="pages/Practice.py",
-    )
+    # Do not use HTML href links here: with multipage sidebar navigation
+    # disabled, raw ``pages/Practice.py`` hrefs open a blank page.
+    render_empty_state("Scenario unavailable", message)
+    if st.button("Return to Practice", key=f"{WIDGET_KEY_RETURN}_unavailable"):
+        _navigate_return_to_practice()
 
 
 def _render_ui_message() -> None:
@@ -160,6 +171,47 @@ def _render_active_scene(*, serialized: dict, scenario_title: str) -> None:
             _handle_submit(selected_option_id=selected_option_id, retry_pending=False)
 
 
+def _handle_start_new_attempt() -> None:
+    try:
+        content = load_cb_sc001_v2_content()
+        client = get_supabase_admin_client()
+        identity = build_trusted_identity_v2(user_email=_learner_email, supabase_client=client)
+        scenario_version_id = resolve_cb_sc001_scenario_version_id(client, content=content)
+        start_new_cb_sc001_attempt_v2(
+            content=content,
+            identity=identity,
+            session_state=st.session_state,
+            scenario_version_id=scenario_version_id,
+        )
+    except ScenarioControllerV2Error as exc:
+        message = map_controller_error_to_ui_message(exc)
+        log_and_get_user_message(
+            "Scenario Simulator V2: controller failure during Start New Attempt",
+            message.text,
+            exc=exc,
+        )
+        st.warning(message.text)
+        return
+    except ScenarioStreamlitV2Error as exc:
+        safe_text = str(exc) if str(exc).strip() else MSG_SCENARIO_UNAVAILABLE
+        log_and_get_user_message(
+            "Scenario Simulator V2: streamlit failure during Start New Attempt",
+            safe_text,
+            exc=exc,
+        )
+        st.warning(safe_text)
+        return
+    except Exception as exc:  # noqa: BLE001 - sanitized at page boundary
+        message = log_and_get_user_message(
+            "Scenario Simulator V2: unexpected Start New Attempt failure",
+            "The scenario could not be started. Please try again.",
+            exc=exc,
+        )
+        st.warning(message)
+        return
+    st.rerun()
+
+
 def _render_terminal_result(*, serialized: dict, scenario_title: str) -> None:
     terminal = serialized.get("terminalResult")
     if not isinstance(terminal, dict):
@@ -174,10 +226,13 @@ def _render_terminal_result(*, serialized: dict, scenario_title: str) -> None:
     display_score = terminal.get("displayScore")
     if isinstance(display_score, str) and display_score.strip():
         st.write(display_score)
-    if st.button("Return to Practice", key=WIDGET_KEY_RETURN):
-        clear_cosmetic_ui_state(st.session_state)
-        clear_v2_session_keys(st.session_state)
-        st.switch_page("pages/Practice.py")
+    start_col, return_col = st.columns(2)
+    with start_col:
+        if st.button("Start New Attempt", key=WIDGET_KEY_START_NEW, type="primary"):
+            _handle_start_new_attempt()
+    with return_col:
+        if st.button("Return to Practice", key=WIDGET_KEY_RETURN):
+            _navigate_return_to_practice()
 
 
 def _handle_submit(*, selected_option_id: Optional[str] = None, retry_pending: bool) -> None:
@@ -249,13 +304,18 @@ try:
         scenario_version_id=_scenario_version_id,
     )
 except ScenarioControllerV2Error as exc:
-    message = map_controller_error_to_ui_message(exc)
+    # Ordinary refresh/resume must not surface the submission-only stale banner
+    # as a hard unavailable page. Stale-session text is reserved for submit CAS.
+    if isinstance(exc, ScenarioControllerV2StaleSessionError):
+        safe_text = MSG_SCENARIO_UNAVAILABLE
+    else:
+        safe_text = map_controller_error_to_ui_message(exc).text
     log_and_get_user_message(
         "Scenario Simulator V2: controller failure during authoritative load",
-        message.text,
+        safe_text,
         exc=exc,
     )
-    _render_unavailable(message.text)
+    _render_unavailable(safe_text)
     st.stop()
 except Exception as exc:  # noqa: BLE001 - sanitized at page boundary
     message = log_and_get_user_message(
