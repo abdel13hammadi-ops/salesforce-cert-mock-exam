@@ -1,0 +1,2010 @@
+{
+  "simulationId": "cb-sc-001-onboarding-handoff-vslice",
+  "version": "0.3.0-twelve-scene-kickoff",
+  "schemaVersion": "1.1.0",
+  "requiredEngineVersion": "SCENARIO_ENGINE_V2",
+  "certificationExamName": "Salesforce Certified Business Analyst",
+  "examCode": "BA-201",
+  "title": "Customer Kickoff",
+  "description": "Twelve-scene Business Analyst simulation: Crestline Manufacturing kickoff and onboarding handoff from incomplete Sales transfer through discovery, requirements, process mapping, user stories, acceptance criteria, UAT planning, and final stakeholder alignment.",
+  "estimatedMinutes": 40,
+  "locale": "en-US",
+  "optionDisplayPolicy": "randomize_per_attempt_scene",
+  "learnerRole": {
+    "title": "Embedded Business Analyst",
+    "summary": "You advise Elena Vasquez during the Crestline customer kickoff and onboarding handoff, balancing Sales commitments, Operations readiness, and customer confidence."
+  },
+  "introduction": {
+    "companyIntroduction": "Meridian Health is a regional clinic network adopting Salesforce Service Cloud. Crestline Manufacturing was just closed by Sales and must be onboarded under month-end pressure.",
+    "projectBriefing": {
+      "title": "Crestline Customer Kickoff",
+      "summary": "Sales closed Crestline; Customer Success must run kickoff while Operations still lacks a complete handoff package, clear outcomes, and validated requirements.",
+      "customerName": "Crestline Manufacturing",
+      "timelineContext": "Sales verbally committed to an end-of-month install. Requirements and data readiness are incomplete."
+    },
+    "characterCards": [
+      {
+        "characterId": "CB-CH-002",
+        "introText": "Elena Vasquez leads Customer Success and owns the customer relationship through kickoff.",
+        "displayOrder": 1
+      },
+      {
+        "characterId": "CB-CH-001",
+        "introText": "Marcus Chen owns the Sales handoff and is under pipeline pressure.",
+        "displayOrder": 2
+      },
+      {
+        "characterId": "CB-CH-003",
+        "introText": "Jordan Blake coordinates Operations readiness and will not start without clear gaps and owners.",
+        "displayOrder": 3
+      }
+    ],
+    "artifactPreviews": [
+      {
+        "artifactId": "art-sales-handoff-notes",
+        "title": "Sales Handoff Notes",
+        "summary": "CRM opportunity closed-won. Primary contact: Priya Nair (Crestline Ops Director). Promised install: end of month. Missing: signed order form link, success metrics, integration owners, data migration scope."
+      },
+      {
+        "artifactId": "art-stakeholder-list",
+        "title": "Stakeholder List (Draft)",
+        "summary": "Elena Vasquez (CSM), Marcus Chen (Sales), Jordan Blake (Ops Coordinator), Priya Nair (customer Ops Director), Crestline IT unnamed."
+      },
+      {
+        "artifactId": "art-onboarding-dashboard",
+        "title": "Onboarding Program Dashboard Snapshot",
+        "summary": "Tasks completed ~78% for prior template work. Risks flagged: requirements not fully defined; handoff timeline at risk. Target dates in CRM are unverified."
+      },
+      {
+        "artifactId": "art-current-state-summary",
+        "title": "Current-State Process Summary",
+        "summary": "Shared inbox → manual forward → spreadsheet status. Exception: multi-plant cases lose owner. Special handling promised by Sales is not logged."
+      },
+      {
+        "artifactId": "art-requirements-draft",
+        "title": "Requirements Draft",
+        "summary": "Mixed Sales language and Ops constraints. Several lines marked “as discussed.” Phase-one vs later not consistently tagged."
+      },
+      {
+        "artifactId": "art-process-map",
+        "title": "Process Map (Working)",
+        "summary": "Swimlanes for Sales, Service, Plant Ops. Decision diamonds for escalation. Status system-of-record called out per step when mapped fully."
+      },
+      {
+        "artifactId": "art-user-story-draft",
+        "title": "User Story Draft",
+        "summary": "Includes weak feature stories and stronger persona-based candidates for case intake, escalation, and status visibility."
+      },
+      {
+        "artifactId": "art-acceptance-criteria-draft",
+        "title": "Acceptance Criteria Draft",
+        "summary": "Template for given/when/then criteria, required test data, and approver role per story."
+      },
+      {
+        "artifactId": "art-uat-checklist",
+        "title": "UAT Readiness Checklist",
+        "summary": "Entry criteria, critical scenarios, named validators, defect triage, go/no-go evidence list."
+      },
+      {
+        "artifactId": "art-meeting-notes",
+        "title": "Kickoff Meeting Notes",
+        "summary": "Running log of decisions, open questions, risks, and follow-ups across the Crestline kickoff."
+      }
+    ],
+    "knownRisks": [
+      "Incomplete Sales handoff package",
+      "Unsupported month-end customer install expectation",
+      "Conflicting stakeholder definitions of success",
+      "Premature solution commitments before discovery"
+    ],
+    "successCriteria": [
+      "Documented ownership and open gaps",
+      "Aligned internal story before customer timeline confirmation",
+      "Traceable requirements, stories, and acceptance criteria",
+      "UAT-ready validation plan with named owners"
+    ],
+    "startGate": {
+      "headline": "Ready to begin the Crestline kickoff?",
+      "body": "You will advise Elena scene by scene. Capture notes, use artifacts, and weigh tradeoffs. Outcomes appear only at the end.",
+      "confirmButtonLabel": "Start Scenario",
+      "cancelBehavior": "return_to_catalog"
+    }
+  },
+  "characters": [
+    {
+      "characterId": "CB-CH-001",
+      "displayName": "Marcus Chen",
+      "roleTitle": "Sales Representative",
+      "accessibilityDescription": "Sales representative near the conference room door, hurried and headset-ready"
+    },
+    {
+      "characterId": "CB-CH-002",
+      "displayName": "Elena Vasquez",
+      "roleTitle": "Customer Success Manager",
+      "accessibilityDescription": "Customer success manager at the table with laptop open"
+    },
+    {
+      "characterId": "CB-CH-003",
+      "displayName": "Jordan Blake",
+      "roleTitle": "Operations Coordinator",
+      "accessibilityDescription": "Operations coordinator with notebook, focused on readiness gaps"
+    }
+  ],
+  "domains": [
+    {
+      "id": "customer-discovery",
+      "label": "Customer Discovery",
+      "weight": "1"
+    },
+    {
+      "id": "stakeholder-collaboration",
+      "label": "Collaboration with Stakeholders",
+      "weight": "1"
+    },
+    {
+      "id": "process-mapping",
+      "label": "Business Process Mapping",
+      "weight": "1"
+    },
+    {
+      "id": "requirements",
+      "label": "Requirements",
+      "weight": "1"
+    },
+    {
+      "id": "user-stories",
+      "label": "User Stories",
+      "weight": "1"
+    },
+    {
+      "id": "user-acceptance",
+      "label": "User Acceptance",
+      "weight": "1"
+    }
+  ],
+  "flags": [
+    {
+      "flagId": "flag-verbal-handoff-only",
+      "valueType": "boolean",
+      "initialValue": false,
+      "sticky": true,
+      "allowedSetters": [
+        {
+          "sceneId": "SC001-C02",
+          "optionId": "opt-sc001-c02-c"
+        }
+      ],
+      "allowedClearers": [],
+      "debriefRelevant": true
+    },
+    {
+      "flagId": "flag-unsupported-customer-date",
+      "valueType": "boolean",
+      "initialValue": false,
+      "sticky": true,
+      "allowedSetters": [
+        {
+          "sceneId": "SC001-C03",
+          "optionId": "opt-sc001-c03-c"
+        }
+      ],
+      "allowedClearers": [],
+      "debriefRelevant": true
+    },
+    {
+      "flagId": "flag-sales-reengaged",
+      "valueType": "boolean",
+      "initialValue": false,
+      "sticky": true,
+      "allowedSetters": [
+        {
+          "sceneId": "SC001-C02",
+          "optionId": "opt-sc001-c02-a"
+        }
+      ],
+      "allowedClearers": [],
+      "debriefRelevant": true
+    },
+    {
+      "flagId": "flag-premature-solution",
+      "valueType": "boolean",
+      "initialValue": false,
+      "sticky": true,
+      "allowedSetters": [
+        {
+          "sceneId": "SC001-C06",
+          "optionId": "opt-sc001-c06-c"
+        }
+      ],
+      "allowedClearers": [],
+      "debriefRelevant": true
+    },
+    {
+      "flagId": "flag-weak-stories",
+      "valueType": "boolean",
+      "initialValue": false,
+      "sticky": true,
+      "allowedSetters": [
+        {
+          "sceneId": "SC001-C09",
+          "optionId": "opt-sc001-c09-c"
+        }
+      ],
+      "allowedClearers": [],
+      "debriefRelevant": true
+    },
+    {
+      "flagId": "flag-thin-uat",
+      "valueType": "boolean",
+      "initialValue": false,
+      "sticky": true,
+      "allowedSetters": [
+        {
+          "sceneId": "SC001-C11",
+          "optionId": "opt-sc001-c11-c"
+        }
+      ],
+      "allowedClearers": [],
+      "debriefRelevant": true
+    }
+  ],
+  "stateVariables": [
+    {
+      "key": "customerConfidence",
+      "displayName": "Customer Confidence",
+      "polarity": "higher_is_better",
+      "minimum": 0,
+      "maximum": 100,
+      "learnerVisibleDuringRun": false
+    },
+    {
+      "key": "operationalRisk",
+      "displayName": "Operational Risk",
+      "polarity": "higher_is_worse",
+      "minimum": 0,
+      "maximum": 100,
+      "learnerVisibleDuringRun": false
+    },
+    {
+      "key": "dataQuality",
+      "displayName": "Data Quality",
+      "polarity": "higher_is_better",
+      "minimum": 0,
+      "maximum": 100,
+      "learnerVisibleDuringRun": false
+    },
+    {
+      "key": "scheduleImpact",
+      "displayName": "Schedule Impact",
+      "polarity": "higher_is_worse",
+      "minimum": 0,
+      "maximum": 100,
+      "learnerVisibleDuringRun": false
+    },
+    {
+      "key": "complianceExposure",
+      "displayName": "Compliance Exposure",
+      "polarity": "higher_is_worse",
+      "minimum": 0,
+      "maximum": 100,
+      "learnerVisibleDuringRun": false
+    },
+    {
+      "key": "requirementsClarity",
+      "displayName": "Requirements Clarity",
+      "polarity": "higher_is_better",
+      "minimum": 0,
+      "maximum": 100,
+      "learnerVisibleDuringRun": false
+    },
+    {
+      "key": "stakeholderAlignment",
+      "displayName": "Stakeholder Alignment",
+      "polarity": "higher_is_better",
+      "minimum": 0,
+      "maximum": 100,
+      "learnerVisibleDuringRun": false
+    }
+  ],
+  "initialState": {
+    "customerConfidence": 68,
+    "operationalRisk": 42,
+    "dataQuality": 44,
+    "scheduleImpact": 38,
+    "complianceExposure": 32,
+    "requirementsClarity": 48,
+    "stakeholderAlignment": 52
+  },
+  "runtimeCounters": [
+    {
+      "counterId": "correctiveScenesExperienced",
+      "initialValue": 0,
+      "minimum": 0,
+      "maximum": 0,
+      "incrementOn": [
+        {
+          "event": "corrective_scene_entered"
+        }
+      ]
+    },
+    {
+      "counterId": "highRiskDecisionCount",
+      "initialValue": 0,
+      "incrementOn": [
+        {
+          "event": "decision_applied",
+          "whenTier": "high-risk"
+        }
+      ]
+    },
+    {
+      "counterId": "optimalDecisionCount",
+      "initialValue": 0,
+      "incrementOn": [
+        {
+          "event": "decision_applied",
+          "whenTier": "optimal"
+        }
+      ]
+    }
+  ],
+  "correctiveBudgetPolicy": {
+    "maxAvailableCorrectiveScenes": 0,
+    "maxExperiencedCorrectiveScenes": 0,
+    "maxScoredDecisions": 12,
+    "minScoredDecisions": 12,
+    "experiencedCounterId": "correctiveScenesExperienced"
+  },
+  "stages": [
+    {
+      "stageId": "stage-1",
+      "label": "Kickoff & Handoff"
+    },
+    {
+      "stageId": "stage-2",
+      "label": "Discovery & Scope"
+    },
+    {
+      "stageId": "stage-3",
+      "label": "Requirements & Process"
+    },
+    {
+      "stageId": "stage-4",
+      "label": "Stories, Validation & Alignment"
+    }
+  ],
+  "startScene": "SC001-C01",
+  "scenes": [
+    {
+      "id": "SC001-C01",
+      "sceneType": "core",
+      "stageId": "stage-1",
+      "authoredOrder": 1,
+      "title": "Customer Kickoff Opening",
+      "domainId": "customer-discovery",
+      "setting": "Modern conference room with city view; onboarding dashboard on the wall display; Crestline kickoff agenda on the table.",
+      "charactersPresent": [
+        "CB-CH-001",
+        "CB-CH-002"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-onboarding-dashboard",
+        "art-stakeholder-list"
+      ],
+      "enteringStateDescription": "Marcus arrives late from a customer call. Elena has opened the kickoff agenda.",
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-001",
+            "text": "Crestline is closed. They are excited. I told Priya we could get them installed by month end if we move fast.",
+            "tone": "hurried"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-002",
+            "text": "Marcus, before we bring Ops in—what is actually ready for kickoff, and what is still open?",
+            "tone": "professional"
+          },
+          {
+            "exchangeId": "ex-003",
+            "speakerId": "learner",
+            "text": "Elena looks to you for how to open the kickoff conversation.",
+            "tone": "neutral"
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena open the Crestline kickoff?",
+        "options": [
+          {
+            "id": "opt-sc001-c01-a",
+            "text": "Frame the kickoff around confirming outcomes, owners, and open questions before timeline commitments.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "stakeholderAlignment": 2,
+              "requirementsClarity": 2
+            },
+            "feedback": "The conversation moves forward with a workable next step.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C02"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c01-a",
+              "whyStronger": "This keeps the work moving without over-committing.",
+              "immediateConsequence": "Team advances with shared context."
+            },
+            "competencyTags": [
+              "customer-discovery"
+            ]
+          },
+          {
+            "id": "opt-sc001-c01-b",
+            "text": "Thank Marcus for the win and move quickly into installation logistics so Crestline feels momentum.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "stakeholderAlignment": 2,
+              "requirementsClarity": 2
+            },
+            "feedback": "The discussion continues; a few open questions remain on the table.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C02"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c01-a",
+              "whyStronger": "Both options are workable; the alternate is slightly less precise.",
+              "immediateConsequence": "Team advances with residual ambiguity."
+            },
+            "competencyTags": [
+              "customer-discovery"
+            ]
+          }
+        ]
+      },
+      "progressMetadata": {
+        "notePrompts": [
+          "Open questions from Sales",
+          "Assumptions about month-end install",
+          "Kickoff success definition"
+        ]
+      }
+    },
+    {
+      "id": "SC001-C02",
+      "sceneType": "core",
+      "stageId": "stage-1",
+      "authoredOrder": 2,
+      "title": "Incomplete Sales Handoff",
+      "domainId": "customer-discovery",
+      "setting": "Same conference room; CRM opportunity and a thin handoff folder projected on screen.",
+      "charactersPresent": [
+        "CB-CH-001",
+        "CB-CH-002"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-sales-handoff-notes"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-002",
+            "text": "The agreement link is missing, success metrics are blank, and there is no named integration owner. Who owns onboarding from here?",
+            "tone": "firm"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-001",
+            "text": "Everything important is in the CRM notes. Ops can take it from here—I have two renewals waiting.",
+            "tone": "defensive"
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena handle the incomplete handoff before Operations joins?",
+        "options": [
+          {
+            "id": "opt-sc001-c02-a",
+            "text": "Assign CS ownership now and capture a numbered gap list with Marcus before he leaves.",
+            "evaluationTier": "optimal",
+            "stateChanges": {
+              "customerConfidence": 2,
+              "operationalRisk": -4,
+              "dataQuality": 6,
+              "requirementsClarity": 5,
+              "stakeholderAlignment": 5
+            },
+            "feedback": "Elena opens a structured gap list; Marcus stays for ten minutes.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C03"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c02-a",
+              "whyStronger": "Written ownership and gaps reduce rework and keep Sales accountable.",
+              "immediateConsequence": "Handoff gaps become visible before Ops review."
+            },
+            "setFlags": [
+              "flag-sales-reengaged"
+            ],
+            "competencyTags": [
+              "customer-discovery",
+              "stakeholder-collaboration"
+            ]
+          },
+          {
+            "id": "opt-sc001-c02-b",
+            "text": "Accept Marcus’s verbal summary for now and ask Elena to log follow-ups after the meeting.",
+            "evaluationTier": "suboptimal",
+            "stateChanges": {
+              "operationalRisk": 3,
+              "dataQuality": -2,
+              "scheduleImpact": 2,
+              "stakeholderAlignment": -1,
+              "requirementsClarity": -1
+            },
+            "feedback": "Marcus leaves; Elena jots a few notes but several fields stay blank.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C03"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c02-a",
+              "whyStronger": "Async logging delays accountability and weakens the handoff package.",
+              "immediateConsequence": "Ops will inherit undocumented gaps."
+            },
+            "competencyTags": [
+              "customer-discovery"
+            ]
+          },
+          {
+            "id": "opt-sc001-c02-c",
+            "text": "Treat the CRM as sufficient so Marcus can return to pipeline without further checklist work.",
+            "evaluationTier": "high-risk",
+            "stateChanges": {
+              "customerConfidence": -1,
+              "operationalRisk": 5,
+              "dataQuality": -5,
+              "scheduleImpact": 3,
+              "complianceExposure": 3,
+              "requirementsClarity": -4,
+              "stakeholderAlignment": -3
+            },
+            "feedback": "Elena hesitates; the handoff folder remains thin.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C03"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c02-a",
+              "whyStronger": "CRM completeness is not the same as handoff quality.",
+              "immediateConsequence": "Verbal-only handoff risk is locked in."
+            },
+            "setFlags": [
+              "flag-verbal-handoff-only"
+            ],
+            "competencyTags": [
+              "customer-discovery"
+            ]
+          }
+        ]
+      },
+      "progressMetadata": {
+        "notePrompts": [
+          "Missing artifacts",
+          "Owners still unclear",
+          "Risks if Ops starts now"
+        ]
+      }
+    },
+    {
+      "id": "SC001-C03",
+      "sceneType": "core",
+      "stageId": "stage-1",
+      "authoredOrder": 3,
+      "title": "Customer Kickoff – Timeline & Reconciliation",
+      "domainId": "stakeholder-collaboration",
+      "setting": "Conference table; onboarding dashboard showing unverified go-live target and red risk flags for undefined requirements.",
+      "charactersPresent": [
+        "CB-CH-001",
+        "CB-CH-002",
+        "CB-CH-003"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-onboarding-dashboard",
+        "art-sales-handoff-notes"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-002",
+            "text": "Priya messaged me again. Sales told Crestline we would have the system installed by the end of this month. That is only four weeks away. Do we really think we can meet that?",
+            "tone": "concerned"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-001",
+            "text": "We need to keep the customer confident. Walking back the date puts Sales in a difficult position.",
+            "tone": "pressured"
+          },
+          {
+            "exchangeId": "ex-003",
+            "speakerId": "CB-CH-003",
+            "text": "From Operations, we are still finalizing requirements and do not have the data we need to plan installation. We need time to do this right.",
+            "tone": "firm"
+          },
+          {
+            "exchangeId": "ex-004",
+            "speakerId": "learner",
+            "text": "How should I advise Elena to respond to the timeline concern?",
+            "tone": "neutral"
+          }
+        ],
+        "variants": [
+          {
+            "variantId": "c03-verbal-handoff",
+            "priority": 10,
+            "when": {
+              "flagSet": "flag-verbal-handoff-only"
+            },
+            "overrides": [
+              {
+                "exchangeId": "ex-003",
+                "text": "CRM looks complete, but the folder is thin. I will not plan install dates on a verbal handoff.",
+                "tone": "skeptical"
+              }
+            ]
+          },
+          {
+            "variantId": "c03-sales-reengaged",
+            "priority": 20,
+            "when": {
+              "flagSet": "flag-sales-reengaged"
+            },
+            "overrides": [
+              {
+                "exchangeId": "ex-002",
+                "text": "I can stay for milestone planning, but we should not pretend the package is finished.",
+                "tone": "cautious"
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena respond to the month-end timeline concern?",
+        "options": [
+          {
+            "id": "opt-sc001-c03-a",
+            "text": "Acknowledge the urgency, refuse an unsupported install date, and commit to a reconciled milestone plan within three business days.",
+            "evaluationTier": "optimal",
+            "stateChanges": {
+              "customerConfidence": 3,
+              "operationalRisk": -4,
+              "scheduleImpact": -2,
+              "requirementsClarity": 4,
+              "stakeholderAlignment": 6,
+              "dataQuality": 2
+            },
+            "feedback": "Elena proposes a short reconciliation window; Jordan nods; Marcus looks uneasy but stays engaged.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C04"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c03-a",
+              "whyStronger": "Balances customer confidence with accuracy and brings Ops into alignment.",
+              "immediateConsequence": "Timeline pressure is converted into a planned discovery checkpoint."
+            },
+            "competencyTags": [
+              "stakeholder-collaboration",
+              "customer-discovery"
+            ]
+          },
+          {
+            "id": "opt-sc001-c03-b",
+            "text": "Repeat Sales’ commitment publicly and ask Operations to catch up to the month-end date.",
+            "evaluationTier": "suboptimal",
+            "stateChanges": {
+              "customerConfidence": 1,
+              "operationalRisk": 4,
+              "scheduleImpact": 6,
+              "stakeholderAlignment": -3,
+              "requirementsClarity": -2
+            },
+            "feedback": "Marcus relaxes; Jordan closes his notebook halfway.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C04"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c03-a",
+              "whyStronger": "Protecting the Sales narrative without readiness increases delivery risk.",
+              "immediateConsequence": "Ops trust dips; schedule pressure rises."
+            },
+            "competencyTags": [
+              "stakeholder-collaboration"
+            ]
+          },
+          {
+            "id": "opt-sc001-c03-c",
+            "text": "Confirm the end-of-month install in writing now to keep Crestline confident.",
+            "evaluationTier": "high-risk",
+            "stateChanges": {
+              "customerConfidence": -4,
+              "operationalRisk": 8,
+              "scheduleImpact": 10,
+              "complianceExposure": 5,
+              "requirementsClarity": -4,
+              "stakeholderAlignment": -6,
+              "dataQuality": -3
+            },
+            "feedback": "Elena drafts a confirmation email; Jordan objects immediately.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C04"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c03-a",
+              "whyStronger": "Written confirmation of an unsupported date creates avoidable customer and delivery exposure.",
+              "immediateConsequence": "Unsupported customer date flag is set."
+            },
+            "setFlags": [
+              "flag-unsupported-customer-date"
+            ],
+            "competencyTags": [
+              "stakeholder-collaboration"
+            ]
+          }
+        ]
+      },
+      "progressMetadata": {
+        "notePrompts": [
+          "Customer-facing date risk",
+          "What can be promised in 3 days",
+          "Ops blockers"
+        ]
+      }
+    },
+    {
+      "id": "SC001-C04",
+      "sceneType": "core",
+      "stageId": "stage-2",
+      "authoredOrder": 4,
+      "title": "Conflicting Stakeholder Expectations",
+      "domainId": "stakeholder-collaboration",
+      "setting": "Kickoff continues; whiteboard lists Success / Scope / Timeline with conflicting sticky notes from Sales and Ops.",
+      "charactersPresent": [
+        "CB-CH-001",
+        "CB-CH-002",
+        "CB-CH-003"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-stakeholder-list"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-001",
+            "text": "Success means Crestline is live and logging cases in Salesforce this month. That is what they bought.",
+            "tone": "assertive"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-003",
+            "text": "Success means we can support them without fire drills. If case categories and routing are wrong, live is not success.",
+            "tone": "firm"
+          },
+          {
+            "exchangeId": "ex-003",
+            "speakerId": "CB-CH-002",
+            "text": "Priya told me she cares about reducing handoffs between sales and service more than any single go-live date.",
+            "tone": "thoughtful"
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena reconcile conflicting definitions of success?",
+        "options": [
+          {
+            "id": "opt-sc001-c04-a",
+            "text": "Facilitate a shared outcome statement and separate must-have kickoff outcomes from later-phase goals.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "stakeholderAlignment": 3,
+              "requirementsClarity": 2
+            },
+            "feedback": "The conversation moves forward with a workable next step.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C05"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c04-a",
+              "whyStronger": "This keeps the work moving without over-committing.",
+              "immediateConsequence": "Team advances with shared context."
+            },
+            "competencyTags": [
+              "stakeholder-collaboration",
+              "customer-discovery"
+            ]
+          },
+          {
+            "id": "opt-sc001-c04-b",
+            "text": "Capture each stakeholder’s definition separately and decide the success narrative after the meeting.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "stakeholderAlignment": 3,
+              "requirementsClarity": 2
+            },
+            "feedback": "The discussion continues; a few open questions remain on the table.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C05"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c04-a",
+              "whyStronger": "Both options are workable; the alternate is slightly less precise.",
+              "immediateConsequence": "Team advances with residual ambiguity."
+            },
+            "competencyTags": [
+              "stakeholder-collaboration",
+              "customer-discovery"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC001-C05",
+      "sceneType": "core",
+      "stageId": "stage-2",
+      "authoredOrder": 5,
+      "title": "Current-State Process Understanding",
+      "domainId": "process-mapping",
+      "setting": "Operations war room; Jordan walks a current-state case intake sketch on the whiteboard.",
+      "charactersPresent": [
+        "CB-CH-002",
+        "CB-CH-003"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-current-state-summary"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-003",
+            "text": "Today Crestline emails a shared inbox, someone forwards to the right team, and status lives in a spreadsheet. Nobody can tell me the exception path when a case spans two plants.",
+            "tone": "neutral"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-002",
+            "text": "Priya said sales reps sometimes promise special handling. That never shows up in the spreadsheet.",
+            "tone": "concerned"
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "What should Elena emphasize while capturing the current-state process?",
+        "options": [
+          {
+            "id": "opt-sc001-c05-a",
+            "text": "Map the common path and explicitly call out exception paths, handoffs, and where status is lost today.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "dataQuality": 2,
+              "requirementsClarity": 2,
+              "operationalRisk": -1
+            },
+            "feedback": "The conversation moves forward with a workable next step.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C06"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c05-a",
+              "whyStronger": "This keeps the work moving without over-committing.",
+              "immediateConsequence": "Team advances with shared context."
+            },
+            "competencyTags": [
+              "process-mapping",
+              "customer-discovery"
+            ]
+          },
+          {
+            "id": "opt-sc001-c05-b",
+            "text": "Capture the happy path quickly so the team can start configuring Salesforce screens.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "dataQuality": 2,
+              "requirementsClarity": 2,
+              "operationalRisk": -1
+            },
+            "feedback": "The discussion continues; a few open questions remain on the table.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C06"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c05-a",
+              "whyStronger": "Both options are workable; the alternate is slightly less precise.",
+              "immediateConsequence": "Team advances with residual ambiguity."
+            },
+            "competencyTags": [
+              "process-mapping",
+              "customer-discovery"
+            ]
+          }
+        ]
+      },
+      "progressMetadata": {
+        "notePrompts": [
+          "Exception paths",
+          "Where work is invisible today",
+          "Assumptions about plant handoffs"
+        ]
+      }
+    },
+    {
+      "id": "SC001-C06",
+      "sceneType": "core",
+      "stageId": "stage-2",
+      "authoredOrder": 6,
+      "title": "Scope Pressure and Premature Solutions",
+      "domainId": "requirements",
+      "setting": "Conference room; Marcus has rejoined by phone; a feature wishlist appears in chat.",
+      "charactersPresent": [
+        "CB-CH-001",
+        "CB-CH-002",
+        "CB-CH-003"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-requirements-draft"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-001",
+            "text": "Crestline asked if we can turn on Omni-Channel and a custom plant-routing engine in phase one. I told them we are flexible.",
+            "tone": "casual"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-003",
+            "text": "We do not even know their queues yet. If we promise Omni-Channel now, we will rebuild it twice.",
+            "tone": "warning"
+          },
+          {
+            "exchangeId": "ex-003",
+            "speakerId": "CB-CH-002",
+            "text": "I need a clean way to respond without killing momentum.",
+            "tone": "professional"
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena respond to the premature solution request?",
+        "options": [
+          {
+            "id": "opt-sc001-c06-a",
+            "text": "Park advanced routing as a candidate, confirm phase-one outcomes first, and schedule discovery on queues and volumes before solution choice.",
+            "evaluationTier": "optimal",
+            "stateChanges": {
+              "requirementsClarity": 6,
+              "operationalRisk": -4,
+              "stakeholderAlignment": 4,
+              "scheduleImpact": -1,
+              "customerConfidence": 2
+            },
+            "feedback": "Marcus agrees to rephrase with Priya; Jordan starts a discovery checklist.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C07"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c06-a",
+              "whyStronger": "Separates outcome from solution and protects phase-one scope.",
+              "immediateConsequence": "Premature solution pressure is converted into discovery work."
+            },
+            "competencyTags": [
+              "requirements"
+            ]
+          },
+          {
+            "id": "opt-sc001-c06-b",
+            "text": "Accept Omni-Channel as a phase-one placeholder and refine details during build.",
+            "evaluationTier": "suboptimal",
+            "stateChanges": {
+              "scheduleImpact": 3,
+              "operationalRisk": 3,
+              "requirementsClarity": -2,
+              "stakeholderAlignment": -1
+            },
+            "feedback": "The wishlist stays in scope language; Jordan looks concerned.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C07"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c06-a",
+              "whyStronger": "Placeholder solutions often harden into unverified commitments.",
+              "immediateConsequence": "Scope carries an unvalidated solution assumption."
+            },
+            "competencyTags": [
+              "requirements"
+            ]
+          },
+          {
+            "id": "opt-sc001-c06-c",
+            "text": "Commit to the custom plant-routing engine in writing because Sales already set the expectation.",
+            "evaluationTier": "high-risk",
+            "stateChanges": {
+              "operationalRisk": 7,
+              "scheduleImpact": 6,
+              "requirementsClarity": -5,
+              "stakeholderAlignment": -4,
+              "complianceExposure": 2,
+              "customerConfidence": -2
+            },
+            "feedback": "Elena sends a confirming note; Jordan escalates readiness concerns.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C07"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c06-a",
+              "whyStronger": "Writing down an unvalidated solution creates rework and stakeholder concern.",
+              "immediateConsequence": "Premature solution flag is set."
+            },
+            "setFlags": [
+              "flag-premature-solution"
+            ],
+            "competencyTags": [
+              "requirements"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC001-C07",
+      "sceneType": "core",
+      "stageId": "stage-3",
+      "authoredOrder": 7,
+      "title": "Requirements Clarification",
+      "domainId": "requirements",
+      "setting": "Working session; requirements draft on shared screen with several ambiguous “fast follow” lines.",
+      "charactersPresent": [
+        "CB-CH-002",
+        "CB-CH-003"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-requirements-draft"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-002",
+            "text": "Half of these lines say “as discussed with Sales.” I cannot tell what Crestline must have for kickoff versus what would be nice later.",
+            "tone": "frustrated"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-003",
+            "text": "If we do not split must-have from later, every workshop becomes a redesign.",
+            "tone": "matter-of-fact"
+          }
+        ],
+        "variants": [
+          {
+            "variantId": "c07-premature",
+            "priority": 10,
+            "when": {
+              "flagSet": "flag-premature-solution"
+            },
+            "overrides": [
+              {
+                "exchangeId": "ex-001",
+                "text": "And now the draft includes a plant-routing engine we never discovered. That line is driving every other requirement.",
+                "tone": "frustrated"
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena structure the requirements clarification?",
+        "options": [
+          {
+            "id": "opt-sc001-c07-a",
+            "text": "Rewrite each ambiguous line into outcome, user, constraint, and priority, then mark gaps as open questions.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "requirementsClarity": 3,
+              "dataQuality": 1,
+              "stakeholderAlignment": 1
+            },
+            "feedback": "The conversation moves forward with a workable next step.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C08"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c07-a",
+              "whyStronger": "This keeps the work moving without over-committing.",
+              "immediateConsequence": "Team advances with shared context."
+            },
+            "competencyTags": [
+              "requirements"
+            ]
+          },
+          {
+            "id": "opt-sc001-c07-b",
+            "text": "Keep the Sales language mostly intact and highlight only the riskiest lines for later.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "requirementsClarity": 3,
+              "dataQuality": 1,
+              "stakeholderAlignment": 1
+            },
+            "feedback": "The discussion continues; a few open questions remain on the table.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C08"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c07-a",
+              "whyStronger": "Both options are workable; the alternate is slightly less precise.",
+              "immediateConsequence": "Team advances with residual ambiguity."
+            },
+            "competencyTags": [
+              "requirements"
+            ]
+          }
+        ]
+      },
+      "progressMetadata": {
+        "notePrompts": [
+          "Must-have vs later",
+          "Open questions",
+          "Constraints from Ops"
+        ]
+      }
+    },
+    {
+      "id": "SC001-C08",
+      "sceneType": "core",
+      "stageId": "stage-3",
+      "authoredOrder": 8,
+      "title": "Process Mapping Workshop",
+      "domainId": "process-mapping",
+      "setting": "Whiteboard session; swimlanes for Sales, Service, and Plant Ops sketched lightly.",
+      "charactersPresent": [
+        "CB-CH-002",
+        "CB-CH-003"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-process-map"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-003",
+            "text": "If we only map the happy path, we will miss the plant-to-plant handoff that already breaks their spreadsheet.",
+            "tone": "firm"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-002",
+            "text": "We also have limited workshop time before Priya’s next checkpoint.",
+            "tone": "pressured"
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena guide the process-mapping workshop?",
+        "options": [
+          {
+            "id": "opt-sc001-c08-a",
+            "text": "Map the critical case journey including decision points, exception paths, and system-of-record for status at each step.",
+            "evaluationTier": "optimal",
+            "stateChanges": {
+              "requirementsClarity": 5,
+              "operationalRisk": -4,
+              "dataQuality": 4,
+              "stakeholderAlignment": 3,
+              "scheduleImpact": 1
+            },
+            "feedback": "Jordan builds a usable current-state map; Elena captures owners per lane.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C09"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c08-a",
+              "whyStronger": "Exception-aware mapping produces requirements that survive contact with reality.",
+              "immediateConsequence": "Process map becomes decision-useful evidence."
+            },
+            "competencyTags": [
+              "process-mapping"
+            ]
+          },
+          {
+            "id": "opt-sc001-c08-b",
+            "text": "Sketch a simplified happy path only and note exceptions as parking-lot items.",
+            "evaluationTier": "suboptimal",
+            "stateChanges": {
+              "scheduleImpact": -1,
+              "operationalRisk": 3,
+              "requirementsClarity": -1,
+              "dataQuality": -1
+            },
+            "feedback": "The map looks clean; exception knowledge stays tribal.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C09"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c08-a",
+              "whyStronger": "Parking-lot exceptions often return as production incidents.",
+              "immediateConsequence": "Process evidence is incomplete."
+            },
+            "competencyTags": [
+              "process-mapping"
+            ]
+          },
+          {
+            "id": "opt-sc001-c08-c",
+            "text": "Skip mapping and convert Marcus’s CRM notes directly into configuration tasks.",
+            "evaluationTier": "high-risk",
+            "stateChanges": {
+              "operationalRisk": 6,
+              "requirementsClarity": -4,
+              "dataQuality": -3,
+              "stakeholderAlignment": -3,
+              "scheduleImpact": 2
+            },
+            "feedback": "Jordan objects; Elena feels schedule pressure winning.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C09"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c08-a",
+              "whyStronger": "Configuration without process understanding creates rework.",
+              "immediateConsequence": "Process thinking debt increases."
+            },
+            "competencyTags": [
+              "process-mapping"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC001-C09",
+      "sceneType": "core",
+      "stageId": "stage-4",
+      "authoredOrder": 9,
+      "title": "User Story Quality",
+      "domainId": "user-stories",
+      "setting": "Shared story draft on screen; several stories read like feature requests.",
+      "charactersPresent": [
+        "CB-CH-002",
+        "CB-CH-003"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-user-story-draft"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-002",
+            "text": "One story says, “As a user, I want Omni-Channel so that cases route correctly.” That is not helping anyone estimate or test.",
+            "tone": "critical"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-003",
+            "text": "I need personas, triggers, and what “correctly” means for plant escalation.",
+            "tone": "matter-of-fact"
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena improve the user-story set for kickoff?",
+        "options": [
+          {
+            "id": "opt-sc001-c09-a",
+            "text": "Rewrite priority stories with persona, situation, capability, and business value; split solution-specific language into notes.",
+            "evaluationTier": "optimal",
+            "stateChanges": {
+              "requirementsClarity": 6,
+              "stakeholderAlignment": 3,
+              "operationalRisk": -2,
+              "customerConfidence": 1
+            },
+            "feedback": "Stories become testable; Jordan can see Ops involvement points.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C10"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c09-a",
+              "whyStronger": "Good stories preserve need without locking an unverified solution.",
+              "immediateConsequence": "Story quality supports acceptance criteria next."
+            },
+            "competencyTags": [
+              "user-stories",
+              "requirements"
+            ]
+          },
+          {
+            "id": "opt-sc001-c09-b",
+            "text": "Keep the feature-oriented stories and add a general “configure routing” epic for later detail.",
+            "evaluationTier": "suboptimal",
+            "stateChanges": {
+              "requirementsClarity": -1,
+              "scheduleImpact": -1,
+              "operationalRisk": 2
+            },
+            "feedback": "Velocity looks high on paper; clarity stays low.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C10"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c09-a",
+              "whyStronger": "Epics without testable stories hide discovery debt.",
+              "immediateConsequence": "Downstream AC and UAT will be harder."
+            },
+            "competencyTags": [
+              "user-stories"
+            ]
+          },
+          {
+            "id": "opt-sc001-c09-c",
+            "text": "Approve the Sales-authored feature stories as-is to protect the timeline.",
+            "evaluationTier": "high-risk",
+            "stateChanges": {
+              "requirementsClarity": -5,
+              "operationalRisk": 4,
+              "stakeholderAlignment": -2,
+              "scheduleImpact": 2
+            },
+            "feedback": "Stories stay vague; Elena feels timeline relief that Jordan does not share.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C10"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c09-a",
+              "whyStronger": "Approving untestable stories transfers risk into build and UAT.",
+              "immediateConsequence": "Weak-stories flag is set."
+            },
+            "setFlags": [
+              "flag-weak-stories"
+            ],
+            "competencyTags": [
+              "user-stories"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC001-C10",
+      "sceneType": "core",
+      "stageId": "stage-4",
+      "authoredOrder": 10,
+      "title": "Acceptance Criteria Drafting",
+      "domainId": "user-acceptance",
+      "setting": "Paired working session; acceptance-criteria draft beside the top three stories.",
+      "charactersPresent": [
+        "CB-CH-002",
+        "CB-CH-003"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-acceptance-criteria-draft",
+        "art-user-story-draft"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-003",
+            "text": "If the criteria say “works as expected,” Ops will argue for days during UAT.",
+            "tone": "dry"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-002",
+            "text": "Priya will ask who signs off and what evidence she will see.",
+            "tone": "professional"
+          }
+        ],
+        "variants": [
+          {
+            "variantId": "c10-weak-stories",
+            "priority": 10,
+            "when": {
+              "flagSet": "flag-weak-stories"
+            },
+            "overrides": [
+              {
+                "exchangeId": "ex-001",
+                "text": "These stories are still too vague to attach measurable criteria. We are guessing.",
+                "tone": "frustrated"
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena shape acceptance criteria for the kickoff stories?",
+        "options": [
+          {
+            "id": "opt-sc001-c10-a",
+            "text": "Write specific given/when/then criteria with data setup, expected routing result, and named approver role.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "requirementsClarity": 2,
+              "operationalRisk": -1,
+              "stakeholderAlignment": 1
+            },
+            "feedback": "The conversation moves forward with a workable next step.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C11"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c10-a",
+              "whyStronger": "This keeps the work moving without over-committing.",
+              "immediateConsequence": "Team advances with shared context."
+            },
+            "competencyTags": [
+              "user-acceptance",
+              "requirements"
+            ]
+          },
+          {
+            "id": "opt-sc001-c10-b",
+            "text": "Capture high-level criteria now and let the delivery team refine details in sprint planning.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "requirementsClarity": 2,
+              "operationalRisk": -1,
+              "stakeholderAlignment": 1
+            },
+            "feedback": "The discussion continues; a few open questions remain on the table.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C11"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c10-a",
+              "whyStronger": "Both options are workable; the alternate is slightly less precise.",
+              "immediateConsequence": "Team advances with residual ambiguity."
+            },
+            "competencyTags": [
+              "user-acceptance",
+              "requirements"
+            ]
+          }
+        ]
+      },
+      "progressMetadata": {
+        "notePrompts": [
+          "Who approves",
+          "Observable evidence",
+          "Edge cases still open"
+        ]
+      }
+    },
+    {
+      "id": "SC001-C11",
+      "sceneType": "core",
+      "stageId": "stage-4",
+      "authoredOrder": 11,
+      "title": "UAT Planning Under Go-Live Pressure",
+      "domainId": "user-acceptance",
+      "setting": "Stand-up; UAT readiness checklist projected; Marcus urges a shorter validation cycle.",
+      "charactersPresent": [
+        "CB-CH-001",
+        "CB-CH-002",
+        "CB-CH-003"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-uat-checklist"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-001",
+            "text": "If we keep UAT light, we can still protect the customer date.",
+            "tone": "urgent"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-003",
+            "text": "Light UAT means we discover plant-escalation defects in production.",
+            "tone": "firm"
+          },
+          {
+            "exchangeId": "ex-003",
+            "speakerId": "CB-CH-002",
+            "text": "I need a plan I can defend to Priya without promising theater.",
+            "tone": "professional"
+          }
+        ],
+        "variants": [
+          {
+            "variantId": "c11-unsupported-date",
+            "priority": 5,
+            "when": {
+              "flagSet": "flag-unsupported-customer-date"
+            },
+            "overrides": [
+              {
+                "exchangeId": "ex-001",
+                "text": "We already confirmed month-end in writing. UAT has to fit the date we promised.",
+                "tone": "urgent"
+              }
+            ]
+          },
+          {
+            "variantId": "c11-premature",
+            "priority": 10,
+            "when": {
+              "flagSet": "flag-premature-solution"
+            },
+            "overrides": [
+              {
+                "exchangeId": "ex-002",
+                "text": "And we still have that plant-routing engine commitment hanging over the test plan.",
+                "tone": "skeptical"
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena set the UAT plan?",
+        "options": [
+          {
+            "id": "opt-sc001-c11-a",
+            "text": "Define a risk-based UAT plan with critical scenarios, named Crestline/Ops validators, entry criteria, and a defect triage rule before go/no-go.",
+            "evaluationTier": "optimal",
+            "stateChanges": {
+              "operationalRisk": -5,
+              "stakeholderAlignment": 5,
+              "requirementsClarity": 3,
+              "customerConfidence": 2,
+              "scheduleImpact": 1,
+              "complianceExposure": -2
+            },
+            "feedback": "Jordan agrees to entry criteria; Elena drafts validator names; Marcus pushes back on duration but stays at the table.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C12"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c11-a",
+              "whyStronger": "Risk-based UAT protects customers without requiring endless testing.",
+              "immediateConsequence": "Validation readiness becomes explicit."
+            },
+            "competencyTags": [
+              "user-acceptance",
+              "stakeholder-collaboration"
+            ]
+          },
+          {
+            "id": "opt-sc001-c11-b",
+            "text": "Run a short demo-style review with Elena signing off on behalf of Crestline to save calendar time.",
+            "evaluationTier": "suboptimal",
+            "stateChanges": {
+              "scheduleImpact": -2,
+              "operationalRisk": 4,
+              "stakeholderAlignment": -2,
+              "customerConfidence": -1
+            },
+            "feedback": "The plan looks fast; true user validation is thin.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C12"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c11-a",
+              "whyStronger": "Proxy sign-off often misses real operational defects.",
+              "immediateConsequence": "UAT confidence is inflated."
+            },
+            "competencyTags": [
+              "user-acceptance"
+            ]
+          },
+          {
+            "id": "opt-sc001-c11-c",
+            "text": "Skip formal UAT and rely on post-go-live hypercare to protect the Sales date.",
+            "evaluationTier": "high-risk",
+            "stateChanges": {
+              "operationalRisk": 8,
+              "scheduleImpact": -3,
+              "stakeholderAlignment": -5,
+              "customerConfidence": -3,
+              "complianceExposure": 4
+            },
+            "feedback": "Marcus is relieved; Jordan escalates to his manager.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C12"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c11-a",
+              "whyStronger": "Skipping UAT converts discovery debt into production risk.",
+              "immediateConsequence": "Thin-UAT flag is set."
+            },
+            "setFlags": [
+              "flag-thin-uat"
+            ],
+            "competencyTags": [
+              "user-acceptance"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC001-C12",
+      "sceneType": "core",
+      "stageId": "stage-4",
+      "authoredOrder": 12,
+      "title": "Final Stakeholder Alignment",
+      "domainId": "stakeholder-collaboration",
+      "setting": "Closing stand-up; Elena summarizes owners, open risks, and the customer communication plan.",
+      "charactersPresent": [
+        "CB-CH-001",
+        "CB-CH-002",
+        "CB-CH-003"
+      ],
+      "learnerPresent": true,
+      "artifactReferences": [
+        "art-meeting-notes",
+        "art-uat-checklist",
+        "art-requirements-draft"
+      ],
+      "dialogue": {
+        "exchanges": [
+          {
+            "exchangeId": "ex-001",
+            "speakerId": "CB-CH-002",
+            "text": "Before we close kickoff—are we aligned on ownership, what we will tell Priya, and what is still intentionally open?",
+            "tone": "professional"
+          },
+          {
+            "exchangeId": "ex-002",
+            "speakerId": "CB-CH-003",
+            "text": "I can support a clear plan. I cannot support a confident story that our evidence does not back.",
+            "tone": "firm"
+          },
+          {
+            "exchangeId": "ex-003",
+            "speakerId": "CB-CH-001",
+            "text": "Just make sure we do not surprise the customer after what Sales already said.",
+            "tone": "cautious"
+          }
+        ],
+        "variants": [
+          {
+            "variantId": "c12-bad-date",
+            "priority": 5,
+            "when": {
+              "flagSet": "flag-unsupported-customer-date"
+            },
+            "overrides": [
+              {
+                "exchangeId": "ex-003",
+                "text": "We already confirmed month-end in writing. Walking it back now will be painful.",
+                "tone": "defensive"
+              }
+            ]
+          },
+          {
+            "variantId": "c12-thin-uat",
+            "priority": 10,
+            "when": {
+              "flagSet": "flag-thin-uat"
+            },
+            "overrides": [
+              {
+                "exchangeId": "ex-002",
+                "text": "Without real UAT, I will not sign the go/no-go narrative Elena wants to send.",
+                "tone": "firm"
+              }
+            ]
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena close final alignment?",
+        "options": [
+          {
+            "id": "opt-sc001-c12-a",
+            "text": "Confirm written owners, dated follow-ups for open gaps, and a customer update that matches verified readiness—not Sales optimism alone.",
+            "evaluationTier": "optimal",
+            "stateChanges": {
+              "stakeholderAlignment": 4,
+              "requirementsClarity": 2,
+              "customerConfidence": 2,
+              "operationalRisk": -2
+            },
+            "feedback": "The team leaves with a shared narrative and explicit owners.",
+            "routing": {
+              "terminal": true,
+              "primaryNextSceneId": "EVALUATE_ENDING"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c12-a",
+              "whyStronger": "Explicit ownership and honest customer messaging close the loop.",
+              "immediateConsequence": "Kickoff ends with aligned next steps; outcome is classified."
+            },
+            "competencyTags": [
+              "stakeholder-collaboration"
+            ]
+          },
+          {
+            "id": "opt-sc001-c12-b",
+            "text": "Note open items verbally and rely on async chat updates during the week.",
+            "evaluationTier": "acceptable",
+            "stateChanges": {
+              "stakeholderAlignment": 1,
+              "scheduleImpact": 1
+            },
+            "feedback": "Alignment is soft; several owners remain implied.",
+            "routing": {
+              "terminal": true,
+              "primaryNextSceneId": "EVALUATE_ENDING"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c12-a",
+              "whyStronger": "Verbal-only close is weaker than dated owners.",
+              "immediateConsequence": "Kickoff ends with residual ambiguity; outcome is classified."
+            },
+            "competencyTags": [
+              "stakeholder-collaboration"
+            ]
+          },
+          {
+            "id": "opt-sc001-c12-c",
+            "text": "Declare readiness and avoid surfacing remaining gaps to protect momentum.",
+            "evaluationTier": "high-risk",
+            "stateChanges": {
+              "operationalRisk": 4,
+              "stakeholderAlignment": -4,
+              "dataQuality": -2,
+              "customerConfidence": -2
+            },
+            "feedback": "Unresolved gaps stay hidden; Jordan disengages.",
+            "routing": {
+              "terminal": true,
+              "primaryNextSceneId": "EVALUATE_ENDING"
+            },
+            "debriefSeed": {
+              "strongestOptionId": "opt-sc001-c12-a",
+              "whyStronger": "Hiding gaps reopens handoff and delivery risk.",
+              "immediateConsequence": "Kickoff ends under elevated risk; outcome is classified."
+            },
+            "competencyTags": [
+              "stakeholder-collaboration"
+            ]
+          }
+        ]
+      },
+      "progressMetadata": {
+        "notePrompts": [
+          "Decisions made",
+          "Follow-ups with dates",
+          "Customer message draft"
+        ]
+      }
+    }
+  ],
+  "outcomeClassifier": {
+    "evaluationOrder": "v1_seven_step",
+    "tierPoints": {
+      "optimal": 4,
+      "acceptable": 3,
+      "suboptimal": 1,
+      "high-risk": 0
+    },
+    "positiveHealthFormula": {
+      "type": "weighted_dimension_health",
+      "dimensions": [
+        {
+          "variableId": "customerConfidence",
+          "polarity": "higher_is_better"
+        },
+        {
+          "variableId": "dataQuality",
+          "polarity": "higher_is_better"
+        },
+        {
+          "variableId": "requirementsClarity",
+          "polarity": "higher_is_better"
+        },
+        {
+          "variableId": "stakeholderAlignment",
+          "polarity": "higher_is_better"
+        },
+        {
+          "variableId": "operationalRisk",
+          "polarity": "higher_is_worse"
+        },
+        {
+          "variableId": "scheduleImpact",
+          "polarity": "higher_is_worse"
+        },
+        {
+          "variableId": "complianceExposure",
+          "polarity": "higher_is_worse"
+        }
+      ]
+    },
+    "decisionQualityFormula": {
+      "type": "tier_average",
+      "divisor": "scoredDecisionCount"
+    },
+    "compositeFormula": {
+      "type": "linear_blend",
+      "terms": [
+        {
+          "metric": "positiveHealth",
+          "weight": 0.55
+        },
+        {
+          "metric": "decisionQuality",
+          "weight": 0.45
+        }
+      ]
+    },
+    "severeCaps": [
+      {
+        "capId": "CAP-F01",
+        "when": {
+          "flagSet": "flag-unsupported-customer-date"
+        },
+        "effect": {
+          "forceOutcomeId": "failed_resolution"
+        }
+      },
+      {
+        "capId": "CAP-F02",
+        "when": {
+          "all": [
+            {
+              "flagSet": "flag-premature-solution"
+            },
+            {
+              "flagSet": "flag-thin-uat"
+            }
+          ]
+        },
+        "effect": {
+          "forceOutcomeId": "failed_resolution"
+        }
+      }
+    ],
+    "moderateCaps": [
+      {
+        "capId": "CAP-P03",
+        "when": {
+          "stateCompare": {
+            "variableId": "operationalRisk",
+            "op": "gte",
+            "value": 70
+          }
+        },
+        "effect": {
+          "maxOutcomeId": "partial_resolution"
+        }
+      },
+      {
+        "capId": "CAP-P04",
+        "when": {
+          "flagSet": "flag-thin-uat"
+        },
+        "effect": {
+          "maxOutcomeId": "partial_resolution"
+        }
+      }
+    ],
+    "strongGuards": [
+      {
+        "guardId": "GRD-S01",
+        "when": {
+          "counterCompare": {
+            "counterId": "highRiskDecisionCount",
+            "op": "gte",
+            "value": 1
+          }
+        },
+        "effect": {
+          "disqualifyOutcomeIds": [
+            "strong_resolution"
+          ]
+        }
+      },
+      {
+        "guardId": "GRD-S02",
+        "when": {
+          "flagSet": "flag-weak-stories"
+        },
+        "effect": {
+          "disqualifyOutcomeIds": [
+            "strong_resolution"
+          ]
+        }
+      }
+    ],
+    "scoreBands": [
+      {
+        "outcomeId": "strong_resolution",
+        "minInclusive": 36,
+        "maxExclusive": null
+      },
+      {
+        "outcomeId": "partial_resolution",
+        "minInclusive": 30,
+        "maxExclusive": 36
+      },
+      {
+        "outcomeId": "failed_resolution",
+        "minInclusive": null,
+        "maxExclusive": 30
+      }
+    ],
+    "tieBreakRules": "v1_default"
+  },
+  "outcomes": [
+    {
+      "outcomeId": "strong_resolution",
+      "title": "Strongly Aligned Kickoff",
+      "classificationRank": 1,
+      "narrative": "The team leaves kickoff with shared outcomes, documented gaps, disciplined requirements and stories, and a credible UAT path. Customer messaging matches verified readiness."
+    },
+    {
+      "outcomeId": "partial_resolution",
+      "title": "Partial Alignment with Delivery Risk",
+      "classificationRank": 2,
+      "narrative": "Some progress was made, but unresolved handoff, scope, story, or validation gaps leave meaningful delivery risk heading into build."
+    },
+    {
+      "outcomeId": "failed_resolution",
+      "title": "Premature Commitment / Broken Alignment",
+      "classificationRank": 3,
+      "narrative": "Unsupported timeline or solution commitments, weak validation, or accumulated high-risk choices produce rework pressure and stakeholder concern."
+    }
+  ],
+  "canonicalContentSha256": "a51eebcdcc83c781e8cba0996bacb9bc1d31fab07699546c87d503d7e2e0abdf"
+}

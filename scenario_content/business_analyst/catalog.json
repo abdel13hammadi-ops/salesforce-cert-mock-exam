@@ -1,0 +1,37 @@
+{
+  "catalogVersion": "1.0.0",
+  "certificationSlug": "business_analyst",
+  "certificationExamName": "Salesforce Certified Business Analyst",
+  "scenarios": [
+    {
+      "simulationId": "ba201-sim-meridian-health-01",
+      "title": "The Meridian Health Salesforce Rollout",
+      "examCode": "BA-201",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "schemaVersion": "1.0.0",
+          "relativePath": "ba201-sim-meridian-health-01/1.0.0/scenario.json",
+          "canonicalContentSha256": "f29c39b64c4f0786a54c7ab4bf6b2f07f5a8e683eb2d19d834a1440d347f4f36",
+          "estimatedMinutes": 60,
+          "isDefault": true
+        }
+      ]
+    },
+    {
+      "simulationId": "cb-sc-001-onboarding-handoff-vslice",
+      "title": "Customer Kickoff",
+      "examCode": "BA-201",
+      "versions": [
+        {
+          "version": "0.3.0-twelve-scene-kickoff",
+          "schemaVersion": "1.1.0",
+          "relativePath": "cb_sc_001_onboarding_handoff_v1_1_0.json",
+          "canonicalContentSha256": "a51eebcdcc83c781e8cba0996bacb9bc1d31fab07699546c87d503d7e2e0abdf",
+          "estimatedMinutes": 40,
+          "isDefault": true
+        }
+      ]
+    }
+  ]
+}

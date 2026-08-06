@@ -1,0 +1,160 @@
+{
+  "scenarioId": "CB-SC-001",
+  "simulationId": "cb-sc-001-onboarding-handoff-vslice",
+  "title": "Customer Kickoff",
+  "version": "0.3.0-twelve-scene-kickoff",
+  "canonicalContentSha256": "a51eebcdcc83c781e8cba0996bacb9bc1d31fab07699546c87d503d7e2e0abdf",
+  "characters": [
+    {
+      "name": "Marcus Chen",
+      "role": "Customer Contact"
+    },
+    {
+      "name": "Elena Vasquez",
+      "role": "Executive Sponsor"
+    },
+    {
+      "name": "Jordan Blake",
+      "role": "Operations Lead"
+    }
+  ],
+  "assetFormat": "PNG",
+  "sceneImageDimensions": [
+    1600,
+    800
+  ],
+  "scenes": [
+    {
+      "sceneNumber": 1,
+      "sceneId": "SC001-C01",
+      "title": "Opening the Kickoff",
+      "filename": "scenes/scene-01-sc001-c01-opening-the-kickoff.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 2,
+      "sceneId": "SC001-C02",
+      "title": "Setting the Context",
+      "filename": "scenes/scene-02-sc001-c02-setting-the-context.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 3,
+      "sceneId": "SC001-C03",
+      "title": "Sales Handoff",
+      "filename": "scenes/scene-03-sc001-c03-sales-handoff.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 4,
+      "sceneId": "SC001-C04",
+      "title": "Clarifying Requirements",
+      "filename": "scenes/scene-04-sc001-c04-clarifying-requirements.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 5,
+      "sceneId": "SC001-C05",
+      "title": "Stakeholder Perspectives",
+      "filename": "scenes/scene-05-sc001-c05-stakeholder-perspectives.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 6,
+      "sceneId": "SC001-C06",
+      "title": "Stakeholder Conflict",
+      "filename": "scenes/scene-06-sc001-c06-stakeholder-conflict.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 7,
+      "sceneId": "SC001-C07",
+      "title": "Reframing the Discussion",
+      "filename": "scenes/scene-07-sc001-c07-reframing-the-discussion.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 8,
+      "sceneId": "SC001-C08",
+      "title": "Defining Success",
+      "filename": "scenes/scene-08-sc001-c08-defining-success.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 9,
+      "sceneId": "SC001-C09",
+      "title": "Addressing Risks",
+      "filename": "scenes/scene-09-sc001-c09-addressing-risks.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 10,
+      "sceneId": "SC001-C10",
+      "title": "Agreeing on Next Steps",
+      "filename": "scenes/scene-10-sc001-c10-agreeing-on-next-steps.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 11,
+      "sceneId": "SC001-C11",
+      "title": "Confirming the Plan",
+      "filename": "scenes/scene-11-sc001-c11-confirming-the-plan.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    },
+    {
+      "sceneNumber": 12,
+      "sceneId": "SC001-C12",
+      "title": "Closing the Kickoff",
+      "filename": "scenes/scene-12-sc001-c12-closing-the-kickoff.png",
+      "dimensions": [
+        1600,
+        800
+      ],
+      "source": "approved 12-scene visual guide"
+    }
+  ]
+}
