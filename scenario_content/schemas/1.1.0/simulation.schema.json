@@ -1,0 +1,1096 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://certbound.com/schemas/scenario_content/1.1.0/simulation.schema.json",
+  "title": "CertBound Generic Scenario Simulation Schema v1.1.0",
+  "description": "Normative executable JSON Schema for CertBound Scenario Simulator content schema version 1.1.0. Rich routing, dialogue variants, outcome classifier, and corrective-budget semantics. Legacy 1.0.0 behavioral fields (nextScene, isCorrect, scene narrative, endings[]) are prohibited. Graph reachability, reference resolution, canonical hash correctness, and publication semantics require the companion custom-validation contract.",
+  "type": "object",
+  "required": [
+    "simulationId",
+    "version",
+    "schemaVersion",
+    "requiredEngineVersion",
+    "certificationExamName",
+    "examCode",
+    "title",
+    "learnerRole",
+    "introduction",
+    "characters",
+    "flags",
+    "stateVariables",
+    "initialState",
+    "runtimeCounters",
+    "scenes",
+    "startScene",
+    "outcomeClassifier",
+    "outcomes"
+  ],
+  "properties": {
+    "simulationId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable scenario identity, constant across content versions of this scenario."
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Immutable content version for this scenario document."
+    },
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.1.0",
+      "description": "Content contract version. MUST be exactly 1.1.0 for documents validated by this schema."
+    },
+    "requiredEngineVersion": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact engine capability identifier required at runtime (for example SCENARIO_ENGINE_V2). No semver ranges."
+    },
+    "certificationExamName": {
+      "type": "string",
+      "minLength": 1,
+      "description": "CertBound certification lookup identity matching certifications.exam_name."
+    },
+    "examCode": {
+      "type": "string",
+      "minLength": 1,
+      "description": "External candidate-facing exam code for display and authoring cross-reference."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "estimatedMinutes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "locale": {
+      "type": "string",
+      "minLength": 2
+    },
+    "learnerRole": {
+      "$ref": "#/$defs/learnerRole"
+    },
+    "introduction": {
+      "$ref": "#/$defs/introduction"
+    },
+    "contentProvenance": {
+      "type": "object",
+      "description": "Compiler/source provenance. Excluded from canonical content hash input.",
+      "additionalProperties": true
+    },
+    "canonicalContentSha256": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/sha256Hex" }
+      ],
+      "description": "Lowercase SHA-256 digest of canonicalized content excluding this field, contentProvenance, and publicationMetadata."
+    },
+    "publicationMetadata": {
+      "type": "object",
+      "description": "Publication-time metadata. Excluded from canonical content hash input.",
+      "additionalProperties": true
+    },
+    "accessibility": {
+      "type": "object",
+      "description": "Scenario-level presentation-only accessibility metadata.",
+      "additionalProperties": true
+    },
+    "mobilePresentation": {
+      "type": "object",
+      "description": "Scenario-level presentation-only mobile metadata.",
+      "additionalProperties": true
+    },
+    "characters": {
+      "type": "array",
+      "description": "Scenario-level character registry. Registered character IDs only; the learner is not a registry character.",
+      "items": { "$ref": "#/$defs/character" }
+    },
+    "flags": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/flag" }
+    },
+    "stateVariables": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/stateVariable" }
+    },
+    "initialState": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "number" },
+      "description": "Starting numeric state keyed by stateVariables.key."
+    },
+    "runtimeCounters": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/runtimeCounter" }
+    },
+    "correctiveBudgetPolicy": {
+      "$ref": "#/$defs/correctiveBudgetPolicy"
+    },
+    "stages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stage" }
+    },
+    "domains": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/domain" }
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scene" }
+    },
+    "startScene": {
+      "type": "string",
+      "minLength": 1,
+      "description": "First scored scene id after the introduction gate."
+    },
+    "outcomeClassifier": {
+      "$ref": "#/$defs/outcomeClassifier"
+    },
+    "outcomes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/outcome" }
+    },
+    "optionDisplayPolicy": {
+      "type": "string",
+      "enum": ["randomize_per_attempt_scene", "authored_order"],
+      "default": "randomize_per_attempt_scene"
+    },
+    "debriefTemplate": {
+      "$ref": "#/$defs/debriefTemplate"
+    }
+  },
+  "additionalProperties": false,
+
+  "$defs": {
+
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Lowercase hexadecimal SHA-256 digest."
+    },
+
+    "terminalSentinel": {
+      "type": "string",
+      "const": "EVALUATE_ENDING"
+    },
+
+    "evaluationTier": {
+      "type": "string",
+      "enum": ["optimal", "acceptable", "suboptimal", "high-risk"]
+    },
+
+    "compareOp": {
+      "type": "string",
+      "enum": ["gte", "lte", "gt", "lt", "eq"]
+    },
+
+    "statePolarity": {
+      "type": "string",
+      "enum": ["higher_is_better", "higher_is_worse"]
+    },
+
+    "sceneType": {
+      "type": "string",
+      "enum": ["core", "corrective"]
+    },
+
+    "condition": {
+      "oneOf": [
+        { "$ref": "#/$defs/conditionAll" },
+        { "$ref": "#/$defs/conditionAny" },
+        { "$ref": "#/$defs/conditionNot" },
+        { "$ref": "#/$defs/conditionFlagSet" },
+        { "$ref": "#/$defs/conditionFlagNotSet" },
+        { "$ref": "#/$defs/conditionStateCompare" },
+        { "$ref": "#/$defs/conditionCounterCompare" }
+      ],
+      "description": "Bounded declarative condition grammar. Exactly one form per node. Max depth 8 and max 64 nodes enforced by custom validation."
+    },
+
+    "conditionAll": {
+      "type": "object",
+      "required": ["all"],
+      "properties": {
+        "all": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/condition" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "conditionAny": {
+      "type": "object",
+      "required": ["any"],
+      "properties": {
+        "any": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/condition" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "conditionNot": {
+      "type": "object",
+      "required": ["not"],
+      "properties": {
+        "not": { "$ref": "#/$defs/condition" }
+      },
+      "additionalProperties": false
+    },
+
+    "conditionFlagSet": {
+      "type": "object",
+      "required": ["flagSet"],
+      "properties": {
+        "flagSet": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+
+    "conditionFlagNotSet": {
+      "type": "object",
+      "required": ["flagNotSet"],
+      "properties": {
+        "flagNotSet": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+
+    "conditionStateCompare": {
+      "type": "object",
+      "required": ["stateCompare"],
+      "properties": {
+        "stateCompare": {
+          "type": "object",
+          "required": ["variableId", "op", "value"],
+          "properties": {
+            "variableId": { "$ref": "#/$defs/nonEmptyString" },
+            "op": { "$ref": "#/$defs/compareOp" },
+            "value": { "type": "number" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "conditionCounterCompare": {
+      "type": "object",
+      "required": ["counterCompare"],
+      "properties": {
+        "counterCompare": {
+          "type": "object",
+          "required": ["counterId", "op", "value"],
+          "properties": {
+            "counterId": { "$ref": "#/$defs/nonEmptyString" },
+            "op": { "$ref": "#/$defs/compareOp" },
+            "value": { "type": "number" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "learnerRole": {
+      "type": "object",
+      "required": ["title", "summary"],
+      "properties": {
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "summary": { "$ref": "#/$defs/nonEmptyString" },
+        "reportingLine": { "type": "string" },
+        "mandate": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "introduction": {
+      "type": "object",
+      "required": ["companyIntroduction", "projectBriefing", "startGate"],
+      "properties": {
+        "companyIntroduction": { "$ref": "#/$defs/nonEmptyString" },
+        "projectBriefing": {
+          "type": "object",
+          "required": ["title", "summary"],
+          "properties": {
+            "title": { "$ref": "#/$defs/nonEmptyString" },
+            "summary": { "$ref": "#/$defs/nonEmptyString" },
+            "customerName": { "type": "string" },
+            "timelineContext": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "characterCards": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["characterId", "introText"],
+            "properties": {
+              "characterId": { "$ref": "#/$defs/nonEmptyString" },
+              "introText": { "$ref": "#/$defs/nonEmptyString" },
+              "displayOrder": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "artifactPreviews": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": true }
+        },
+        "startGate": {
+          "type": "object",
+          "required": ["headline", "body", "confirmButtonLabel"],
+          "properties": {
+            "headline": { "$ref": "#/$defs/nonEmptyString" },
+            "body": { "$ref": "#/$defs/nonEmptyString" },
+            "confirmButtonLabel": { "$ref": "#/$defs/nonEmptyString" },
+            "cancelBehavior": {
+              "type": "string",
+              "enum": ["return_to_catalog"]
+            }
+          },
+          "additionalProperties": false
+        },
+        "knownRisks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "successCriteria": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "authorityBoundaries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "responsibilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "character": {
+      "type": "object",
+      "required": ["characterId", "displayName", "roleTitle"],
+      "properties": {
+        "characterId": {
+          "type": "string",
+          "minLength": 1,
+          "not": { "const": "learner" },
+          "description": "Registered character id. MUST NOT be the literal learner."
+        },
+        "displayName": { "$ref": "#/$defs/nonEmptyString" },
+        "roleTitle": { "$ref": "#/$defs/nonEmptyString" },
+        "affiliation": { "type": "string" },
+        "portraitAssetRef": { "type": "string" },
+        "defaultExpressionRef": { "type": "string" },
+        "accessibilityDescription": { "type": "string" },
+        "isRoleOnly": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+
+    "flagWriterRef": {
+      "type": "object",
+      "required": ["sceneId", "optionId"],
+      "properties": {
+        "sceneId": { "$ref": "#/$defs/nonEmptyString" },
+        "optionId": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+
+    "flag": {
+      "type": "object",
+      "required": ["flagId", "valueType", "initialValue"],
+      "properties": {
+        "flagId": { "$ref": "#/$defs/nonEmptyString" },
+        "valueType": {
+          "type": "string",
+          "const": "boolean"
+        },
+        "initialValue": {
+          "type": "boolean",
+          "const": false
+        },
+        "sticky": { "type": "boolean" },
+        "allowedSetters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/flagWriterRef" }
+        },
+        "allowedClearers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/flagWriterRef" }
+        },
+        "description": { "type": "string" },
+        "consumers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" },
+          "description": "Advisory/documentation only."
+        },
+        "debriefRelevant": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+
+    "stateVariable": {
+      "type": "object",
+      "required": ["key"],
+      "properties": {
+        "key": { "$ref": "#/$defs/nonEmptyString" },
+        "displayName": { "type": "string" },
+        "description": { "type": "string" },
+        "polarity": { "$ref": "#/$defs/statePolarity" },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "learnerVisibleDuringRun": { "type": "boolean" },
+        "debriefVisible": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+
+    "counterIncrementOnCorrective": {
+      "type": "object",
+      "required": ["event"],
+      "properties": {
+        "event": { "const": "corrective_scene_entered" }
+      },
+      "additionalProperties": false
+    },
+
+    "counterIncrementOnDecision": {
+      "type": "object",
+      "required": ["event", "whenTier"],
+      "properties": {
+        "event": { "const": "decision_applied" },
+        "whenTier": { "$ref": "#/$defs/evaluationTier" }
+      },
+      "additionalProperties": false
+    },
+
+    "runtimeCounter": {
+      "type": "object",
+      "required": ["counterId", "initialValue", "incrementOn"],
+      "properties": {
+        "counterId": { "$ref": "#/$defs/nonEmptyString" },
+        "initialValue": { "type": "number" },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "incrementOn": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/counterIncrementOnCorrective" },
+              { "$ref": "#/$defs/counterIncrementOnDecision" }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "correctiveBudgetPolicy": {
+      "type": "object",
+      "required": [
+        "maxAvailableCorrectiveScenes",
+        "maxExperiencedCorrectiveScenes",
+        "maxScoredDecisions",
+        "minScoredDecisions",
+        "experiencedCounterId"
+      ],
+      "properties": {
+        "maxAvailableCorrectiveScenes": { "type": "integer", "minimum": 0 },
+        "maxExperiencedCorrectiveScenes": { "type": "integer", "minimum": 0 },
+        "maxScoredDecisions": { "type": "integer", "minimum": 1 },
+        "minScoredDecisions": { "type": "integer", "minimum": 1 },
+        "experiencedCounterId": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+
+    "stage": {
+      "type": "object",
+      "required": ["stageId", "label"],
+      "properties": {
+        "stageId": { "$ref": "#/$defs/nonEmptyString" },
+        "label": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+
+    "domain": {
+      "type": "object",
+      "required": ["id", "label", "weight"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "label": { "$ref": "#/$defs/nonEmptyString" },
+        "weight": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+
+    "registeredCharacterId": {
+      "type": "string",
+      "minLength": 1,
+      "not": { "const": "learner" },
+      "description": "Registered scenario characterId from characters[]."
+    },
+
+    "speakerId": {
+      "oneOf": [
+        { "const": "learner" },
+        { "$ref": "#/$defs/registeredCharacterId" }
+      ],
+      "description": "Registered characterId or the literal learner for learner-authored dialogue lines."
+    },
+
+    "exchange": {
+      "type": "object",
+      "required": ["exchangeId", "speakerId", "text"],
+      "properties": {
+        "exchangeId": { "$ref": "#/$defs/nonEmptyString" },
+        "speakerId": { "$ref": "#/$defs/speakerId" },
+        "text": { "$ref": "#/$defs/nonEmptyString" },
+        "audienceId": { "type": "string" },
+        "communicationType": { "type": "string" },
+        "expressionRef": { "type": "string" },
+        "bodyLanguage": { "type": "string" },
+        "tone": { "type": "string" },
+        "visualFocus": { "type": "string" },
+        "accessibilityNotes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "dialogueOverride": {
+      "type": "object",
+      "required": ["exchangeId"],
+      "properties": {
+        "exchangeId": { "$ref": "#/$defs/nonEmptyString" },
+        "text": { "type": "string" },
+        "tone": { "type": "string" },
+        "expressionRef": { "type": "string" },
+        "bodyLanguage": { "type": "string" },
+        "visualFocus": { "type": "string" },
+        "accessibilityNotes": { "type": "string" }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        { "required": ["text"] },
+        { "required": ["tone"] },
+        { "required": ["expressionRef"] },
+        { "required": ["bodyLanguage"] },
+        { "required": ["visualFocus"] },
+        { "required": ["accessibilityNotes"] }
+      ],
+      "description": "Override one or more presentation fields on an existing base exchange."
+    },
+
+    "dialogueVariant": {
+      "type": "object",
+      "required": ["variantId", "priority", "when", "overrides"],
+      "properties": {
+        "variantId": { "$ref": "#/$defs/nonEmptyString" },
+        "priority": { "type": "integer" },
+        "when": { "$ref": "#/$defs/condition" },
+        "overrides": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/dialogueOverride" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "dialogue": {
+      "type": "object",
+      "required": ["exchanges"],
+      "properties": {
+        "exchanges": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/exchange" }
+        },
+        "variants": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/dialogueVariant" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "correctiveRoute": {
+      "type": "object",
+      "required": [
+        "triggerOnTiers",
+        "budgetCondition",
+        "correctiveSceneId",
+        "whenCorrectiveSkippedNextSceneId",
+        "reconvergenceSceneId"
+      ],
+      "properties": {
+        "triggerOnTiers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/evaluationTier" }
+        },
+        "budgetCondition": { "$ref": "#/$defs/condition" },
+        "correctiveSceneId": { "$ref": "#/$defs/nonEmptyString" },
+        "whenCorrectiveSkippedNextSceneId": { "$ref": "#/$defs/nonEmptyString" },
+        "reconvergenceSceneId": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+
+    "routing": {
+      "type": "object",
+      "required": ["terminal", "primaryNextSceneId"],
+      "properties": {
+        "terminal": { "type": "boolean" },
+        "primaryNextSceneId": { "$ref": "#/$defs/nonEmptyString" },
+        "correctiveRoute": { "$ref": "#/$defs/correctiveRoute" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "terminal": { "const": true } },
+            "required": ["terminal"]
+          },
+          "then": {
+            "properties": {
+              "primaryNextSceneId": { "$ref": "#/$defs/terminalSentinel" }
+            },
+            "not": { "required": ["correctiveRoute"] }
+          }
+        },
+        {
+          "if": {
+            "properties": { "terminal": { "const": false } },
+            "required": ["terminal"]
+          },
+          "then": {
+            "not": {
+              "properties": {
+                "primaryNextSceneId": { "const": "EVALUATE_ENDING" }
+              },
+              "required": ["primaryNextSceneId"]
+            }
+          }
+        }
+      ]
+    },
+
+    "debriefSeed": {
+      "type": "object",
+      "required": ["strongestOptionId", "whyStronger", "immediateConsequence"],
+      "properties": {
+        "strongestOptionId": { "$ref": "#/$defs/nonEmptyString" },
+        "whyStronger": { "$ref": "#/$defs/nonEmptyString" },
+        "immediateConsequence": { "$ref": "#/$defs/nonEmptyString" },
+        "whyWeaker": { "type": "string" },
+        "laterConsequence": { "type": "string" },
+        "competencyImpact": { "type": "string" },
+        "stateImpactSummary": { "type": "string" },
+        "capGuardEffect": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "reactionDialogue": {
+      "type": "object",
+      "required": ["exchanges"],
+      "properties": {
+        "exchanges": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/exchange" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "option": {
+      "type": "object",
+      "required": ["id", "text", "evaluationTier", "feedback", "routing", "debriefSeed"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "title": { "type": "string" },
+        "text": { "$ref": "#/$defs/nonEmptyString" },
+        "evaluationTier": { "$ref": "#/$defs/evaluationTier" },
+        "stateChanges": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        },
+        "setFlags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "clearFlags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "feedback": { "$ref": "#/$defs/nonEmptyString" },
+        "reactionDialogue": { "$ref": "#/$defs/reactionDialogue" },
+        "visibleConsequence": { "type": "string" },
+        "routing": { "$ref": "#/$defs/routing" },
+        "debriefSeed": { "$ref": "#/$defs/debriefSeed" },
+        "competencyTags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "decision": {
+      "type": "object",
+      "required": ["prompt", "options"],
+      "properties": {
+        "prompt": { "$ref": "#/$defs/nonEmptyString" },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/option" }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "correctiveMetadata": {
+      "type": "object",
+      "required": ["triggerSceneId", "reconvergenceSceneId", "mayRebranch"],
+      "properties": {
+        "triggerSceneId": { "$ref": "#/$defs/nonEmptyString" },
+        "reconvergenceSceneId": { "$ref": "#/$defs/nonEmptyString" },
+        "mayRebranch": {
+          "type": "boolean",
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "scene": {
+      "type": "object",
+      "required": [
+        "id",
+        "sceneType",
+        "title",
+        "setting",
+        "charactersPresent",
+        "learnerPresent",
+        "dialogue",
+        "decision"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonEmptyString" },
+        "sceneType": { "$ref": "#/$defs/sceneType" },
+        "stageId": { "$ref": "#/$defs/nonEmptyString" },
+        "authoredOrder": { "type": "integer", "minimum": 0 },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "domainId": { "$ref": "#/$defs/nonEmptyString" },
+        "setting": { "$ref": "#/$defs/nonEmptyString" },
+        "charactersPresent": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "learner" }
+          },
+          "description": "Registered character IDs present in the scene. The learner is represented separately by learnerPresent."
+        },
+        "learnerPresent": {
+          "type": "boolean",
+          "description": "Whether the learner/advisee is present in the scene."
+        },
+        "enteringStateDescription": { "type": "string" },
+        "environmentalFlagsOnEntry": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "dialogue": { "$ref": "#/$defs/dialogue" },
+        "decision": { "$ref": "#/$defs/decision" },
+        "visibleConsequence": { "type": "string" },
+        "artifactReferences": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "progressMetadata": { "type": "object", "additionalProperties": true },
+        "accessibility": { "type": "object", "additionalProperties": true },
+        "mobilePresentation": { "type": "object", "additionalProperties": true },
+        "isDetour": { "type": "boolean" },
+        "explanation": { "type": "string" },
+        "correctiveMetadata": { "$ref": "#/$defs/correctiveMetadata" }
+      },
+      "additionalProperties": false
+    },
+
+    "formulaWeightedDimensionHealth": {
+      "type": "object",
+      "required": ["type", "dimensions"],
+      "properties": {
+        "type": { "const": "weighted_dimension_health" },
+        "dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["variableId", "polarity"],
+            "properties": {
+              "variableId": { "$ref": "#/$defs/nonEmptyString" },
+              "polarity": { "$ref": "#/$defs/statePolarity" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "formulaTierAverage": {
+      "type": "object",
+      "required": ["type", "divisor"],
+      "properties": {
+        "type": { "const": "tier_average" },
+        "divisor": {
+          "type": "string",
+          "const": "scoredDecisionCount"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "formulaLinearBlend": {
+      "type": "object",
+      "required": ["type", "terms"],
+      "properties": {
+        "type": { "const": "linear_blend" },
+        "terms": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["metric", "weight"],
+            "properties": {
+              "metric": {
+                "type": "string",
+                "enum": ["positiveHealth", "decisionQuality"]
+              },
+              "weight": { "type": "number" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "formulaIdentity": {
+      "type": "object",
+      "required": ["type", "source"],
+      "properties": {
+        "type": { "const": "identity" },
+        "source": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+
+    "formula": {
+      "oneOf": [
+        { "$ref": "#/$defs/formulaWeightedDimensionHealth" },
+        { "$ref": "#/$defs/formulaTierAverage" },
+        { "$ref": "#/$defs/formulaLinearBlend" },
+        { "$ref": "#/$defs/formulaIdentity" }
+      ]
+    },
+
+    "capEffectForceOutcome": {
+      "type": "object",
+      "required": ["forceOutcomeId"],
+      "properties": {
+        "forceOutcomeId": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+
+    "capEffectMaxOutcome": {
+      "type": "object",
+      "properties": {
+        "maxOutcomeId": { "$ref": "#/$defs/nonEmptyString" },
+        "maxOutcomeRank": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["maxOutcomeId"] },
+        { "required": ["maxOutcomeRank"] }
+      ]
+    },
+
+    "severeCap": {
+      "type": "object",
+      "required": ["capId", "when", "effect"],
+      "properties": {
+        "capId": { "$ref": "#/$defs/nonEmptyString" },
+        "when": { "$ref": "#/$defs/condition" },
+        "effect": { "$ref": "#/$defs/capEffectForceOutcome" }
+      },
+      "additionalProperties": false
+    },
+
+    "moderateCap": {
+      "type": "object",
+      "required": ["capId", "when", "effect"],
+      "properties": {
+        "capId": { "$ref": "#/$defs/nonEmptyString" },
+        "when": { "$ref": "#/$defs/condition" },
+        "effect": { "$ref": "#/$defs/capEffectMaxOutcome" }
+      },
+      "additionalProperties": false
+    },
+
+    "strongGuard": {
+      "type": "object",
+      "required": ["guardId", "when", "effect"],
+      "properties": {
+        "guardId": { "$ref": "#/$defs/nonEmptyString" },
+        "when": { "$ref": "#/$defs/condition" },
+        "effect": {
+          "type": "object",
+          "required": ["disqualifyOutcomeIds"],
+          "properties": {
+            "disqualifyOutcomeIds": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/nonEmptyString" }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "scoreBand": {
+      "type": "object",
+      "required": ["outcomeId"],
+      "properties": {
+        "outcomeId": { "$ref": "#/$defs/nonEmptyString" },
+        "minInclusive": {
+          "oneOf": [{ "type": "null" }, { "type": "number" }]
+        },
+        "maxExclusive": {
+          "oneOf": [{ "type": "null" }, { "type": "number" }]
+        }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        { "required": ["minInclusive"] },
+        { "required": ["maxExclusive"] }
+      ]
+    },
+
+    "outcomeClassifier": {
+      "type": "object",
+      "required": [
+        "evaluationOrder",
+        "tierPoints",
+        "positiveHealthFormula",
+        "decisionQualityFormula",
+        "compositeFormula",
+        "severeCaps",
+        "moderateCaps",
+        "strongGuards",
+        "scoreBands",
+        "tieBreakRules"
+      ],
+      "properties": {
+        "evaluationOrder": {
+          "type": "string",
+          "const": "v1_seven_step"
+        },
+        "tierPoints": {
+          "type": "object",
+          "required": ["optimal", "acceptable", "suboptimal", "high-risk"],
+          "properties": {
+            "optimal": { "type": "number" },
+            "acceptable": { "type": "number" },
+            "suboptimal": { "type": "number" },
+            "high-risk": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "positiveHealthFormula": { "$ref": "#/$defs/formula" },
+        "decisionQualityFormula": { "$ref": "#/$defs/formula" },
+        "compositeFormula": { "$ref": "#/$defs/formula" },
+        "severeCaps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/severeCap" }
+        },
+        "moderateCaps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/moderateCap" }
+        },
+        "strongGuards": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/strongGuard" }
+        },
+        "scoreBands": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/scoreBand" }
+        },
+        "tieBreakRules": {
+          "type": "string",
+          "const": "v1_default"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "outcome": {
+      "type": "object",
+      "required": ["outcomeId", "title", "classificationRank", "narrative"],
+      "properties": {
+        "outcomeId": { "$ref": "#/$defs/nonEmptyString" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "classificationRank": { "type": "integer", "minimum": 1 },
+        "narrative": { "$ref": "#/$defs/nonEmptyString" },
+        "consequenceSummary": { "type": "string" },
+        "recommendations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "visualMetadata": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": false
+    },
+
+    "debriefTemplate": {
+      "type": "object",
+      "description": "Authored debrief section configuration. Computed debrief fields are runtime-derived.",
+      "additionalProperties": true
+    }
+  }
+}

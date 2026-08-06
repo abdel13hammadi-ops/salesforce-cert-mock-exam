@@ -1,0 +1,532 @@
+{
+  "simulationId": "cb-sc-001-onboarding-handoff-vslice",
+  "version": "0.2.1-vslice-engine-v2",
+  "schemaVersion": "1.1.0",
+  "requiredEngineVersion": "SCENARIO_ENGINE_V2",
+  "certificationExamName": "Salesforce Certified Business Analyst",
+  "examCode": "BA-201",
+  "title": "Customer Onboarding Handoff (Vertical Slice)",
+  "description": "Engineering vertical slice: C01-C03 + R2A + optional R3A + C04 terminal. scoreBands calibrated for multi-outcome reachability. Second corrective (R3A) enables natural budget-exhaustion skip after R2A consumes the single experienced-corrective slot.",
+  "estimatedMinutes": 15,
+  "locale": "en-US",
+  "optionDisplayPolicy": "randomize_per_attempt_scene",
+  "learnerRole": {
+    "title": "Embedded Business Analyst",
+    "summary": "You advise Elena Vasquez during a high-stakes onboarding handoff."
+  },
+  "introduction": {
+    "companyIntroduction": "Meridian Health is a regional clinic network adopting Salesforce Service Cloud.",
+    "projectBriefing": {
+      "title": "Crestline Onboarding Handoff",
+      "summary": "Sales closed Crestline; CS must onboard under month-end pressure.",
+      "customerName": "Crestline Manufacturing"
+    },
+    "characterCards": [
+      { "characterId": "CB-CH-002", "introText": "Elena Vasquez leads Customer Success.", "displayOrder": 1 },
+      { "characterId": "CB-CH-001", "introText": "Marcus Chen owns the Sales handoff.", "displayOrder": 2 }
+    ],
+    "knownRisks": ["Incomplete handoff package", "Month-end customer expectation"],
+    "successCriteria": ["Documented ownership", "Aligned internal story before customer updates"],
+    "startGate": {
+      "headline": "Ready to begin?",
+      "body": "You will advise Elena scene by scene. Outcomes appear only at the end.",
+      "confirmButtonLabel": "Start Scenario",
+      "cancelBehavior": "return_to_catalog"
+    }
+  },
+  "characters": [
+    { "characterId": "CB-CH-001", "displayName": "Marcus Chen", "roleTitle": "Sales Representative", "accessibilityDescription": "Sales representative near door" },
+    { "characterId": "CB-CH-002", "displayName": "Elena Vasquez", "roleTitle": "Customer Success Manager", "accessibilityDescription": "Customer success manager with laptop" },
+    { "characterId": "CB-CH-003", "displayName": "Jordan Blake", "roleTitle": "Operations Coordinator", "accessibilityDescription": "Operations coordinator" }
+  ],
+  "flags": [
+    {
+      "flagId": "flag-verbal-handoff-only",
+      "valueType": "boolean",
+      "initialValue": false,
+      "sticky": true,
+      "allowedSetters": [{ "sceneId": "SC001-C01", "optionId": "opt-sc001-c01-c" }],
+      "allowedClearers": [],
+      "debriefRelevant": true
+    },
+    {
+      "flagId": "flag-unsupported-customer-date",
+      "valueType": "boolean",
+      "initialValue": false,
+      "sticky": true,
+      "allowedSetters": [{ "sceneId": "SC001-C02", "optionId": "opt-sc001-c02-c" }],
+      "allowedClearers": []
+    },
+    {
+      "flagId": "flag-sales-reengaged",
+      "valueType": "boolean",
+      "initialValue": false,
+      "sticky": true,
+      "allowedSetters": [
+        { "sceneId": "SC001-R2A", "optionId": "opt-sc001-r2a-a" },
+        { "sceneId": "SC001-R2A", "optionId": "opt-sc001-r2a-b" }
+      ],
+      "allowedClearers": []
+    }
+  ],
+  "stateVariables": [
+    { "key": "customerConfidence", "displayName": "Customer Confidence", "polarity": "higher_is_better", "minimum": 0, "maximum": 100, "learnerVisibleDuringRun": false },
+    { "key": "operationalRisk", "displayName": "Operational Risk", "polarity": "higher_is_worse", "minimum": 0, "maximum": 100, "learnerVisibleDuringRun": false },
+    { "key": "dataQuality", "displayName": "Data Quality", "polarity": "higher_is_better", "minimum": 0, "maximum": 100, "learnerVisibleDuringRun": false },
+    { "key": "scheduleImpact", "displayName": "Schedule Impact", "polarity": "higher_is_worse", "minimum": 0, "maximum": 100, "learnerVisibleDuringRun": false },
+    { "key": "complianceExposure", "displayName": "Compliance Exposure", "polarity": "higher_is_worse", "minimum": 0, "maximum": 100, "learnerVisibleDuringRun": false },
+    { "key": "requirementsClarity", "displayName": "Requirements Clarity", "polarity": "higher_is_better", "minimum": 0, "maximum": 100, "learnerVisibleDuringRun": false },
+    { "key": "stakeholderAlignment", "displayName": "Stakeholder Alignment", "polarity": "higher_is_better", "minimum": 0, "maximum": 100, "learnerVisibleDuringRun": false }
+  ],
+  "initialState": {
+    "customerConfidence": 68,
+    "operationalRisk": 42,
+    "dataQuality": 44,
+    "scheduleImpact": 38,
+    "complianceExposure": 32,
+    "requirementsClarity": 48,
+    "stakeholderAlignment": 52
+  },
+  "runtimeCounters": [
+    { "counterId": "correctiveScenesExperienced", "initialValue": 0, "minimum": 0, "maximum": 1, "incrementOn": [{ "event": "corrective_scene_entered" }] },
+    { "counterId": "highRiskDecisionCount", "initialValue": 0, "incrementOn": [{ "event": "decision_applied", "whenTier": "high-risk" }] },
+    { "counterId": "optimalDecisionCount", "initialValue": 0, "incrementOn": [{ "event": "decision_applied", "whenTier": "optimal" }] }
+  ],
+  "correctiveBudgetPolicy": {
+    "maxAvailableCorrectiveScenes": 2,
+    "maxExperiencedCorrectiveScenes": 1,
+    "maxScoredDecisions": 5,
+    "minScoredDecisions": 4,
+    "experiencedCounterId": "correctiveScenesExperienced"
+  },
+  "stages": [
+    { "stageId": "stage-1", "label": "Handoff Initiation" },
+    { "stageId": "stage-2", "label": "Operations Readiness" }
+  ],
+  "startScene": "SC001-C01",
+  "scenes": [
+    {
+      "id": "SC001-C01",
+      "sceneType": "core",
+      "stageId": "stage-1",
+      "title": "The Closed Deal",
+      "setting": "Small conference room; CRM summary on wall display.",
+      "charactersPresent": ["CB-CH-001", "CB-CH-002"],
+      "learnerPresent": true,
+      "dialogue": {
+        "exchanges": [
+          { "exchangeId": "ex-001", "speakerId": "CB-CH-001", "text": "Crestline is closed. Ops can take it from the CRM notes.", "tone": "hurried" },
+          { "exchangeId": "ex-002", "speakerId": "CB-CH-002", "text": "Marcus, before we hand off-what is still open?", "tone": "professional" }
+        ]
+      },
+      "decision": {
+        "prompt": "What do you recommend Elena do next?",
+        "options": [
+          {
+            "id": "opt-sc001-c01-a",
+            "text": "Document open gaps in writing before any Operations handoff.",
+            "evaluationTier": "optimal",
+            "stateChanges": { "customerConfidence": 2, "operationalRisk": -3, "dataQuality": 5, "scheduleImpact": 1, "complianceExposure": -2, "requirementsClarity": 6, "stakeholderAlignment": 4 },
+            "feedback": "Elena opens a structured gap list.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C02" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c01-a", "whyStronger": "Documentation before handoff reduces rework.", "immediateConsequence": "Team aligns on written gaps." }
+          },
+          {
+            "id": "opt-sc001-c01-b",
+            "text": "Proceed on Marcus's verbal summary; Elena logs follow-ups async.",
+            "evaluationTier": "acceptable",
+            "stateChanges": { "scheduleImpact": 2, "requirementsClarity": 2, "stakeholderAlignment": 1 },
+            "feedback": "Elena accepts but notes follow-up risk.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C02" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c01-a", "whyStronger": "Async logging delays accountability.", "immediateConsequence": "Handoff proceeds on verbal summary." }
+          },
+          {
+            "id": "opt-sc001-c01-c",
+            "text": "Treat CRM as sufficient to avoid delaying Marcus's pipeline.",
+            "evaluationTier": "high-risk",
+            "stateChanges": { "customerConfidence": -1, "operationalRisk": 4, "dataQuality": -4, "scheduleImpact": 3, "complianceExposure": 3, "requirementsClarity": -3, "stakeholderAlignment": -2 },
+            "setFlags": ["flag-verbal-handoff-only"],
+            "feedback": "Elena hesitates; the folder remains thin.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C02" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c01-a", "whyStronger": "CRM completeness is not handoff quality.", "immediateConsequence": "Verbal-handoff flag set." }
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC001-C02",
+      "sceneType": "core",
+      "stageId": "stage-1",
+      "title": "Missing Handoff Information",
+      "setting": "Same conference room; empty handoff fields on screen.",
+      "charactersPresent": ["CB-CH-001", "CB-CH-002"],
+      "learnerPresent": true,
+      "dialogue": {
+        "exchanges": [
+          { "exchangeId": "ex-001", "speakerId": "CB-CH-002", "text": "Agreement link is missing. Who owns onboarding?", "tone": "firm" }
+        ],
+        "variants": [
+          {
+            "variantId": "c02-after-documented",
+            "priority": 10,
+            "when": { "flagNotSet": "flag-verbal-handoff-only" },
+            "overrides": [{ "exchangeId": "ex-001", "text": "We need CS ownership documented before Marcus leaves.", "tone": "firm" }]
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena assign ownership and handle gaps?",
+        "options": [
+          {
+            "id": "opt-sc001-c02-a",
+            "text": "Assign CS ownership and document gaps before Operations review.",
+            "evaluationTier": "acceptable",
+            "stateChanges": { "customerConfidence": 2, "operationalRisk": -4, "dataQuality": 6, "requirementsClarity": 5, "stakeholderAlignment": 5 },
+            "feedback": "Elena captures owners and open items.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C03" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c02-a", "whyStronger": "Ownership plus documentation closes the gap.", "immediateConsequence": "Direct path to Operations readiness." }
+          },
+          {
+            "id": "opt-sc001-c02-b",
+            "text": "Accept verbal handoff; defer gap documentation to Operations.",
+            "evaluationTier": "suboptimal",
+            "stateChanges": { "operationalRisk": 3, "dataQuality": -2, "scheduleImpact": 2, "stakeholderAlignment": -1 },
+            "feedback": "Marcus leaves; gaps remain undocumented.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C03",
+              "correctiveRoute": {
+                "triggerOnTiers": ["suboptimal", "high-risk"],
+                "budgetCondition": { "counterCompare": { "counterId": "correctiveScenesExperienced", "op": "lt", "value": 1 } },
+                "correctiveSceneId": "SC001-R2A",
+                "whenCorrectiveSkippedNextSceneId": "SC001-C03",
+                "reconvergenceSceneId": "SC001-C03"
+              }
+            },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c02-a", "whyStronger": "Deferring documentation shifts risk to Operations.", "immediateConsequence": "Corrective Sales Pushback may trigger." }
+          },
+          {
+            "id": "opt-sc001-c02-c",
+            "text": "Confirm month-end install timing to reassure Sales.",
+            "evaluationTier": "high-risk",
+            "stateChanges": { "customerConfidence": -6, "operationalRisk": 8, "dataQuality": -5, "scheduleImpact": 10, "complianceExposure": 5, "requirementsClarity": -4, "stakeholderAlignment": -6 },
+            "setFlags": ["flag-unsupported-customer-date"],
+            "feedback": "Elena repeats an unsupported customer date.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C03",
+              "correctiveRoute": {
+                "triggerOnTiers": ["suboptimal", "high-risk"],
+                "budgetCondition": { "counterCompare": { "counterId": "correctiveScenesExperienced", "op": "lt", "value": 1 } },
+                "correctiveSceneId": "SC001-R2A",
+                "whenCorrectiveSkippedNextSceneId": "SC001-C03",
+                "reconvergenceSceneId": "SC001-C03"
+              }
+            },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c02-a", "whyStronger": "Customer dates require internal alignment first.", "immediateConsequence": "Unsupported date flag set." }
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC001-R2A",
+      "sceneType": "corrective",
+      "stageId": "stage-1",
+      "title": "Sales Pushback",
+      "setting": "Sales floor; Marcus on headset.",
+      "charactersPresent": ["CB-CH-001", "CB-CH-002"],
+      "learnerPresent": true,
+      "correctiveMetadata": {
+        "triggerSceneId": "SC001-C02",
+        "reconvergenceSceneId": "SC001-C03",
+        "mayRebranch": false
+      },
+      "dialogue": {
+        "exchanges": [
+          { "exchangeId": "ex-001", "speakerId": "CB-CH-001", "text": "I do not have time for another checklist.", "tone": "defensive" }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena re-engage Marcus?",
+        "options": [
+          {
+            "id": "opt-sc001-r2a-a",
+            "text": "Send structured email with numbered gaps and customer-impact framing.",
+            "evaluationTier": "acceptable",
+            "stateChanges": { "customerConfidence": 1, "dataQuality": 3, "stakeholderAlignment": 4 },
+            "setFlags": ["flag-sales-reengaged"],
+            "feedback": "Marcus agrees to respond after his call.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C03" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-r2a-a", "whyStronger": "Structured requests restore Sales engagement.", "immediateConsequence": "Sales re-engaged flag set." }
+          },
+          {
+            "id": "opt-sc001-r2a-b",
+            "text": "Escalate to Sales Manager for handoff enforcement.",
+            "evaluationTier": "acceptable",
+            "stateChanges": { "customerConfidence": 2, "operationalRisk": -3, "stakeholderAlignment": 5 },
+            "setFlags": ["flag-sales-reengaged"],
+            "feedback": "Sales leadership looped in.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C03" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-r2a-a", "whyStronger": "Escalation restores accountability.", "immediateConsequence": "Reconverges at Operations readiness." }
+          },
+          {
+            "id": "opt-sc001-r2a-c",
+            "text": "Accept delay and document risk for later follow-up.",
+            "evaluationTier": "suboptimal",
+            "stateChanges": { "operationalRisk": 3, "scheduleImpact": 2, "stakeholderAlignment": -2 },
+            "feedback": "Gap remains unresolved.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C03" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-r2a-a", "whyStronger": "Delayed follow-up preserves handoff risk.", "immediateConsequence": "Reconverges without sales-reengaged flag." }
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC001-C03",
+      "sceneType": "core",
+      "stageId": "stage-2",
+      "title": "Operations Readiness Meeting",
+      "setting": "Operations war room; checklist on wall display.",
+      "charactersPresent": ["CB-CH-002", "CB-CH-003"],
+      "learnerPresent": true,
+      "enteringStateDescription": "Operations readiness; may trigger a second corrective or continue to closing.",
+      "dialogue": {
+        "exchanges": [
+          { "exchangeId": "ex-002", "speakerId": "CB-CH-003", "text": "Walk me through what Sales actually handed over.", "tone": "neutral" }
+        ],
+        "variants": [
+          {
+            "variantId": "c03-both-flags",
+            "priority": 5,
+            "when": {
+              "all": [
+                { "flagSet": "flag-verbal-handoff-only" },
+                { "flagSet": "flag-sales-reengaged" }
+              ]
+            },
+            "overrides": [{ "exchangeId": "ex-002", "text": "CRM looks complete but the folder is thin - and Marcus is only now re-engaging.", "tone": "skeptical" }]
+          },
+          {
+            "variantId": "c03-verbal-handoff",
+            "priority": 10,
+            "when": { "flagSet": "flag-verbal-handoff-only" },
+            "overrides": [{ "exchangeId": "ex-002", "text": "CRM says complete, but the folder's thin.", "tone": "skeptical" }]
+          },
+          {
+            "variantId": "c03-sales-reengaged",
+            "priority": 20,
+            "when": { "flagSet": "flag-sales-reengaged" },
+            "overrides": [{ "exchangeId": "ex-002", "text": "Marcus is re-engaging, but we have not validated the package yet.", "tone": "cautious" }]
+          }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena open the Operations readiness discussion?",
+        "options": [
+          {
+            "id": "opt-sc001-c03-a",
+            "text": "Open with a numbered gap list and request hold until minimum threshold met.",
+            "evaluationTier": "optimal",
+            "stateChanges": { "customerConfidence": 2, "operationalRisk": -4, "dataQuality": 5, "requirementsClarity": 4, "stakeholderAlignment": 5 },
+            "feedback": "Jordan engages with the gap list.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C04" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c03-a", "whyStronger": "Evidence-first framing protects Operations readiness.", "immediateConsequence": "Proceeds to closing check." }
+          },
+          {
+            "id": "opt-sc001-c03-b",
+            "text": "Present what Sales provided and ask Jordan to prioritize remaining blockers.",
+            "evaluationTier": "suboptimal",
+            "stateChanges": { "customerConfidence": 1, "operationalRisk": -1, "dataQuality": 2, "stakeholderAlignment": 2 },
+            "feedback": "Discussion proceeds, but Ops discovers gaps late.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C04",
+              "correctiveRoute": {
+                "triggerOnTiers": ["suboptimal", "high-risk"],
+                "budgetCondition": { "counterCompare": { "counterId": "correctiveScenesExperienced", "op": "lt", "value": 1 } },
+                "correctiveSceneId": "SC001-R3A",
+                "whenCorrectiveSkippedNextSceneId": "SC001-C04",
+                "reconvergenceSceneId": "SC001-C04"
+              }
+            },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c03-a", "whyStronger": "Asking Ops to discover gaps is weaker than bringing evidence.", "immediateConsequence": "May enter Ops Pushback corrective if budget remains." }
+          },
+          {
+            "id": "opt-sc001-c03-c",
+            "text": "Recommend Jordan proceed while Sales completes documentation in parallel.",
+            "evaluationTier": "high-risk",
+            "stateChanges": { "customerConfidence": -1, "operationalRisk": 5, "dataQuality": -3, "scheduleImpact": 4, "stakeholderAlignment": -3 },
+            "feedback": "Jordan objects to parallel execution risk.",
+            "routing": {
+              "terminal": false,
+              "primaryNextSceneId": "SC001-C04",
+              "correctiveRoute": {
+                "triggerOnTiers": ["suboptimal", "high-risk"],
+                "budgetCondition": { "counterCompare": { "counterId": "correctiveScenesExperienced", "op": "lt", "value": 1 } },
+                "correctiveSceneId": "SC001-R3A",
+                "whenCorrectiveSkippedNextSceneId": "SC001-C04",
+                "reconvergenceSceneId": "SC001-C04"
+              }
+            },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c03-a", "whyStronger": "Parallel undocumented work raises operational risk.", "immediateConsequence": "May enter Ops Pushback corrective if budget remains." }
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC001-R3A",
+      "sceneType": "corrective",
+      "stageId": "stage-2",
+      "title": "Ops Pushback",
+      "setting": "Operations war room; Jordan closes laptop.",
+      "charactersPresent": ["CB-CH-002", "CB-CH-003"],
+      "learnerPresent": true,
+      "correctiveMetadata": {
+        "triggerSceneId": "SC001-C03",
+        "reconvergenceSceneId": "SC001-C04",
+        "mayRebranch": false
+      },
+      "dialogue": {
+        "exchanges": [
+          { "exchangeId": "ex-001", "speakerId": "CB-CH-003", "text": "I will not start without a written gap list.", "tone": "firm" }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena respond to Ops pushback?",
+        "options": [
+          {
+            "id": "opt-sc001-r3a-a",
+            "text": "Produce the numbered gap list immediately and request a short hold.",
+            "evaluationTier": "acceptable",
+            "stateChanges": { "operationalRisk": -2, "dataQuality": 2, "stakeholderAlignment": 2 },
+            "feedback": "Jordan agrees to a short hold.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C04" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-r3a-a", "whyStronger": "Written gaps restore Ops confidence.", "immediateConsequence": "Reconverges at closing check." }
+          },
+          {
+            "id": "opt-sc001-r3a-b",
+            "text": "Acknowledge the concern and schedule a follow-up after kickoff.",
+            "evaluationTier": "suboptimal",
+            "stateChanges": { "operationalRisk": 2, "scheduleImpact": 1, "stakeholderAlignment": -1 },
+            "feedback": "Jordan remains skeptical.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C04" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-r3a-a", "whyStronger": "Deferring documentation preserves Ops risk.", "immediateConsequence": "Reconverges with residual risk." }
+          },
+          {
+            "id": "opt-sc001-r3a-c",
+            "text": "Press Jordan to proceed anyway to protect the sales date.",
+            "evaluationTier": "high-risk",
+            "stateChanges": { "customerConfidence": -2, "operationalRisk": 4, "stakeholderAlignment": -3 },
+            "feedback": "Trust between CS and Ops erodes.",
+            "routing": { "terminal": false, "primaryNextSceneId": "SC001-C04" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-r3a-a", "whyStronger": "Pressuring Ops amplifies risk.", "immediateConsequence": "Reconverges under elevated risk." }
+          }
+        ]
+      }
+    },
+    {
+      "id": "SC001-C04",
+      "sceneType": "core",
+      "stageId": "stage-2",
+      "title": "Closing Alignment Check",
+      "setting": "Brief stand-up; Elena summarizes next actions.",
+      "charactersPresent": ["CB-CH-002", "CB-CH-003"],
+      "learnerPresent": true,
+      "dialogue": {
+        "exchanges": [
+          { "exchangeId": "ex-001", "speakerId": "CB-CH-002", "text": "Before we close-are we aligned on ownership?", "tone": "professional" }
+        ]
+      },
+      "decision": {
+        "prompt": "How should Elena close the alignment check?",
+        "options": [
+          {
+            "id": "opt-sc001-c04-a",
+            "text": "Confirm written owners and a dated follow-up for remaining gaps.",
+            "evaluationTier": "optimal",
+            "stateChanges": { "customerConfidence": 1, "requirementsClarity": 2, "stakeholderAlignment": 2 },
+            "feedback": "Team leaves with clear owners.",
+            "routing": { "terminal": true, "primaryNextSceneId": "EVALUATE_ENDING" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c04-a", "whyStronger": "Explicit ownership closes the loop.", "immediateConsequence": "Slice ends - outcome classified." }
+          },
+          {
+            "id": "opt-sc001-c04-b",
+            "text": "Note open items verbally and rely on async chat updates.",
+            "evaluationTier": "acceptable",
+            "stateChanges": { "stakeholderAlignment": 1 },
+            "feedback": "Alignment is soft but documented lightly.",
+            "routing": { "terminal": true, "primaryNextSceneId": "EVALUATE_ENDING" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c04-a", "whyStronger": "Verbal-only close is weaker than dated owners.", "immediateConsequence": "Slice ends." }
+          },
+          {
+            "id": "opt-sc001-c04-c",
+            "text": "Declare readiness and skip remaining gap follow-up.",
+            "evaluationTier": "high-risk",
+            "stateChanges": { "operationalRisk": 3, "dataQuality": -2, "stakeholderAlignment": -2 },
+            "feedback": "Unresolved gaps remain hidden.",
+            "routing": { "terminal": true, "primaryNextSceneId": "EVALUATE_ENDING" },
+            "debriefSeed": { "strongestOptionId": "opt-sc001-c04-a", "whyStronger": "Skipping follow-up reopens handoff risk.", "immediateConsequence": "Slice ends." }
+          }
+        ]
+      }
+    }
+  ],
+  "outcomeClassifier": {
+    "evaluationOrder": "v1_seven_step",
+    "tierPoints": { "optimal": 4, "acceptable": 3, "suboptimal": 1, "high-risk": 0 },
+    "positiveHealthFormula": {
+      "type": "weighted_dimension_health",
+      "dimensions": [
+        { "variableId": "customerConfidence", "polarity": "higher_is_better" },
+        { "variableId": "dataQuality", "polarity": "higher_is_better" },
+        { "variableId": "requirementsClarity", "polarity": "higher_is_better" },
+        { "variableId": "stakeholderAlignment", "polarity": "higher_is_better" },
+        { "variableId": "operationalRisk", "polarity": "higher_is_worse" },
+        { "variableId": "scheduleImpact", "polarity": "higher_is_worse" },
+        { "variableId": "complianceExposure", "polarity": "higher_is_worse" }
+      ]
+    },
+    "decisionQualityFormula": { "type": "tier_average", "divisor": "scoredDecisionCount" },
+    "compositeFormula": {
+      "type": "linear_blend",
+      "terms": [
+        { "metric": "positiveHealth", "weight": 0.55 },
+        { "metric": "decisionQuality", "weight": 0.45 }
+      ]
+    },
+    "severeCaps": [
+      {
+        "capId": "CAP-F01",
+        "when": { "flagSet": "flag-unsupported-customer-date" },
+        "effect": { "forceOutcomeId": "failed_resolution" }
+      }
+    ],
+    "moderateCaps": [
+      {
+        "capId": "CAP-P03",
+        "when": { "stateCompare": { "variableId": "operationalRisk", "op": "gte", "value": 75 } },
+        "effect": { "maxOutcomeId": "partial_resolution" }
+      }
+    ],
+    "strongGuards": [
+      {
+        "guardId": "GRD-S01",
+        "when": { "counterCompare": { "counterId": "highRiskDecisionCount", "op": "gte", "value": 1 } },
+        "effect": { "disqualifyOutcomeIds": ["strong_resolution"] }
+      }
+    ],
+    "scoreBands": [
+      { "outcomeId": "strong_resolution", "minInclusive": 36, "maxExclusive": null },
+      { "outcomeId": "acceptable_resolution", "minInclusive": 32, "maxExclusive": 36 },
+      { "outcomeId": "partial_resolution", "minInclusive": 29, "maxExclusive": 32 },
+      { "outcomeId": "failed_resolution", "minInclusive": null, "maxExclusive": 29 }
+    ],
+    "tieBreakRules": "v1_default"
+  },
+  "outcomes": [
+    { "outcomeId": "strong_resolution", "title": "Strong Resolution", "classificationRank": 1, "narrative": "Slice outcome - strong path." },
+    { "outcomeId": "acceptable_resolution", "title": "Acceptable Resolution", "classificationRank": 2, "narrative": "Slice outcome - acceptable path." },
+    { "outcomeId": "partial_resolution", "title": "Partial Resolution", "classificationRank": 3, "narrative": "Slice outcome - partial path." },
+    { "outcomeId": "failed_resolution", "title": "Failed Resolution", "classificationRank": 4, "narrative": "Slice outcome - failed path (e.g. unsupported customer date)." }
+  ]
+}
