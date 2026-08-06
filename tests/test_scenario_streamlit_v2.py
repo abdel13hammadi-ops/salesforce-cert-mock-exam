@@ -923,7 +923,10 @@ def _exec_v2_page(
     session_state: Optional[dict] = None,
     feature_flag_enabled: bool = True,
     track_admin_client: Optional[list] = None,
+    use_real_feature_flag: bool = False,
 ) -> Tuple[Optional[SystemExit], Any]:
+    from contextlib import ExitStack
+
     fake_st = _make_fake_streamlit(session_state=session_state or {})
 
     def _require_paid_access(_feature_name):
@@ -942,16 +945,33 @@ def _exec_v2_page(
     with patch.dict(sys.modules, {"streamlit": fake_st}), patch.object(dashboard_components, "st", fake_st):
         # Force UI helper to bind against the fake streamlit module.
         sys.modules.pop("utils.scenario_simulator_ui_v2", None)
-        with patch("utils.access_control.require_paid_access", side_effect=_require_paid_access), \
-             patch("utils.access_control.get_current_user_email", side_effect=_get_current_user_email), \
-             patch("utils.access_control.render_app_chrome"), \
-             patch("utils.session_timeout.enforce_session_timeout"), \
-             patch("utils.session_timeout.show_session_expired_notice"), \
-             patch("utils.navigation.is_feature_flag_enabled", return_value=feature_flag_enabled), \
-             patch("utils.scenario_streamlit_v2.load_cb_sc001_v2_content") as load_content, \
-             patch("utils.scenario_streamlit_v2.resolve_cb_sc001_scenario_version_id", return_value=_SCENARIO_VERSION_ID), \
-             patch("utils.scenario_streamlit_v2.fetch_authoritative_cb_sc001_view") as fetch_view, \
-             patch("utils.access_control.get_supabase_admin_client", side_effect=_get_admin):
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("utils.access_control.require_paid_access", side_effect=_require_paid_access)
+            )
+            stack.enter_context(
+                patch("utils.access_control.get_current_user_email", side_effect=_get_current_user_email)
+            )
+            stack.enter_context(patch("utils.access_control.render_app_chrome"))
+            stack.enter_context(patch("utils.session_timeout.enforce_session_timeout"))
+            stack.enter_context(patch("utils.session_timeout.show_session_expired_notice"))
+            if not use_real_feature_flag:
+                stack.enter_context(
+                    patch("utils.navigation.is_feature_flag_enabled", return_value=feature_flag_enabled)
+                )
+            load_content = stack.enter_context(patch("utils.scenario_streamlit_v2.load_cb_sc001_v2_content"))
+            stack.enter_context(
+                patch(
+                    "utils.scenario_streamlit_v2.resolve_cb_sc001_scenario_version_id",
+                    return_value=_SCENARIO_VERSION_ID,
+                )
+            )
+            fetch_view = stack.enter_context(
+                patch("utils.scenario_streamlit_v2.fetch_authoritative_cb_sc001_view")
+            )
+            stack.enter_context(
+                patch("utils.access_control.get_supabase_admin_client", side_effect=_get_admin)
+            )
             content = _new_content()
             load_content.return_value = content
             fetch_view.return_value = types.SimpleNamespace(
@@ -984,7 +1004,12 @@ def _exec_v2_page(
 
 class TestScenarioSimulatorV2PageAccess(unittest.TestCase):
     def test_a_unauthenticated_page_access_fails_closed(self):
-        exec_exc, fake_st = _exec_v2_page(paid_access_stops=True, authenticated_email=_LEARNER_EMAIL)
+        # require_paid_access stops before any attempt is created (login/premium gate).
+        exec_exc, fake_st = _exec_v2_page(
+            paid_access_stops=True,
+            authenticated_email="",
+            feature_flag_enabled=True,
+        )
         self.assertIsInstance(exec_exc, SystemExit)
         self.assertNotIn(SESSION_KEY_ATTEMPT_ID, fake_st.session_state)
 
@@ -996,6 +1021,22 @@ class TestScenarioSimulatorV2PageAccess(unittest.TestCase):
             feature_flag_enabled=False,
             track_admin_client=admin_calls,
         )
+        self.assertIsInstance(exec_exc, SystemExit)
+        self.assertEqual(admin_calls, [])
+        self.assertNotIn(SESSION_KEY_ATTEMPT_ID, fake_st.session_state)
+
+    def test_15b_missing_feature_flag_env_prevents_initialization(self):
+        from utils.navigation import CERTBOUND_ENABLE_SCENARIO_SIMULATOR
+
+        admin_calls: list = []
+        env = {k: v for k, v in os.environ.items() if k != CERTBOUND_ENABLE_SCENARIO_SIMULATOR}
+        with patch.dict(os.environ, env, clear=True):
+            exec_exc, fake_st = _exec_v2_page(
+                paid_access_stops=False,
+                authenticated_email=_LEARNER_EMAIL,
+                track_admin_client=admin_calls,
+                use_real_feature_flag=True,
+            )
         self.assertIsInstance(exec_exc, SystemExit)
         self.assertEqual(admin_calls, [])
         self.assertNotIn(SESSION_KEY_ATTEMPT_ID, fake_st.session_state)

@@ -5,7 +5,9 @@ This is NOT the full learner navigation shell. It only provides:
 - route lookup used by Return-to-Practice in scenario_streamlit_v2
 - a minimal route registry entry for Scenario_Simulator_V2
 
-origin/main access_control / sidebar chrome are left unchanged.
+Production discoverability is wired as a single feature-flagged Premium
+sidebar link inside the existing origin/main ``render_sidebar_navigation``
+(access_control.py). This module does not replace the application chrome.
 """
 
 from __future__ import annotations

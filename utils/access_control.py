@@ -777,6 +777,20 @@ def render_sidebar_navigation() -> None:
         _sidebar_nav_link("pages/Practice_By_Category.py", label="Practice By Category", icon="📚")
         _sidebar_nav_link("pages/Weak_Areas_Practice.py", label="Weak Areas Practice", icon="🎯")
         _sidebar_nav_link("pages/My_Progress.py", label="My Progress", icon="📈")
+        # Narrow BA Scenario Simulator entry: visible only when the production
+        # feature flag is enabled. Premium gating remains on the page itself
+        # via require_paid_access (same pattern as other Premium links).
+        from utils.navigation import (  # noqa: PLC0415
+            CERTBOUND_ENABLE_SCENARIO_SIMULATOR,
+            is_feature_flag_enabled,
+        )
+
+        if is_feature_flag_enabled(CERTBOUND_ENABLE_SCENARIO_SIMULATOR):
+            _sidebar_nav_link(
+                "pages/Scenario_Simulator_V2.py",
+                label="BA Scenario Simulator",
+                icon="🧭",
+            )
         if level not in {"paid", "admin"}:
             st.caption("Premium access required")
 
